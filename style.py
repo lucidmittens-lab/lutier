@@ -703,25 +703,64 @@ QToolTip {{
    WA_StyledBackground set there for the same reason as this rule
    exists: QDockWidget is a plain QWidget under the hood, not a QFrame,
    so it needs the attribute for ANY QSS background to paint at all).
-   EIGHTH PASS (2026-07-25, RUNNING.md #55) -- palette(base) here is
-   what actually stops QMainWindow's herringbone texture from bleeding
-   through the small rectangular recesses where panelTitleRow/panelFrame's
-   rounded corners pull back from the dock's own rectangular cell (every
-   outer corner, plus the deliberate 4px gap between title and body) --
-   a solid color matching the card content reads as clean/rounded even
-   though the dock's own true shape is still a plain rectangle
-   underneath; the eye reads "one rounded card," not "a rectangle with
-   two rounded holes cut into it." */
+   EIGHTH PASS (2026-07-25, RUNNING.md #55) gave this palette(base), to
+   stop QMainWindow's herringbone texture from bleeding through the
+   small rectangular recesses where panelTitleRow/panelFrame's rounded
+   corners used to pull back from the dock's own rectangular cell.
+
+   TENTH PASS (2026-07-30, per Tom: "the only borderline [should] be one
+   continuous one that encompasses everything including the panel
+   header") -- this is now what draws THE outer border+radius for a
+   whole panel, header and content together, instead of panelTitleRow
+   and panelFrame each drawing their own separate full border+radius a
+   few px apart (see those rules below for their half of this). Safe to
+   merge now specifically because of the EIGHTH PASS fix above: the
+   original worry (RUNNING.md #46's own comment, since removed) was that
+   closing the gap between the two shapes might reopen the herringbone-
+   bleed bug -- but that bug was about a missing OPAQUE background, and
+   this rule has painted one across the dock's entire rectangle
+   (underneath both children) since #55, well before this pass. Verified
+   by screenshot after this change, same as every prior pass in this
+   arc that touched this bleed-through-prone area. */
 QDockWidget {{
     background-color: palette(base);
+    border: 1px solid palette(mid);
+    border-radius: {PANEL_BORDER_RADIUS}px;
 }}
 
 /* -- Panel frames (PanelFrame in panel_frame.py) -------------------- */
 
+/* No border/full radius of its own anymore (TENTH PASS, see QDockWidget
+   above) -- panelFrame is the BOTTOM piece of one shape now, so only
+   its bottom two corners round, matching the dock's own outer bottom
+   corners; its top edge sits flush against panelTitleRow with a plain
+   square joint, not a corner at all. background-color stays: this is
+   still the actual opaque backdrop content paints on. */
 QFrame#panelFrame {{
-    border: 1px solid palette(mid);
-    border-radius: {PANEL_BORDER_RADIUS}px;
+    border-top-left-radius: 0px;
+    border-top-right-radius: 0px;
+    border-bottom-left-radius: {PANEL_BORDER_RADIUS}px;
+    border-bottom-right-radius: {PANEL_BORDER_RADIUS}px;
     background-color: palette(base);
+}}
+
+/* TENTH PASS, per Tom: with panelFrame's own margin at zero (see that
+   class's docstring), a panel's list widget -- always the sole,
+   fully-stretched content in every current panel that has one (Browser,
+   Image Library, LUT Library, CDL Library, Stack Memories) -- now sits
+   directly against the outer QDockWidget border above, with nothing of
+   panelFrame's own left. QListWidget's blanket border/radius rule
+   further up this file is still right for a list widget used mid-panel
+   next to other controls (none exist today, but nothing rules it out
+   later) -- this narrower, more specific selector overrides it back to
+   none ONLY for a list living inside a panelFrame, so there's exactly
+   one border around the whole card, not two close together. Descendant
+   selector (plain whitespace), not a direct-child one (">") -- the list
+   widget is a grandchild of panelFrame (panelFrame -> the panel's own
+   QWidget -> the QListWidget), never a direct child. */
+QFrame#panelFrame QListWidget {{
+    border: none;
+    border-radius: 0px;
 }}
 
 /* Border/spacing live on the ROW (panelTitleRow), not the label itself --
@@ -729,34 +768,38 @@ QFrame#panelFrame {{
    sits on the same row as the title now, and the divider needs to span
    under both, not just the label's own text width.
 
-   background-color is NEW (2026-07-24, RUNNING.md #46) -- real bug Tom
-   caught on real hardware: this row never had an explicit background
-   before, so it painted transparent and let whatever's behind it show
-   through -- harmless when that "whatever" was QMainWindow's old flat
-   palette(window) color (identical either way, so the transparency was
-   never visible), but once #44 gave QMainWindow a herringbone
+   background-color is NEW as of RUNNING.md #46 -- real bug Tom caught on
+   real hardware: this row never had an explicit background before, so it
+   painted transparent and let whatever's behind it show through --
+   harmless when that "whatever" was QMainWindow's old flat
+   palette(window) color, but once #44 gave QMainWindow a herringbone
    border-image, every dock's title bar (this row IS a QDockWidget's
    setTitleBarWidget -- see main_window.py's _build_dock_title_bar) sat
    directly on top of it with nothing opaque in between, so the texture
-   bled straight through behind every panel's title and "..." button.
-   Reproduced headlessly (screenshot_titlebar_zoom.png) before fixing.
-   palette(base) matches QFrame#panelFrame's own background so the title
-   row and the content below it still read as one continuous card, no
-   visible seam. */
-/* NINTH PASS -- border-bottom is now the accent blue (palette(highlight)),
-   2px, distinct from the plain palette(mid) used on the row's other three
-   sides and on panelFrame's own border directly below -- per Tom, panel
-   headers specifically should carry the blue accent. Border-radius still
-   applies to all four corners (a QSS border-radius isn't per-side), so
-   the accent still reads as part of one rounded shape, not a separate
-   strip glued on. */
+   bled straight through. Still needed today even though QDockWidget
+   itself also now paints an opaque background (see that rule above) --
+   belt and suspenders, and this is what the label/corner_widget content
+   actually paints against.
+
+   NO full border/radius of its own anymore (TENTH PASS, per Tom -- see
+   QDockWidget's own comment above for the one shared outer border this
+   used to duplicate). Only the TOP two corners round -- this is the TOP
+   piece of one shape now, its bottom edge sits flush against panelFrame
+   with a plain square joint, and QDockWidget's own border already draws
+   the left/right/top edges. border-bottom stays: the accent blue
+   (palette(highlight), 2px) is a deliberate header/content divider, a
+   different thing entirely from the outer card border this pass
+   removed -- per Tom, panel headers specifically should carry it.
+   margin-bottom is GONE too (used to be the 4px gap between this row and
+   panelFrame, which is exactly the seam TENTH PASS closes). */
 QWidget#panelTitleRow {{
     background-color: palette(base);
     padding: 4px 8px;
-    border: 1px solid palette(mid);
     border-bottom: 2px solid palette(highlight);
-    border-radius: {PANEL_BORDER_RADIUS}px;
-    margin-bottom: 4px;
+    border-top-left-radius: {PANEL_BORDER_RADIUS}px;
+    border-top-right-radius: {PANEL_BORDER_RADIUS}px;
+    border-bottom-left-radius: 0px;
+    border-bottom-right-radius: 0px;
 }}
 
 /* THIRTEENTH PASS -- title text is now palette(placeholder-text) (the

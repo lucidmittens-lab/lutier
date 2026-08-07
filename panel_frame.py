@@ -45,15 +45,25 @@ class PanelFrame(QFrame):
         self.setFrameShape(QFrame.Shape.StyledPanel)
 
         layout = QVBoxLayout(self)
-        # Tightened from (10, 8, 10, 10) per Tom -- panels read as having a
-        # lot of dead space between their actual content and the panel
-        # edge. This is one of two stacked sources of that: every panel's
-        # OWN top-level layout also used to rely on Qt's default content
-        # margins (a further ~9-11px per side on most styles) rather than
-        # setting its own -- see each panel's __init__/_build_*_ui, now
-        # zeroed out so this smaller margin here is the only gutter, not
-        # doubled up with another layer's default. Not zero here: still
-        # enough space that content doesn't visually clip into
-        # PANEL_BORDER_RADIUS's rounded corner (style.py, 6px).
-        layout.setContentsMargins(4, 4, 4, 4)
+        # A small, single margin, not zero (per Tom, in two steps): first
+        # dropped from the original (10,8,10,10) to zero, since
+        # #panelFrame drawing its OWN full border right where content
+        # margin used to end made any positive margin here read as a
+        # second, redundant border sitting a few px inside the real one
+        # (style.py's QFrame#panelFrame rule, at the time). That's since
+        # been restructured (see style.py's TENTH PASS): #panelFrame no
+        # longer draws a border of its own at all -- the SINGLE outer
+        # border now lives on QDockWidget itself, encompassing the title
+        # row and this content together as one shape. With only one
+        # border left, a small margin here is just ordinary padding
+        # again, not a competing second line -- needed because zero also
+        # meant text/content touching that one remaining border/edge
+        # directly, with nothing keeping it legible. Still much tighter
+        # than the original: enough to keep content off the edge and
+        # clear of PANEL_BORDER_RADIUS's rounded corner (style.py, 6px),
+        # not the old "lots of dead space" amount. Every panel's OWN
+        # top-level layout stays at zero (see each panel's __init__/
+        # _build_*_ui) -- this is still the only gutter, just no longer
+        # zero itself.
+        layout.setContentsMargins(6, 6, 6, 6)
         layout.addWidget(content_widget, stretch=1)
