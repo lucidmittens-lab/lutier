@@ -103,6 +103,7 @@ from itertools import zip_longest
 
 import numpy as np
 from PySide6.QtCore import Qt, QObject, QSize, Signal
+from PySide6.QtGui import QPainter, QPen
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QDoubleSpinBox,
@@ -506,9 +507,21 @@ class _StackListWidget(QListWidget):
     def __init__(self, panel, parent=None):
         super().__init__(parent)
         self._panel = panel
+        self._drop_indicator_row = None  # see dragMoveEvent/paintEvent below
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
-        self.setDropIndicatorShown(True)
+        # NOT Qt's built-in indicator -- dragMoveEvent below is a full
+        # override that never calls super(), which is exactly what
+        # QAbstractItemView's OWN dragMoveEvent would normally use to
+        # compute and repaint that indicator; with it skipped entirely
+        # (deliberately, per this class's docstring -- Qt's default
+        # InternalMove drop handling doesn't reliably carry a row's
+        # setItemWidget() content), setDropIndicatorShown(True) here would
+        # be a no-op flag with nothing ever actually driving it. Painted
+        # by hand instead -- see paintEvent -- driven by the exact same
+        # _drop_row() this widget's own dropEvent already uses, so the
+        # line always points at precisely where a drop will actually land.
+        self.setDropIndicatorShown(False)
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         # CopyAction, not MoveAction -- dropEvent below does the actual
         # data-level move itself (via _refresh_list(), see class
@@ -534,8 +547,20 @@ class _StackListWidget(QListWidget):
     def dragMoveEvent(self, event):
         if self._accepts(event):
             event.acceptProposedAction()
+            self._set_drop_indicator_row(self._drop_row(event.position().toPoint()))
         else:
             event.ignore()
+            self._set_drop_indicator_row(None)
+
+    def dragLeaveEvent(self, event):
+        self._set_drop_indicator_row(None)
+        super().dragLeaveEvent(event)
+
+    def _set_drop_indicator_row(self, row):
+        if row == self._drop_indicator_row:
+            return
+        self._drop_indicator_row = row
+        self.viewport().update()
 
     def _drop_row(self, pos):
         item = self.itemAt(pos)
@@ -547,6 +572,7 @@ class _StackListWidget(QListWidget):
         return row
 
     def dropEvent(self, event):
+        self._set_drop_indicator_row(None)
         mime = event.mimeData()
         target_row = self._drop_row(event.position().toPoint())
         if mime.hasFormat(LUT_PATH_MIME):
@@ -564,6 +590,34 @@ class _StackListWidget(QListWidget):
             self._panel._on_stage_reordered(source_row, target_row)
         else:
             event.ignore()
+
+    def paintEvent(self, event):
+        """Draws the drag-to-reorder drop-position indicator (see
+        __init__'s comment on why this is hand-painted rather than Qt's
+        built-in setDropIndicatorShown mechanism) as a highlighted line
+        spanning the row list's width, positioned exactly at the boundary
+        _drop_row() would actually insert at -- above the row under the
+        cursor, or below it, matching that method's own upper/lower-half
+        split. Drawn AFTER super().paintEvent() so it sits on top of the
+        already-painted rows/cards, not underneath them."""
+        super().paintEvent(event)
+        if self._drop_indicator_row is None:
+            return
+        viewport = self.viewport()
+        if self._drop_indicator_row < self.count():
+            y = self.visualItemRect(self.item(self._drop_indicator_row)).top()
+        elif self.count() > 0:
+            y = self.visualItemRect(self.item(self.count() - 1)).bottom()
+        else:
+            y = 0
+        painter = QPainter(viewport)
+        try:
+            pen = QPen(self.palette().highlight().color())
+            pen.setWidth(2)
+            painter.setPen(pen)
+            painter.drawLine(0, y, viewport.width(), y)
+        finally:
+            painter.end()
 
     def keyPressEvent(self, event):
         # Delete/Backspace removes the currently selected stage -- same
