@@ -72,6 +72,21 @@ def _app():
     return app
 
 
+def _settle_events(condition, max_ticks=20):
+    """Pump the event loop until `condition()` is true (returns on the
+    first tick it holds) or `max_ticks` is reached, whichever comes
+    first. Real hardware (a real window manager confirming a resize/
+    restoreState()) can take a variable, hardware-dependent number of
+    event-loop ticks to finish applying a layout change -- a fixed
+    tick count tuned against this sandbox's offscreen platform (no real
+    window manager, so geometry applies synchronously) isn't reliable
+    there. Always calls processEvents() at least once."""
+    for _ in range(max_ticks):
+        QApplication.processEvents()
+        if condition():
+            return
+
+
 # ---- _SafeGLViewWidget.paintGL guard ---------------------------------------
 
 def test_safe_gl_view_widget_paintgl_skips_when_invalid():
@@ -1021,10 +1036,13 @@ def test_uncheck_float_menu_lands_in_remembered_position_not_default():
     try:
         win = MainWindow()
         win.show()
-        QApplication.processEvents()  # applies the deferred restoreState()
-        QApplication.processEvents()
+        dock = win.viewer_3d_frame
+        # Applies the deferred restoreState() -- on real hardware (a real
+        # window manager actually confirming the resize) this can take more
+        # than a couple of ticks, unlike this sandbox's offscreen platform,
+        # where geometry applies synchronously with no real WM round trip.
+        _settle_events(lambda: dock.geometry() == customized_geometry)
         try:
-            dock = win.viewer_3d_frame
             assert dock.geometry() == customized_geometry, (
                 "sanity check: the remembered (non-default) layout must "
                 "actually have been restored before this test's real "
