@@ -360,7 +360,7 @@ class SampleImagePanel(QWidget):
     def _build_adapt_dialog(self):
         dialog = QDialog(self)
         make_floating_tool_window(dialog)
-        dialog.setWindowTitle("Adapt Reference Image")
+        dialog.setWindowTitle("Adapt Sample Image")
         outer = QVBoxLayout(dialog)
 
         self.adapt_checkbox = QCheckBox("Adapt color space (unchecked = Unmanaged)")
