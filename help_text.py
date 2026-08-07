@@ -42,7 +42,7 @@ This is a quick feature outline for testers, not a full reference.
   starts a stage from a neutral pass-through instead of a file.
 - **Image Library** (between Browser and LUT Library) — a shelf of
   reference images imported into the session. Import a file, then
-  double-click an entry (or use its "..." menu) to load it as the
+  double-click an entry (or use its "☰" menu) to load it as the
   Viewer's Sample or Reference image.
 - **LUT Library** — LUTs you've ingested into the session. Once
   imported, a LUT's full data lives in the session — moving, renaming, or
@@ -57,7 +57,7 @@ This is a quick feature outline for testers, not a full reference.
   Two roles: **Sample**, which shows the Stack's live result, and
   **Reference**, a second image the Stack never touches — useful for
   comparing your grade against a separate plate, still, or approved
-  frame. Load each from the Image Library or via the Viewer's "..."
+  frame. Load each from the Image Library or via the Viewer's "☰"
   menu ("Load Sample Image..." / "Load Reference Image..."). That same
   menu's "Left Image"/"Right Image" submenus each pick independently
   from three sources — Sample Before, Sample After, or Reference — and
@@ -71,7 +71,7 @@ This is a quick feature outline for testers, not a full reference.
 - **Parameters** — the inspector for whichever stage is selected in the
   Stack.
 - **Scopes** — Histogram, Waveform, and Vectorscope share one panel (pick
-  which shows from its "..." menu or the Scopes menu bar entry). Two
+  which shows from its "☰" menu or the Scopes menu bar entry). Two
   Waveform-only tree submenus live in that same menu: "Waveform Style"
   (RGB Parade / Luma / R / G / B) and "Waveform Graticule" (None / PQ /
   mV / %) — PQ overlays standard SMPTE ST 2084 nit levels
@@ -82,7 +82,7 @@ This is a quick feature outline for testers, not a full reference.
   shared across all three graticules, for dimming an overlay that's too
   bright against a given image.
 - **Graph** (bottom right, below Scopes) — two views of the Stack's baked
-  LUT, picked from its **"..."** menu (or the **Graph** menu-bar entry):
+  LUT, picked from its **"☰"** menu (or the **Graph** menu-bar entry):
   **3D**, or one of **1D Y** / **1D R** / **1D G** / **1D B**. **3D** is
   the interactive point-cloud visualization of the LUT's deformation
   lattice, with a wireframe **cage** connecting each point to its lattice
@@ -91,7 +91,7 @@ This is a quick feature outline for testers, not a full reference.
   sampled, "Cage opacity" fades the cage in/out (0–100%, defaults to
   30%). Each **1D** choice plots exactly one of the same LUT's Y/R/G/B
   response curves — output vs. input, the traditional "curves" view —
-  swept across the Stack's own Domain Min/Max (Stack's "..." menu → Edit
+  swept across the Stack's own Domain Min/Max (Stack's "☰" menu → Edit
   Size/Domain...) rather than a fixed 0–1 range, so it stays correct for
   HDR/scene-linear grades. All views update live and stay in sync with
   the Stack; switching between them never loses data or resizes the
@@ -105,7 +105,7 @@ is no fixed layout to fight against; the arrangement shown in this manual
 is only where LUTier starts, not a constraint.
 
 Every panel can also be shown/hidden from the **Workspace** menu (or its
-own Shift+1 through Shift+0 shortcut), and every panel's "..." button in
+own Shift+1 through Shift+0 shortcut), and every panel's "☰" button in
 its top-right corner has the same actions as its matching entry in the
 menu bar — whichever you find faster. Any panel can also be **floated**
 out of the main window into its own window without dragging — Cmd+Shift+1
@@ -128,7 +128,7 @@ open, and separate from a saved session — see Sessions below).
 ## Stack operators
 
 The Viewer previews raw code values, Unmanaged by default — use the
-Viewer's "..." menu's **Adapt Sample Image...** to declare a source
+Viewer's "☰" menu's **Adapt Sample Image...** to declare a source
 space and convert it non-destructively before preview.
 
 - **Color Space Conversion** — "these code values are actually in space
@@ -183,7 +183,7 @@ space and convert it non-destructively before preview.
 
 Blend two parallel chains of stages back into one signal — useful for
 blending two LMTs, or any two grades, against each other. From the
-Stack's **"..."** menu or **Stack** menu bar entry, **Add Fork (Split +
+Stack's **"☰"** menu or **Stack** menu bar entry, **Add Fork (Split +
 Merge)** adds a **Fork Split** and a matching **Fork Merge** as a pair,
 styled like any other stage row. Add any stage kind after Fork Split,
 then use that row's own **Branch A / Branch B** dropdown (in the stage
@@ -212,7 +212,7 @@ silently showing a stale preview.
 
 ## Grid size and domain
 
-Set from the Stack's **"..."** menu or **Stack** menu bar entry →
+Set from the Stack's **"☰"** menu or **Stack** menu bar entry →
 **Edit Size/Domain...**. Grid size is the resolution of the final baked
 LUT (9 through 97, or type your own — 33 is the common default). Domain
 is the input range each channel is sampled over, normally [0, 1];

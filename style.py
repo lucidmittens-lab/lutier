@@ -776,27 +776,30 @@ QLabel#panelTitle {{
     color: {_HINT_TEXT};
 }}
 
-/* Float/close buttons on the dock title bar (see main_window.py's
+/* Close button on the dock title bar (see main_window.py's
    _build_dock_title_bar) -- flat/borderless at rest (autoRaise=True is
    set in code; this QSS just adds the accent hover state on top), same
    "reveals its own chrome on hover, not before" feel as
-   QToolButton#stageDeleteButton below. No icon color override here --
-   these use QStyle.standardIcon()'s pre-rendered pixmaps (the same
-   icons Qt's own native title-bar buttons would use), which aren't
-   text-colorable via QSS `color` the way a glyph-based QToolButton is;
-   only the hover backdrop is themeable. */
-/* panelMenuButton (the "..." corner menu every panel builds via
+   QToolButton#stageDeleteButton below. Both this and panelMenuButton
+   (below) are plain text-glyph buttons ("✕"/"☰") now, not QStyle
+   standard-icon pixmaps -- per Tom, a pixmap icon next to a text glyph
+   in the same row read as two different rendering styles side by side.
+   Being plain text also means both ARE colorable via QSS `color` now,
+   unlike a pixmap icon -- no override needed yet (default palette text
+   color reads fine against panelTitleRow's background), but this is
+   where one would go if that ever changes. */
+/* panelMenuButton (the "☰" corner menu every panel builds via
    _build_menu_button/_build_list_menu_button) folded into this same
    rule per Tom -- it was left at Fusion's raw default QToolButton
    chrome (raised, bordered) since nothing styled it before, which read
-   as visibly rougher than the flat float/close buttons right next to
-   it. Menu-indicator arrow suppressed separately below -- setting a
-   menu via setMenu() makes Fusion reserve space for and draw a small
-   arrow regardless of ToolButtonPopupMode (InstantPopup here), so this
-   button was showing BOTH "..." and an arrow for the same single
-   action; only these three buttons ever have a menu-indicator subcontrol
-   to suppress at all, so the QToolButton::menu-indicator rule is safe
-   as a blanket app-wide rule. */
+   as visibly rougher than the flat close button right next to it.
+   Menu-indicator arrow suppressed separately below -- setting a menu
+   via setMenu() makes Fusion reserve space for and draw a small arrow
+   regardless of ToolButtonPopupMode (InstantPopup here), so this button
+   was showing BOTH "☰" and an arrow for the same single action; only
+   these three buttons ever have a menu-indicator subcontrol to suppress
+   at all, so the QToolButton::menu-indicator rule is safe as a blanket
+   app-wide rule. */
 QToolButton#dockCloseButton, QToolButton#panelMenuButton {{
     border: none;
     background: transparent;
@@ -814,8 +817,8 @@ QToolButton#dockCloseButton:hover, QToolButton#panelMenuButton:hover {{
    QToolButton with setMenu() called on it, regardless of
    ToolButtonPopupMode -- see panelMenuButton's own comment above.
    image: none removes the arrow glyph; width: 0px reclaims the space
-   Fusion otherwise reserves for it, so "..." sits centered exactly like
-   dockCloseButton's icon does, not off-center to make room for an
+   Fusion otherwise reserves for it, so "☰" sits centered exactly like
+   dockCloseButton's "✕" does, not off-center to make room for an
    arrow that's no longer there. */
 QToolButton::menu-indicator {{
     image: none;

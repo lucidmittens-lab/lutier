@@ -139,7 +139,7 @@ class LUTLibraryPanel(QWidget):
         self.menu_button = QToolButton()
         self.menu_button.setObjectName("panelMenuButton")
         self.menu_button.setAutoRaise(True)
-        self.menu_button.setText("...")
+        self.menu_button.setText("☰")  # hamburger icon, per Tom (was "...")
         self.menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QMenu(self.menu_button)
         self.populate_menu(menu)

@@ -216,7 +216,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDockWidget, QVBoxLayout, QHBoxLayout,
     QComboBox, QFileDialog, QMessageBox, QLabel, QCheckBox,
-    QDialog, QTextBrowser, QDialogButtonBox, QToolButton, QStyle, QColorDialog,
+    QDialog, QTextBrowser, QDialogButtonBox, QToolButton, QColorDialog,
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtGui import QAction, QKeySequence, QColor
@@ -414,13 +414,26 @@ def _build_dock_title_bar(dock, title, corner_widget=None):
     QSS subcontrol -- an ordinary button is fully stylable with this
     file's existing QToolButton/QPushButton rules and sits in this same
     custom row next to corner_widget, where a native subcontrol button
-    (tied to Qt's own title bar) couldn't. Its icon comes from the
-    current QStyle's standard set (SP_TitleBarCloseButton) -- the same
-    icon Qt's own native title bar button would have used, so this
-    doesn't invent new iconography, just relocates/re-implements it.
-    `dock` (the QDockWidget this title bar belongs to) needs to be
-    passed in now, unlike before, so this button has something to call
-    close() on.
+    (tied to Qt's own title bar) couldn't. `dock` (the QDockWidget this
+    title bar belongs to) needs to be passed in now, unlike before, so
+    this button has something to call close() on.
+
+    Text glyph ("✕"), not a QStyle standard icon (per Tom -- the "..."
+    corner menu became a "☰" text glyph, and the close button's old
+    QStyle.standardIcon() pixmap read as visually mismatched next to it,
+    a different rendering style sitting in the same row). A plain text
+    QToolButton is also colorable via QSS `color` the way a pixmap icon
+    never was, so both buttons can be kept in visual sync going forward.
+
+    ALWAYS LAST in the row (per Tom: "the X always on the right... all
+    the way at the end, so it's in the same place on a given panel") --
+    corner_widget is added to the layout BEFORE close_button below, not
+    after, specifically so close_button's position never depends on
+    whether a given panel happens to have a corner_widget at all. Before
+    this, a panel WITH a corner_widget put it to the right of Close
+    (Close in the middle), while a panel with none had Close at the true
+    end -- two different positions depending on panel, not the
+    consistent "always the rightmost button" this fixes.
 
     NO float button here (per Tom, removed): dragging a panel by this
     title bar already floats it via Qt's own native drag-to-float, and
@@ -461,17 +474,19 @@ def _build_dock_title_bar(dock, title, corner_widget=None):
     close_button.setObjectName("dockCloseButton")
     close_button.setAutoRaise(True)
     close_button.setToolTip("Close")
-    close_button.setIcon(
-        row_widget.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarCloseButton))
+    close_button.setText("✕")
     # dock.close() -- NOT dock.hide() -- so this goes through
     # _PanelDockWidget's own closeEvent override exactly like Qt's native
     # close button would have: redocks if floating, hides (in sync with
     # toggleViewAction/the Workspace menu) if already docked.
     close_button.clicked.connect(dock.close)
-    row.addWidget(close_button)
 
+    # corner_widget BEFORE close_button -- see this function's own
+    # docstring on why close_button must always be the last (rightmost)
+    # widget in the row regardless of whether a given panel has one.
     if corner_widget is not None:
         row.addWidget(corner_widget)
+    row.addWidget(close_button)
     return row_widget
 
 

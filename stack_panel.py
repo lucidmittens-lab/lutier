@@ -678,7 +678,7 @@ class StackPanel(QObject):
         self.list_menu_button = QToolButton()
         self.list_menu_button.setObjectName("panelMenuButton")
         self.list_menu_button.setAutoRaise(True)
-        self.list_menu_button.setText("...")
+        self.list_menu_button.setText("☰")  # hamburger icon, per Tom (was "...")
         self.list_menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QMenu(self.list_menu_button)
         self.populate_menu(menu)
