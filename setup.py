@@ -117,6 +117,7 @@ OPTIONS = {
         'floating_dialog',
         'format_writers',
         'help_text',
+        'hover_inspector',
         'image_library',
         'image_library_panel',
         'lut_library',

@@ -62,6 +62,7 @@ from PySide6.QtWidgets import (
 
 from stack_memory import StackMemoryLibrary
 import stack_memory_file_io
+import hover_inspector
 
 MEMORY_FILE_FILTER = "LUTier Stack Memory (*.ltm);;All files (*)"
 
@@ -89,8 +90,23 @@ class StackMemoriesPanel(QWidget):
         self.list_widget = QListWidget()
         self.list_widget.itemDoubleClicked.connect(self._on_load_clicked)
         layout.addWidget(self.list_widget, stretch=1)
+        hover_inspector.register(self.list_widget, self._hover_info_for_item)
 
         self._build_menu_button()
+
+    def _hover_info_for_item(self, item):
+        """Alt+hover info card content (see hover_inspector.py) -- a
+        stage-by-stage breakdown, which the row's own compact "N stages"
+        label (see _refresh_list) doesn't show at all."""
+        row = self.list_widget.row(item)
+        if not (0 <= row < len(self.library.memories)):
+            return None
+        memory = self.library.memories[row]
+        lines = [memory.name, f"{len(memory.stack.stages)} stage(s):"]
+        for i, stage in enumerate(memory.stack.stages, start=1):
+            state = "on" if stage.enabled else "OFF"
+            lines.append(f"  {i}. {stage.label} [{stage.kind}, {state}, {stage.opacity:.0%}]")
+        return "\n".join(lines)
 
     def _build_menu_button(self):
         """The Stack Memories panel's "..." header menu (see corner_widget

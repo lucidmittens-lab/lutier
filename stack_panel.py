@@ -120,6 +120,7 @@ import color_balance as cb
 from color_wheel_widget import ColorBalanceWheel
 from app_logic import load_lut_any_format, create_identity_lut, list_available_colourspaces
 from printer_lights import POINTS_PER_STOP, DEFAULT_WORKING_COLOURSPACE
+import hover_inspector
 from browser_panel import LUT_PATH_MIME
 from floating_dialog import make_floating_tool_window, show_floating
 # style.HINT_TEXT_HEX -- see style.py's FOURTEENTH PASS docstring: hint
@@ -194,6 +195,58 @@ def _format_fork_merge_label(params):
 # grid size/domain differ from a freshly-created stack's, so it's obvious
 # at a glance whether either has actually been touched.
 _STACK_DEFAULTS = st.Stack()
+
+
+def _stage_info_text(stage):
+    """Alt+hover info card content (see hover_inspector.py) for one
+    Stage -- a per-kind summary of the params the Parameters panel would
+    otherwise make you select the stage and look at. Deliberately not
+    exhaustive for every kind's every param (e.g. skips config_name when
+    it's just the default) -- enough to answer "what is this stage
+    actually doing" at a glance, not a full dump."""
+    p = stage.params
+    lines = [stage.label, f"[{stage.kind}]"]
+    if not stage.enabled:
+        lines.append("Disabled")
+    if stage.opacity < 1.0:
+        lines.append(f"Opacity: {stage.opacity:.0%}")
+    if stage.branch:
+        lines.append(f"Branch: {stage.branch.upper()}")
+
+    if stage.kind == "lut":
+        source_kind = p.get("source_kind")
+        if source_kind == "file":
+            lines.append(f"Source: {p.get('source_path') or '?'}")
+        elif source_kind == "identity":
+            lines.append(f"Identity, size {p.get('identity_size', '?')}")
+        elif source_kind == "embedded":
+            lines.append("Source: LUT Library (embedded)")
+        retarget_from, retarget_to = p.get("retarget_from"), p.get("retarget_to")
+        if retarget_from is not None and retarget_to is not None:
+            lines.append(f"Retarget: {retarget_from} -> {retarget_to}")
+    elif stage.kind == "printer_lights":
+        lines.append(
+            f"R {p.get('r_points', 0.0):+.1f}  G {p.get('g_points', 0.0):+.1f}  "
+            f"B {p.get('b_points', 0.0):+.1f} points")
+        lines.append(f"Working space: {p.get('working_colourspace', '?')}")
+    elif stage.kind == "aces_drt":
+        lines.append(f"{p.get('working_colourspace', '?')} -> {p.get('display', '?')}/{p.get('view', '?')}")
+    elif stage.kind == "cdl":
+        r, g, b = p.get("slope", cdl.IDENTITY_SLOPE)
+        ro, go, bo = p.get("offset", cdl.IDENTITY_OFFSET)
+        rp, gp, bp = p.get("power", cdl.IDENTITY_POWER)
+        lines.append(f"S({r:.3f},{g:.3f},{b:.3f}) O({ro:.3f},{go:.3f},{bo:.3f}) P({rp:.3f},{gp:.3f},{bp:.3f})")
+        lines.append(f"Sat {p.get('sat', cdl.IDENTITY_SAT):.3f}  Style: {p.get('style', cdl.DEFAULT_STYLE)}")
+        if not p.get("sop_enabled", True):
+            lines.append("SOP: bypassed")
+        if not p.get("sat_enabled", True):
+            lines.append("SAT: bypassed")
+    elif stage.kind == "colorspace":
+        lines.append(f"{p.get('src', '?')} -> {p.get('dst', '?')}")
+    elif stage.kind == "fork_merge":
+        lines.append(f"Blend: {p.get('blend', 0.5):.0%}")
+
+    return "\n".join(lines)
 
 
 class _ElidingLabel(QLabel):
@@ -711,6 +764,7 @@ class StackPanel(QObject):
         self.list_widget = _StackListWidget(self)
         self.list_widget.currentRowChanged.connect(self._on_selection_changed)
         layout.addWidget(self.list_widget, stretch=1)
+        hover_inspector.register(self.list_widget, self._hover_info_for_item)
 
         # No more standalone "Enabled" checkbox here -- each row's own
         # enabled indicator (the check/cross button) is directly clickable
@@ -1032,6 +1086,27 @@ class StackPanel(QObject):
         self._emit_changed()
 
     # ---- stage list -------------------------------------------------------
+
+    def _hover_info_for_item(self, item):
+        """Alt+hover info card content (see hover_inspector.py). Rows
+        aren't 1:1 with self.stack.stages once a fork region is in play
+        (see _refresh_list's own docstring) -- self._row_stage_ids[row]
+        is the same per-row stage-ID lookup _on_selection_changed/drag-
+        and-drop already rely on, so this stays correct for a fork-grid
+        row exactly the same way they do. A header/spacer row (empty
+        stage-ID list) has nothing to show."""
+        row = self.list_widget.row(item)
+        if not (0 <= row < len(self._row_stage_ids)):
+            return None
+        stage_ids = self._row_stage_ids[row]
+        if not stage_ids:
+            return None
+        blocks = []
+        for stage_id in stage_ids:
+            stage = self.stack.find_stage(stage_id)
+            if stage is not None:
+                blocks.append(_stage_info_text(stage))
+        return "\n---\n".join(blocks) if blocks else None
 
     def _refresh_list(self, keep_selection=None):
         """Rebuilds every row from self.stack.stages, in stack order,

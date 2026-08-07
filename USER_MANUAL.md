@@ -89,6 +89,14 @@ floating panels/dialogs and other applications entirely. Closing a
 floated panel's window, or floating it again, puts it right back into
 the main window.
 
+Hold **Alt** while hovering over an entry in Stack Memories, LUT
+Library, CDL Library, Image Library, or a stage in the Stack itself to
+see a floating info card with that entry's full details near the
+cursor — handy for a saved Stack Memory's full stage-by-stage
+breakdown, or a Library entry's full source file path, without
+selecting it first. Move the cursor off the entry, or release Alt, to
+dismiss it.
+
 LUTier remembers your panel arrangement (position, size, shown/hidden,
 floating, window size — however you last left it, dragged or not)
 automatically between launches — no separate save step. The Workspace

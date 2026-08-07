@@ -77,6 +77,7 @@ from PySide6.QtWidgets import (
 
 from cdl_library import CDLLibrary, CDLEntry
 import cdl_file_io
+import hover_inspector
 from browser_panel import CDL_PATH_MIME
 
 CDL_FILE_FILTER = "ASC CDL (*.cc *.cdl *.ccc);;All files (*)"
@@ -133,6 +134,7 @@ class CDLLibraryPanel(QWidget):
         self.list_widget = _CDLDropListWidget(self)
         self.list_widget.itemDoubleClicked.connect(self._on_apply_clicked)
         layout.addWidget(self.list_widget, stretch=1)
+        hover_inspector.register(self.list_widget, self._hover_info_for_item)
 
         self._build_menu_button()
 
@@ -200,6 +202,31 @@ class CDLLibraryPanel(QWidget):
             f"  S({r:.3f},{g:.3f},{b:.3f}) O({ro:.3f},{go:.3f},{bo:.3f}) "
             f"P({rp:.3f},{gp:.3f},{bp:.3f}) Sat {entry.sat:.3f}"
         )
+
+    def _hover_info_for_item(self, item):
+        """Alt+hover info card content (see hover_inspector.py) -- adds
+        the full source path and style on top of what _entry_summary_text
+        already shows in the row itself."""
+        row = self.list_widget.row(item)
+        if not (0 <= row < len(self.library.entries)):
+            return None
+        entry = self.library.entries[row]
+        lines = [entry.name]
+        if entry.source_path:
+            lines.append(entry.source_path)
+        r, g, b = entry.slope
+        ro, go, bo = entry.offset
+        rp, gp, bp = entry.power
+        lines.append(f"Slope: {r:.4f}, {g:.4f}, {b:.4f}")
+        lines.append(f"Offset: {ro:.4f}, {go:.4f}, {bo:.4f}")
+        lines.append(f"Power: {rp:.4f}, {gp:.4f}, {bp:.4f}")
+        lines.append(f"Saturation: {entry.sat:.4f}")
+        lines.append(f"Style: {entry.style}")
+        if not entry.sop_enabled:
+            lines.append("SOP: bypassed")
+        if not entry.sat_enabled:
+            lines.append("SAT: bypassed")
+        return "\n".join(lines)
 
     def _refresh_list(self, keep_selection=None):
         self.list_widget.blockSignals(True)

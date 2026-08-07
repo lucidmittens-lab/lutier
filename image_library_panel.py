@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 
 from app_logic import load_image_as_array
 from image_library import ImageLibrary, ImageLibraryEntry
+import hover_inspector
 
 IMAGE_FILE_FILTER = (
     "Image files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.exr)"
@@ -67,6 +68,7 @@ class ImageLibraryPanel(QWidget):
         # (Apply to Stack) and CDL Library (Apply to Stack) already use.
         self.list_widget.itemDoubleClicked.connect(self._on_load_as_sample_clicked)
         layout.addWidget(self.list_widget, stretch=1)
+        hover_inspector.register(self.list_widget, self._hover_info_for_item)
 
         self._build_menu_button()
 
@@ -117,6 +119,23 @@ class ImageLibraryPanel(QWidget):
         provenance = f"  [{entry.source_filename}]" if entry.source_filename else ""
         space = entry.source_colourspace or "Unmanaged"
         return f"{entry.name}{provenance}\n  {w}x{h}, {space}"
+
+    def _hover_info_for_item(self, item):
+        """Alt+hover info card content (see hover_inspector.py) -- adds
+        the full source path on top of what _entry_summary_text already
+        shows in the row itself (just the filename)."""
+        row = self.list_widget.row(item)
+        if not (0 <= row < len(self.library.entries)):
+            return None
+        entry = self.library.entries[row]
+        lines = [entry.name]
+        if entry.source_path:
+            lines.append(entry.source_path)
+        if entry.array is not None:
+            h, w = entry.array.shape[:2]
+            lines.append(f"{w}x{h}")
+        lines.append(f"Color space: {entry.source_colourspace or 'Unmanaged'}")
+        return "\n".join(lines)
 
     def _refresh_list(self, keep_selection=None):
         self.list_widget.blockSignals(True)

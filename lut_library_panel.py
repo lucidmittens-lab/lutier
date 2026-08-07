@@ -64,6 +64,7 @@ from PySide6.QtWidgets import (
 from app_logic import load_lut_any_format, SUPPORTED_EXTENSIONS
 from lut_library import LUTLibrary, LUTLibraryEntry
 from browser_panel import LUT_PATH_MIME
+import hover_inspector
 
 # Ingesting into the library is a one-time, keep-forever read (per Tom's
 # "can't go offline" requirement) -- bake CLF chains at export-quality
@@ -128,6 +129,7 @@ class LUTLibraryPanel(QWidget):
         self.list_widget = _LUTDropListWidget(self)
         self.list_widget.itemDoubleClicked.connect(self._on_apply_clicked)
         layout.addWidget(self.list_widget, stretch=1)
+        hover_inspector.register(self.list_widget, self._hover_info_for_item)
 
         self._build_menu_button()
 
@@ -195,6 +197,26 @@ class LUTLibraryPanel(QWidget):
         if keep_selection is not None and 0 <= keep_selection < len(self.library.entries):
             self.list_widget.setCurrentRow(keep_selection)
         self.list_widget.blockSignals(False)
+
+    def _hover_info_for_item(self, item):
+        """Alt+hover info card content (see hover_inspector.py) -- the
+        full source path (the row itself only shows the filename) and
+        domain range, on top of what _entry_summary_text already shows."""
+        row = self.list_widget.row(item)
+        if not (0 <= row < len(self.library.entries)):
+            return None
+        entry = self.library.entries[row]
+        lines = [entry.name]
+        if entry.source_path:
+            lines.append(entry.source_path)
+        table = getattr(entry.lut, "table", None)
+        if table is not None:
+            is_3d = table.ndim == 4
+            lines.append(f"{'3D' if is_3d else '1D'} LUT, size {table.shape[0]}")
+        domain = getattr(entry.lut, "domain", None)
+        if domain is not None:
+            lines.append(f"Domain: {domain.tolist() if hasattr(domain, 'tolist') else domain}")
+        return "\n".join(lines)
 
     # ---- import (ingest a real file) -----------------------------------
 
