@@ -56,6 +56,8 @@ longer mean anything against a dock-based layout.
 import json
 from pathlib import Path
 
+from atomic_write import atomic_open
+
 WORKSPACE_FORMAT = "lutier-workspace"
 WORKSPACE_FORMAT_VERSION = 2
 
@@ -94,7 +96,8 @@ def save_workspace_preset(path, state):
     Workspace Preset... action, or save_remembered_workspace below)
     decide how to surface or swallow that, same "this module just does
     the I/O" convention as session_io.save_session."""
-    Path(path).write_text(json.dumps(_wrap(state), indent=2), encoding="utf-8")
+    with atomic_open(path, "w") as f:
+        f.write(json.dumps(_wrap(state), indent=2))
 
 
 def load_workspace_preset(path):

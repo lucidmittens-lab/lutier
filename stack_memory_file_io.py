@@ -20,6 +20,7 @@ import json
 
 from stack_memory import StackMemory
 import session_io
+from atomic_write import atomic_open
 
 MEMORY_FORMAT = "lutier-stack-memory"
 MEMORY_VERSION = 1
@@ -39,7 +40,7 @@ def export_memory(memory, path):
         "name": memory.name,
         "stack": session_io.stack_to_session_dict(memory.stack),
     }
-    with open(path, "w") as f:
+    with atomic_open(path, "w") as f:
         json.dump(data, f, indent=2)
 
 

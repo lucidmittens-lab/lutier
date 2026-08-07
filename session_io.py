@@ -162,6 +162,7 @@ from stack_memory import StackMemory, StackMemoryLibrary
 from cdl_library import CDLEntry, CDLLibrary
 from lut_library import LUTLibraryEntry, LUTLibrary
 from image_library import ImageLibraryEntry, ImageLibrary
+from atomic_write import atomic_open
 
 SESSION_FORMAT = "lutier-session"
 SESSION_VERSION = 7
@@ -630,7 +631,7 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
             if image_library is not None else []
         ),
     }
-    with open(path, "w") as f:
+    with atomic_open(path, "w") as f:
         json.dump(data, f, indent=2)
 
 
