@@ -132,11 +132,20 @@ def apply_printer_lights_in_working_space(image_array, working_colourspace,
     themselves.
     """
     if aces_drt.OCIO_AVAILABLE:
-        image_array = np.asarray(image_array, dtype=np.float32)
+        # No explicit float32 cast here -- aces_drt.decode_to_linear/
+        # encode_from_linear both route through _apply_ocio_processor,
+        # whose OCIO PackedImageDesc requires float32 regardless of what's
+        # passed in (see that function's own docstring), so casting here
+        # first was redundant, not a precision choice this module makes:
+        # staying in float64 as long as possible doesn't buy back any
+        # precision OCIO's own API contract already gives up at its
+        # boundary (see test_printer_lights.py's
+        # test_bake_zero_points_reproduces_source_for_other_working_spaces
+        # for the actual, unavoidable-here float32 error this produces for
+        # a gamma-shaped working space).
         linear = aces_drt.decode_to_linear(image_array, working_colourspace)
         trimmed_linear = apply_printer_lights(linear, r_points, g_points, b_points)
-        return aces_drt.encode_from_linear(
-            np.asarray(trimmed_linear, dtype=np.float32), working_colourspace)
+        return aces_drt.encode_from_linear(trimmed_linear, working_colourspace)
     return apply_printer_lights_in_colourspace(
         image_array, working_colourspace, r_points, g_points, b_points)
 
