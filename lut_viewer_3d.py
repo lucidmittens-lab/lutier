@@ -249,6 +249,12 @@ class LutViewer3D(QWidget):
         self._current_lut = None
         self._scatter_item = None
         self._cage_item = None
+        # See set_lut/showEvent below -- True when a set_lut() call was
+        # skipped because this panel wasn't visible at the time (hidden
+        # via the Workspace menu, or tabbed behind another panel), so the
+        # next time it actually becomes visible again knows there's a
+        # real rebuild still owed, not just a no-op showEvent.
+        self._stale_lut_pending = False
         # See rebuild_gl_view's docstring (DELETELATER RACE) -- every
         # gl_view discarded by a rebuild gets appended here and NEVER
         # removed, on purpose: this is what keeps a real Python reference
@@ -602,10 +608,30 @@ class LutViewer3D(QWidget):
         result of app_logic.load_lut_any_format(). Updates BOTH the 3D
         scatter+cage and the 1D YRGB curves regardless of which view is
         currently selected, so switching views always shows current data
-        (see this module's docstring)."""
+        (see this module's docstring).
+
+        Skips the actual rebuild (real GL buffer uploads plus a curve
+        recompute) while this panel isn't visible -- hidden via the
+        Workspace menu, or tabbed behind another panel -- since
+        main_window._on_stack_changed calls this on EVERY stack edit,
+        including every tick of a live slider drag, whether or not
+        anyone can currently see the result. showEvent below runs the
+        deferred rebuild the next time this panel actually becomes
+        visible again, so it's never stale once shown."""
         self._current_lut = lut
+        if not self.isVisible():
+            self._stale_lut_pending = True
+            return
+        self._stale_lut_pending = False
         self._update_3d_view(lut)
         self._update_curve_plot(lut)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._stale_lut_pending and self._current_lut is not None:
+            self._stale_lut_pending = False
+            self._update_3d_view(self._current_lut)
+            self._update_curve_plot(self._current_lut)
 
     def _update_3d_view(self, lut):
         """Rebuilds both the scatter points AND the wireframe cage from

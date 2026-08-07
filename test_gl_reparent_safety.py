@@ -141,6 +141,7 @@ def test_set_lut_centers_camera_on_data_not_origin():
     real bounding-box center is exactly (0.5, 0.5, 0.5), not (0, 0, 0)."""
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     lut = create_identity_lut(size=5)
     viewer.set_lut(lut)
 
@@ -155,6 +156,7 @@ def test_set_lut_centers_camera_on_data_not_origin():
 def test_set_lut_sets_distance_from_actual_data_extent():
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     lut = create_identity_lut(size=5)
     viewer.set_lut(lut)
 
@@ -165,9 +167,59 @@ def test_set_lut_sets_distance_from_actual_data_extent():
           "actual data extent (2.5x), not a fixed guess -- OK")
 
 
+def test_set_lut_skips_rebuild_while_hidden_then_catches_up_on_show():
+    """The actual perf fix: main_window._on_stack_changed calls set_lut()
+    on EVERY stack edit, including every tick of a live slider drag,
+    whether or not the 3D Viewer panel is currently visible (hidden via
+    the Workspace menu, or tabbed behind another panel) -- paying for a
+    real GL scatter/cage rebuild plus a curve recompute for a view nobody
+    can see. Confirms the skip-while-hidden/catch-up-on-show contract
+    directly, not just indirectly via other tests now needing .show()."""
+    _app()
+    viewer = lut_viewer_3d.LutViewer3D()  # deliberately NOT shown yet
+    assert not viewer.isVisible()
+
+    lut = create_identity_lut(size=5)
+    viewer.set_lut(lut)
+
+    assert viewer._stale_lut_pending is True
+    assert viewer._scatter_item is None, (
+        "set_lut must not do the real rebuild while the panel is hidden"
+    )
+    assert viewer._current_lut is lut, (
+        "the LUT itself must still be recorded, so showEvent has something to apply"
+    )
+
+    viewer.show()
+
+    assert viewer._stale_lut_pending is False
+    assert viewer._scatter_item is not None, (
+        "showEvent must run the deferred rebuild now that the panel is visible"
+    )
+    print("LutViewer3D.set_lut/showEvent: skips the real rebuild while "
+          "hidden, catches up automatically once shown -- OK")
+
+
+def test_set_lut_while_visible_still_rebuilds_immediately():
+    """The non-regression half of the same guard: a visible panel must
+    keep behaving exactly as before -- no deferred/stale update, no
+    dependence on a later showEvent that may never come again."""
+    _app()
+    viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()
+
+    viewer.set_lut(create_identity_lut(size=5))
+
+    assert viewer._stale_lut_pending is False
+    assert viewer._scatter_item is not None
+    print("LutViewer3D.set_lut: still rebuilds immediately while visible "
+          "-- OK")
+
+
 def test_frame_camera_on_empty_positions_does_not_raise():
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     viewer._frame_camera_on(np.empty((0, 3)))
     print("LutViewer3D._frame_camera_on: empty positions array is a "
           "safe no-op -- OK")
@@ -179,6 +231,7 @@ def test_rebuild_gl_view_reframes_camera_on_the_new_widget():
     LUT, not left at the fresh widget's own (0,0,0) default."""
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     lut = create_identity_lut(size=5)
     viewer.set_lut(lut)
 
@@ -203,6 +256,7 @@ def test_cage_opacity_slider_default_matches_pyqtgraph_grid_default():
     cage's starting point too, not re-tuned."""
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     assert viewer.cage_opacity_slider.value() == 30
     print("LutViewer3D: cage opacity slider defaults to 30% -- OK")
 
@@ -214,6 +268,7 @@ def test_set_lut_builds_a_cage_connecting_the_scatter_points():
     source."""
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     lut = create_identity_lut(size=6)
     viewer.set_lut(lut)
 
@@ -230,6 +285,7 @@ def test_set_lut_builds_a_cage_connecting_the_scatter_points():
 def test_cage_opacity_slider_updates_cage_item_color():
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     viewer.set_lut(create_identity_lut(size=6))
     viewer.cage_opacity_slider.setValue(80)
     assert viewer._cage_opacity == 0.8
@@ -250,6 +306,7 @@ def test_cage_opacity_survives_density_change_and_rebuild():
     re-applies the slider's value. Confirms it does, across both paths."""
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     viewer.set_lut(create_identity_lut(size=6))
     viewer.cage_opacity_slider.setValue(65)
     old_cage_item = viewer._cage_item
@@ -271,6 +328,7 @@ def test_cage_opacity_survives_density_change_and_rebuild():
 def test_no_lut_loaded_means_no_cage_item():
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     assert viewer._cage_item is None
     print("LutViewer3D: no cage item exists before any LUT is loaded -- OK")
 
@@ -283,6 +341,7 @@ def test_no_lut_loaded_means_no_cage_item():
 def test_menu_button_exists_and_defaults_to_3d_checked():
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     assert viewer.menu_button.menu() is not None
     actions = {a.text(): a for a in viewer.menu_button.menu().actions()}
     assert set(actions) == set(lut_viewer_3d.VIEW_CHOICES)
@@ -297,6 +356,7 @@ def test_menu_button_exists_and_defaults_to_3d_checked():
 def test_default_view_shows_gl_panel():
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     assert viewer.stack.currentWidget() is viewer._gl_panel
     print("LutViewer3D: defaults to showing the GL panel (3D view) -- OK")
 
@@ -304,6 +364,7 @@ def test_default_view_shows_gl_panel():
 def test_selecting_1d_view_shows_curve_plot_with_exactly_one_curve_visible():
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     viewer.set_lut(create_identity_lut(size=6))
 
     for view_name, channel in lut_viewer_3d._VIEW_TO_CURVE_CHANNEL.items():
@@ -321,6 +382,7 @@ def test_selecting_1d_view_shows_curve_plot_with_exactly_one_curve_visible():
 def test_selecting_3d_after_1d_restores_gl_panel():
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     viewer._on_view_changed(lut_viewer_3d.VIEW_1D_R)
     viewer._on_view_changed(lut_viewer_3d.VIEW_3D)
     assert viewer.stack.currentWidget() is viewer._gl_panel
@@ -337,6 +399,7 @@ def test_view_switch_keeps_stack_minimum_size_hint_constant():
     what actually prevents the panel from resizing on every switch."""
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     min_at_3d = viewer.stack.minimumSizeHint().height()
     for view_name in lut_viewer_3d.VIEW_CHOICES:
         viewer._on_view_changed(view_name)
@@ -357,6 +420,7 @@ def test_mode_switch_never_destroys_or_rebuilds_gl_view():
     (DELETELATER RACE et al)."""
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     gl_view_before = viewer.gl_view
     for _ in range(5):
         for view_name in lut_viewer_3d.VIEW_CHOICES:
@@ -379,6 +443,7 @@ def test_corner_menu_and_menu_bar_menu_stay_in_sync():
     _app()
     from PySide6.QtWidgets import QMenu
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     second_menu = QMenu()
     second_actions = viewer.populate_menu(second_menu)
     assert len(viewer._view_action_sets) == 2
@@ -399,6 +464,7 @@ def test_corner_menu_and_menu_bar_menu_stay_in_sync():
 def test_set_lut_populates_curve_plot_with_domain_aware_data():
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     lut = create_identity_lut(size=9)
     viewer.set_lut(lut)
 
@@ -421,6 +487,7 @@ def test_curve_plot_updates_even_while_3d_view_is_current():
     CURRENT LUT, not whatever was loaded the last time it was visible."""
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     assert viewer.stack.currentWidget() is viewer._gl_panel  # still 3D
     viewer.set_lut(create_identity_lut(size=9))
     assert len(viewer._curve_items["r"].xData) == viewer._curve_num_samples
@@ -431,6 +498,7 @@ def test_curve_plot_updates_even_while_3d_view_is_current():
 def test_clear_resets_curve_plot_data_too():
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     viewer.set_lut(create_identity_lut(size=9))
     viewer.clear()
     for channel in ("y", "r", "g", "b"):
@@ -442,6 +510,7 @@ def test_clear_resets_curve_plot_data_too():
 def test_clear_also_removes_cage_item():
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     viewer.set_lut(create_identity_lut(size=6))
     assert viewer._cage_item is not None
     viewer.clear()
@@ -455,6 +524,7 @@ def test_clear_also_removes_cage_item():
 def test_rebuild_gl_view_replaces_the_widget_but_keeps_the_lut():
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     lut = create_identity_lut(size=5)
     viewer.set_lut(lut)
 
@@ -487,6 +557,7 @@ def test_rebuild_gl_view_with_no_lut_loaded_does_not_raise():
     set."""
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     assert viewer._current_lut is None
     viewer.rebuild_gl_view()
     assert viewer._current_lut is None
@@ -509,6 +580,7 @@ def test_rebuild_gl_view_stays_in_the_same_layout_position():
     only the QStackedWidget, not gl_view directly."""
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     gl_panel_layout = viewer._gl_panel.layout()
     gl_view_index_before = gl_panel_layout.indexOf(viewer.gl_view)
     viewer.rebuild_gl_view()
@@ -577,6 +649,7 @@ def test_rebuild_gl_view_keeps_discarded_widget_referenced():
     permanent-reference list is really what's keeping it alive."""
     _app()
     viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     old_view = viewer.gl_view
     assert old_view not in viewer._pending_gl_view_deletions
 
@@ -1259,6 +1332,8 @@ if __name__ == "__main__":
     test_safe_gl_view_widget_paintgl_calls_through_when_valid()
     test_set_lut_centers_camera_on_data_not_origin()
     test_set_lut_sets_distance_from_actual_data_extent()
+    test_set_lut_skips_rebuild_while_hidden_then_catches_up_on_show()
+    test_set_lut_while_visible_still_rebuilds_immediately()
     test_frame_camera_on_empty_positions_does_not_raise()
     test_rebuild_gl_view_reframes_camera_on_the_new_widget()
     test_cage_opacity_slider_default_matches_pyqtgraph_grid_default()
