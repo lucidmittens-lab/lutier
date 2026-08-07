@@ -91,16 +91,22 @@ def compute_waveform(image_array, levels=256, value_range=(0.0, 1.0)):
 
     def _column_histograms(channel_plane):
         # channel_plane: (H, W). Bin every pixel into [0, levels), then
-        # bincount per column -- vectorized over rows via one bin-index
-        # array, looped only over the (typically <=480, per
-        # PREVIEW_MAX_DIMENSION) columns, not over every pixel individually.
+        # one single vectorized 2D histogram -- fold the column index into
+        # the bin index (bin*width + column gives every (level, column)
+        # cell its own unique flat index) so ONE np.bincount over the
+        # whole flattened array replaces what used to be a separate
+        # np.bincount call per column (~480 calls per channel per render,
+        # ~1920 total across r/g/b/luma, on every live stack edit while
+        # Waveform is the active scope -- real per-call Python/numpy
+        # dispatch overhead multiplied by ~2000). Confirmed bit-for-bit
+        # identical output to the old per-column-loop version.
+        width = channel_plane.shape[1]
         bin_idx = np.clip(
             ((channel_plane - lo) / span * levels).astype(np.int64), 0, levels - 1
         )
-        out = np.zeros((levels, channel_plane.shape[1]), dtype=np.int64)
-        for x in range(channel_plane.shape[1]):
-            out[:, x] = np.bincount(bin_idx[:, x], minlength=levels)
-        return out
+        col_idx = np.arange(width)[None, :]
+        combined = bin_idx * width + col_idx
+        return np.bincount(combined.ravel(), minlength=levels * width).reshape(levels, width)
 
     result = {
         "r": _column_histograms(image_array[..., 0]),
