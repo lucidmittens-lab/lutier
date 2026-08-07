@@ -16,12 +16,19 @@ and it directly exposes the spec's two interchange styles:
     This is the ASC spec's own default and what every other CDL-reading
     tool assumes unless told otherwise, so it's what makes a stage here
     round-trip identically through a real .cc file read by a different
-    application later. Default here too (style="asc" below).
+    application later. Opt in via style="asc" for a stage meant for that
+    kind of interchange.
   - CDLStyle.CDL_NO_CLAMP -- skips that intermediate clamp, letting values
     run outside [0,1] the way this app's other stages (aces_drt.py,
-    printer_lights.py) always do. Opt in via style="no_clip" for a CDL
-    stage meant to feed more linear-light math afterward rather than be
-    exported for interchange.
+    printer_lights.py) always do. Default here (style="no_clip" below):
+    the intermediate clamp applies regardless of SOP/SAT parameter
+    values, so an "asc"-style stage with identity params is NOT a true
+    no-op once upstream values already exceed [0,1] (scene-linear/HDR
+    signal, an ACES DRT output, another no_clip stage upstream, ...) --
+    it silently discards that range with zero indication to the user.
+    "no_clip" is the only style where a freshly added, untouched CDL
+    stage is guaranteed to be a real no-op, matching every other stage
+    kind's behavior in this app.
 
 Independent SOP/SAT bypass toggles (sop_enabled/sat_enabled below) mirror
 the two independent bypass switches every real CDL-aware tool exposes --
@@ -53,13 +60,14 @@ IDENTITY_OFFSET = (0.0, 0.0, 0.0)
 IDENTITY_POWER = (1.0, 1.0, 1.0)
 IDENTITY_SAT = 1.0
 
-DEFAULT_STYLE = "asc"
+DEFAULT_STYLE = "no_clip"
 
 # (style key, human label) -- key is what's stored in Stage.params/session
 # files (stable across OCIO versions), not the OCIO enum name directly.
+# "no_clip" listed first to match DEFAULT_STYLE above.
 AVAILABLE_STYLES = [
-    ("asc", "ASC (clamped -- spec default, matches other CDL tools)"),
     ("no_clip", "No Clip (extended range, matches this app's other stages)"),
+    ("asc", "ASC (clamped -- spec default, matches other CDL tools)"),
 ]
 
 
@@ -150,9 +158,12 @@ def apply_cdl(image_array, slope=IDENTITY_SLOPE, offset=IDENTITY_OFFSET,
     as apply_aces_output_transform/apply_printer_lights_in_working_space).
 
     Identity parameters (default slope=(1,1,1), offset=(0,0,0),
-    power=(1,1,1), sat=1.0) are an exact no-op regardless of `style`, since
-    the ASC-clamp-vs-no-clamp distinction only matters once slope/offset
-    push values outside [0,1] -- see test_cdl.py.
+    power=(1,1,1), sat=1.0) are an exact no-op under the default
+    style="no_clip" -- see test_cdl.py. They are NOT a guaranteed no-op
+    under style="asc": that style's intermediate ASC clamp applies
+    regardless of SOP/SAT parameter values, so identity params with
+    style="asc" will still silently clip any input already outside
+    [0,1] (see module docstring).
     """
     transform = build_cdl_transform(
         slope=slope, offset=offset, power=power, sat=sat, style=style,

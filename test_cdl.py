@@ -22,6 +22,36 @@ def test_identity_params_are_exact_noop_both_styles():
               f"no-op under style={style!r} -- OK")
 
 
+def test_default_style_is_no_clip():
+    """Regression guard: DEFAULT_STYLE must stay "no_clip" so a freshly
+    added, untouched CDL stage is a real no-op (see next test) -- flipping
+    it back to "asc" would silently reintroduce clipping of any
+    already-out-of-range input for every new CDL stage app-wide, since
+    stack.make_cdl_stage/cdl_library.py/stack_panel.py all default to
+    whatever this constant is rather than hardcoding a style."""
+    assert cdl.DEFAULT_STYLE == "no_clip"
+
+
+def test_identity_params_are_a_real_noop_for_out_of_range_input_under_no_clip():
+    """The bug this guards against: style="asc" applies its intermediate
+    ASC clamp regardless of SOP/SAT values, so identity params are NOT a
+    no-op once input already exceeds [0,1] (scene-linear/HDR signal, an
+    ACES DRT output upstream, ...) -- only "no_clip" (the default) is.
+    Uses apply_cdl's own defaults (no explicit style=) so this test breaks
+    if DEFAULT_STYLE ever regresses back to "asc"."""
+    if not cdl.OCIO_AVAILABLE:
+        return _skip("test_identity_params_are_a_real_noop_for_out_of_range_input_under_no_clip")
+    img = np.array([[[-0.3, 1.8, 0.5]]], dtype=np.float32)
+    out = cdl.apply_cdl(img)  # every argument defaulted, including style
+    assert np.allclose(out, img, atol=1e-6)
+    # And confirm "asc" (opted into explicitly) does still clip, as the
+    # ASC spec requires -- this isn't a bug in "asc" itself, just not a
+    # safe default for an app that otherwise never silently discards range.
+    clipped = cdl.apply_cdl(img, style="asc")
+    assert not np.allclose(clipped, img, atol=1e-6)
+    assert np.allclose(clipped, [[[0.0, 1.0, 0.5]]], atol=1e-6)
+
+
 def test_bypassed_sop_and_sat_together_is_exact_noop():
     if not cdl.OCIO_AVAILABLE:
         return _skip("test_bypassed_sop_and_sat_together_is_exact_noop")
