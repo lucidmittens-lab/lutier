@@ -172,9 +172,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QStackedWidget,
-    QToolButton, QMenu,
+    QToolButton, QMenu, QDialog, QPushButton,
 )
 import pyqtgraph.opengl as gl
+
+from floating_dialog import make_floating_tool_window, show_floating
 
 from app_logic import (
     extract_3d_points_for_visualization,
@@ -294,6 +296,7 @@ class LutViewer3D(QWidget):
         # _on_view_changed).
         self._view_action_sets = []
         self._build_layout()
+        self._build_3d_settings_dialog()
 
     def _build_layout(self):
         self._layout = QVBoxLayout(self)
@@ -335,10 +338,11 @@ class LutViewer3D(QWidget):
         self.menu_button.setMenu(menu)
 
     def populate_menu(self, menu):
-        """Add the view-select actions to `menu` -- shared by the "..."
-        corner button above and MainWindow's top-level "Graph" menu-bar
-        menu, exactly matching scopes_panel.py's populate_menu/
-        _on_scope_changed pattern for its own scope selector."""
+        """Add the view-select actions, plus "3D Settings...", to `menu`
+        -- shared by the "..." corner button above and MainWindow's
+        top-level "Graph" menu-bar menu, exactly matching
+        scopes_panel.py's populate_menu/_on_scope_changed pattern for its
+        own scope selector."""
         action_group = QActionGroup(menu)
         action_group.setExclusive(True)
         actions = {}
@@ -351,6 +355,14 @@ class LutViewer3D(QWidget):
             actions[name] = action
         actions[self._current_view].setChecked(True)
         self._view_action_sets.append(actions)
+
+        menu.addSeparator()
+        # Grid density/Cage opacity only affect the 3D view, but always
+        # reachable regardless of which view is currently showing (same
+        # "no need to gate it" call as every other menu action in this
+        # app) -- switching to 3D later just shows whatever was set.
+        menu.addAction("3D Settings...", self.show_3d_settings_dialog)
+
         return actions
 
     def _on_view_changed(self, view_name):
@@ -378,15 +390,31 @@ class LutViewer3D(QWidget):
             item.setVisible(item_channel == channel)
 
     def _build_gl_panel(self):
-        """Builds the 3D-mode page: the GL view plus its density/cage-
-        opacity controls, all in one container widget so it can be one
-        page of the outer QStackedWidget (see _build_layout)."""
+        """Builds the 3D-mode page -- just the GL view now (per Tom, "3D
+        Settings" below moved Grid density/Cage opacity out of the
+        panel's permanent, always-visible footprint and into a dialog),
+        so it can be one page of the outer QStackedWidget (see
+        _build_layout)."""
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.gl_view = self._make_gl_view()
         layout.addWidget(self.gl_view, stretch=1)
+
+        return panel
+
+    def _build_3d_settings_dialog(self):
+        """"3D Settings..." dialog (per Tom -- Grid density/Cage opacity
+        used to sit as two permanent rows under the GL view; moved into a
+        dialog reachable from the "..." menu instead, same "..." menu ->
+        small floating dialog with live-apply sliders convention
+        scopes_panel.py's "Graticule Intensity..." already established).
+        Built once here; show_3d_settings_dialog just re-shows it."""
+        dialog = QDialog(self)
+        make_floating_tool_window(dialog)
+        dialog.setWindowTitle("3D Settings")
+        outer = QVBoxLayout(dialog)
 
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Grid density:"))
@@ -407,7 +435,7 @@ class LutViewer3D(QWidget):
         controls.addWidget(self.density_slider, stretch=1)
         self.density_label = QLabel("9³ points")
         controls.addWidget(self.density_label)
-        layout.addLayout(controls)
+        outer.addLayout(controls)
 
         cage_controls = QHBoxLayout()
         cage_controls.addWidget(QLabel("Cage opacity:"))
@@ -419,9 +447,16 @@ class LutViewer3D(QWidget):
         cage_controls.addWidget(self.cage_opacity_slider, stretch=1)
         self.cage_opacity_label = QLabel(f"{self.cage_opacity_slider.value()}%")
         cage_controls.addWidget(self.cage_opacity_label)
-        layout.addLayout(cage_controls)
+        outer.addLayout(cage_controls)
 
-        return panel
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.close)
+        outer.addWidget(close_button)
+
+        self._3d_settings_dialog = dialog
+
+    def show_3d_settings_dialog(self):
+        show_floating(self._3d_settings_dialog)
 
     def _make_curve_plot(self):
         """Builds the 1D YRGB curve PlotWidget once -- four PlotDataItems

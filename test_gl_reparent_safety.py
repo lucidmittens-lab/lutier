@@ -343,14 +343,41 @@ def test_menu_button_exists_and_defaults_to_3d_checked():
     viewer = lut_viewer_3d.LutViewer3D()
     viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
     assert viewer.menu_button.menu() is not None
-    actions = {a.text(): a for a in viewer.menu_button.menu().actions()}
+    all_actions = viewer.menu_button.menu().actions()
+    # "3D Settings..." (behind a separator) is a real, deliberate 6th
+    # entry now (see populate_menu), not a view choice -- checked
+    # separately below rather than folded into the view-choice set.
+    actions = {a.text(): a for a in all_actions if a.text() in lut_viewer_3d.VIEW_CHOICES}
     assert set(actions) == set(lut_viewer_3d.VIEW_CHOICES)
     assert actions[lut_viewer_3d.VIEW_3D].isChecked()
     for name in lut_viewer_3d.VIEW_CHOICES:
         if name != lut_viewer_3d.VIEW_3D:
             assert not actions[name].isChecked()
+    assert any(a.text() == "3D Settings..." for a in all_actions)
     print("LutViewer3D: '...' menu has exactly the 5 expected view "
-          "choices, 3D checked by default -- OK")
+          "choices (3D checked by default) plus '3D Settings...' -- OK")
+
+
+def test_3d_settings_action_opens_the_dialog_with_the_sliders():
+    """Per Tom: Grid density/Cage opacity moved out of the panel's
+    permanent, always-visible footprint and into a dialog reachable from
+    the "..." menu -- confirms the dialog itself exists, holds the same
+    slider widgets set_lut/_on_density_changed/_apply_cage_opacity
+    already rely on by attribute name, and that the menu action actually
+    shows it."""
+    _app()
+    viewer = lut_viewer_3d.LutViewer3D()
+    viewer.show()  # set_lut() now skips its rebuild while invisible -- see lut_viewer_3d.py
+
+    assert viewer.density_slider is not None
+    assert viewer.cage_opacity_slider is not None
+    assert not viewer._3d_settings_dialog.isVisible()
+
+    viewer.show_3d_settings_dialog()
+
+    assert viewer._3d_settings_dialog.isVisible()
+    print("LutViewer3D: '3D Settings...' opens a dialog holding the "
+          "Grid density/Cage opacity sliders -- OK")
 
 
 def test_default_view_shows_gl_panel():
@@ -1342,6 +1369,7 @@ if __name__ == "__main__":
     test_cage_opacity_survives_density_change_and_rebuild()
     test_no_lut_loaded_means_no_cage_item()
     test_menu_button_exists_and_defaults_to_3d_checked()
+    test_3d_settings_action_opens_the_dialog_with_the_sliders()
     test_default_view_shows_gl_panel()
     test_selecting_1d_view_shows_curve_plot_with_exactly_one_curve_visible()
     test_selecting_3d_after_1d_restores_gl_panel()

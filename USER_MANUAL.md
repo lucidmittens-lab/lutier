@@ -60,9 +60,10 @@ This is a quick feature outline for testers, not a full reference.
   the interactive point-cloud visualization of the LUT's deformation
   lattice, with a wireframe **cage** connecting each point to its lattice
   neighbors so the deformation reads as a mesh, not just a cloud; rotate/
-  zoom with the mouse, "Grid density" controls how many points are
-  sampled, "Cage opacity" fades the cage in/out (0–100%, defaults to
-  30%). Each **1D** choice plots exactly one of the same LUT's Y/R/G/B
+  zoom with the mouse; its **"☰"** menu's **3D Settings...** opens a
+  small dialog with "Grid density" (how many points are sampled) and
+  "Cage opacity" (fades the cage in/out, 0–100%, defaults to 30%). Each
+  **1D** choice plots exactly one of the same LUT's Y/R/G/B
   response curves — output vs. input, the traditional "curves" view —
   swept across the Stack's own Domain Min/Max (Stack's "☰" menu → Edit
   Size/Domain...) rather than a fixed 0–1 range, so it stays correct for
