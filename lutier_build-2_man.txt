@@ -1,0 +1,82 @@
+# LUTier — Basic User Manual
+
+LUTier is a LUT/color-grading tool: build up a grade as an ordered stack
+of operations, preview it live, and export it in the format you need.
+This is a quick feature outline for testers, not a full reference.
+
+## The window, at a glance
+
+- **Browser** (top left) — point it at a folder; it lists LUT files
+  (`.cube`, `.clf`, `.spi1d`, `.spi3d`, `.spimtx`, `.csp`) and ASC CDL
+  files (`.cc`, `.cdl`, `.ccc`) together, CDL ones tagged `[CDL]`.
+  Double-click a LUT to add it to the Stack; double-click a CDL to import
+  it into the CDL Library. Drag either kind onto its matching Library
+  panel, or drag a LUT onto the Stack directly. "New Identity LUT..."
+  starts a stage from a neutral pass-through instead of a file.
+- **LUT Library** — LUTs you've ingested into the session. Once
+  imported, a LUT's full data lives in the session — moving, renaming, or
+  deleting the original file afterward won't break anything.
+- **CDL Library** — saved ASC CDL grades (SOP/SAT values), either saved
+  from a CDL stage in the Stack or imported from a file.
+- **Stack Memories** — named snapshots of the whole Stack, so you can
+  save a look, keep working, and get back to it later. Can also be
+  exported to/imported from their own `.ltm` file, independent of the
+  session.
+- **Viewer** — the sample image preview, before/after wipe compare.
+- **Stack** — the main work area: an ordered list of stages (LUT,
+  Printer Lights, ACES DRT, ASC CDL, Color Space Conversion). Reorder by
+  dragging, toggle any stage on/off, give it its own opacity, click a
+  stage to edit its parameters in the Parameters panel.
+- **Parameters** — the inspector for whichever stage is selected in the
+  Stack.
+- **Scopes** — Histogram, Waveform, Vectorscope, and a 3D LUT viewer, all
+  in one panel (pick which one shows from its "..." menu or the Scopes
+  menu bar entry).
+
+Every panel can be shown/hidden from the **Workspace** menu, and every
+panel's "..." button in its top-right corner has the same actions as its
+matching entry in the menu bar — whichever you find faster.
+
+## Basic workflow
+
+1. Point the Browser at a folder, or use "New Identity LUT..." to start
+   from scratch.
+2. Add stages to the Stack — a LUT, Printer Lights trim, ACES DRT output
+   transform, ASC CDL grade, or a plain color space conversion.
+3. Reorder, enable/disable, or adjust the opacity of any stage.
+4. Click a stage to tweak its parameters in the Parameters panel.
+5. Watch the result in Viewer / Scopes as you go.
+6. Export the baked result (bottom of the window) as `.cube`, `.clf`,
+   `.spi3d`, `.csp`, Autodesk `.3dl` (Flame or Lustre), or FilmLight
+   Truelight/Baselight `.cub`.
+
+## Sessions
+
+File > New/Open/Save/Save As saves everything — the Stack, the sample
+image reference, and all three libraries — to a single `.ltr` file.
+
+## Undo/Redo
+
+Edit > Undo/Redo covers edits to the Stack itself — adding, removing,
+reordering, or adjusting a stage; recalling a Stack Memory; applying a
+CDL or LUT Library entry; opening a session. It doesn't cover library
+management (importing/renaming/deleting a saved LUT or CDL) or the
+sample image.
+
+## Keyboard shortcuts
+
+| Action | Shortcut |
+|---|---|
+| Undo | ⌘Z |
+| Redo | ⌘⇧Z |
+| Save Session | ⌘S |
+| Save Session As... | ⌘⇧S |
+| Open Session... | ⌘O |
+| Show/Hide Browser | ⇧1 |
+| Show/Hide LUT Library | ⇧2 |
+| Show/Hide CDL Library | ⇧3 |
+| Show/Hide Stack Memories | ⇧4 |
+| Show/Hide Viewer | ⇧5 |
+| Show/Hide Stack | ⇧6 |
+| Show/Hide Parameters | ⇧7 |
+| Show/Hide Scopes | ⇧8 |

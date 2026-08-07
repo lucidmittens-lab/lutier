@@ -1,0 +1,9 @@
+PySide6
+pyqtgraph
+PyOpenGL
+scipy
+colour-science
+colour-clf-io
+numpy
+Pillow
+opencolorio
