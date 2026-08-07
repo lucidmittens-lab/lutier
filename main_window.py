@@ -305,6 +305,15 @@ PANEL_TOGGLES_RIGHT = [
 ]
 PANEL_TOGGLES = PANEL_TOGGLES_LEFT + PANEL_TOGGLES_CENTER + PANEL_TOGGLES_RIGHT
 
+# How long a stream of Stack edits (e.g. dragging a slider) has to go
+# quiet before _on_stack_changed_for_history actually commits an undo
+# step -- see that method's own docstring. Short enough that a genuine
+# pause between two separate, distinct edits (click a different stage,
+# adjust a different control) still reliably lands as two separate undo
+# steps, long enough to comfortably coalesce every tick of one
+# continuous slider drag into a single one.
+_UNDO_DEBOUNCE_MS = 400
+
 # Only window_size now -- panel visibility/position/floating all live in
 # the dock layout itself (see _build_default_dock_layout for the DEFAULT
 # arrangement, get_workspace_state/load_workspace_state for how an
@@ -570,6 +579,13 @@ class MainWindow(QMainWindow):
         # unreachable.
         self._undo_history = UndoHistory(self.stack_panel.get_stack().copy())
         self._restoring_stack_history = False
+        # Debounces undo pushes -- see _on_stack_changed_for_history's
+        # docstring for why a raw one-push-per-signal approach doesn't
+        # work: stack_changed fires on every tick of a live slider drag,
+        # not once per gesture.
+        self._undo_debounce_timer = QTimer(self)
+        self._undo_debounce_timer.setSingleShot(True)
+        self._undo_debounce_timer.timeout.connect(self._commit_pending_undo_push)
         self.stack_panel.stack_changed.connect(self._on_stack_changed_for_history)
 
         self._build_menu_bar()
@@ -1177,7 +1193,11 @@ class MainWindow(QMainWindow):
             self._restoring_stack_history = False
         # Fresh history for this new, empty stack -- undo must not be able
         # to walk back into whatever the previous (now-discarded) session
-        # had (per Tom: "reset on new/open session").
+        # had (per Tom: "reset on new/open session"). Cancels (not
+        # flushes) any debounced push still pending from an edit right
+        # before New Session was invoked -- it would only ever target the
+        # history object about to be discarded here anyway.
+        self._undo_debounce_timer.stop()
         self._undo_history = UndoHistory(new_stack.copy())
         self._update_undo_redo_actions()
         self.stack_memories_panel.load_library(StackMemoryLibrary())
@@ -1213,7 +1233,11 @@ class MainWindow(QMainWindow):
         # history for the stack just loaded. Either way, undo can no
         # longer walk back into whatever the PREVIOUS session had (per
         # Tom: "reset on new/open session but keep undo history inside of
-        # project data if possible").
+        # project data if possible"). Cancels (not flushes) any debounced
+        # push still pending from an edit right before Open Session was
+        # invoked -- it would only ever target the history object about
+        # to be replaced below anyway.
+        self._undo_debounce_timer.stop()
         if undo_history_state is not None:
             states, pointer = undo_history_state
             self._undo_history = UndoHistory.from_states(states, pointer)
@@ -1255,6 +1279,11 @@ class MainWindow(QMainWindow):
         self._write_session(path)
 
     def _write_session(self, path):
+        # So the undo_history embedded in the saved file's last entry
+        # always matches the stack actually being saved, rather than
+        # potentially lagging by one still-pending debounced edit (see
+        # _flush_pending_undo_push's own docstring).
+        self._flush_pending_undo_push()
         try:
             session_io.save_session(
                 path, self.stack_panel.get_stack(), self.sample_image.get_session_state(),
@@ -1858,27 +1887,68 @@ class MainWindow(QMainWindow):
     # ---- undo/redo (see undo_history.py for scope/design) ----------------
 
     def _on_stack_changed_for_history(self):
-        """Records a new undo step for every genuine Stack edit --
+        """Schedules an undo step for every genuine Stack edit --
         connected to the same StackPanel.stack_changed signal
         _on_stack_changed listens to, fired by every mutation (add/
         remove/reorder/enable/opacity/param edit, size/domain, recalling
-        a Stack Memory, applying a CDL/LUT Library entry, opening a
-        session, New Session -- see stack_panel.py's _emit_changed call
-        sites). Skipped while _restoring_stack_history is set, i.e. while
-        THIS method's own _undo()/_redo() is the one calling
-        StackPanel.set_stack() -- otherwise restoring a past state would
-        immediately record itself as a new edit, corrupting the redo
-        tail. .copy() here is required, not just cheap insurance:
-        StackPanel.get_stack() returns its own live, still-mutable Stack
-        object, so storing it directly (rather than a copy) would let
-        later edits silently rewrite history that's already been
-        recorded."""
+        a Stack Memory, applying a CDL/LUT Library entry -- see
+        stack_panel.py's _emit_changed call sites). Skipped while
+        _restoring_stack_history is set -- i.e. while THIS method's own
+        _undo()/_redo(), or _new_session/_open_session resetting to a
+        fresh history, is the one calling StackPanel.set_stack() --
+        otherwise restoring/replacing the stack would immediately record
+        itself as a new edit, corrupting the redo tail (or, for New/Open
+        Session, pointlessly recording one entry into a history object
+        about to be replaced anyway).
+
+        DEBOUNCED, not pushed immediately: stack_changed fires on every
+        SINGLE TICK of a live drag (a Printer Lights/CDL slider, the
+        fork-merge blend slider, ...), not once per gesture -- pushing on
+        every tick used to mean one Undo only reverted a tiny fraction of
+        a drag (the user had to press it dozens of times to get back to
+        before the drag even started), and the history list grew by
+        dozens-to-hundreds of entries for a single continuous edit.
+        Restarting a short single-shot timer on every call, and only
+        actually pushing when it fires (i.e. once the stream of edits has
+        gone quiet for _UNDO_DEBOUNCE_MS), coalesces an entire drag
+        gesture into exactly one undo step -- the same idea a text
+        editor uses to group a burst of keystrokes into one undo, not
+        one per character."""
         if self._restoring_stack_history:
             return
+        self._undo_debounce_timer.start(_UNDO_DEBOUNCE_MS)
+
+    def _commit_pending_undo_push(self):
+        """The actual push, run once the debounce timer in
+        _on_stack_changed_for_history actually fires. .copy() is
+        required, not just cheap insurance: StackPanel.get_stack()
+        returns its own live, still-mutable Stack object, so storing it
+        directly (rather than a copy) would let later edits silently
+        rewrite history that's already been recorded. Looking the stack
+        up fresh here (rather than capturing it back when the timer was
+        (re)started) is what makes the debounce correct: whichever edit
+        last restarted the timer, this always records the CURRENT state
+        at the moment the gesture actually went quiet, not some earlier
+        mid-drag snapshot."""
         self._undo_history.push(self.stack_panel.get_stack().copy())
         self._update_undo_redo_actions()
 
+    def _flush_pending_undo_push(self):
+        """If a debounced push is still waiting to fire, commit it right
+        now instead -- called before anything that itself depends on the
+        undo history's top entry accurately reflecting the current live
+        stack (undo/redo navigating relative to it; saving a session,
+        whose embedded undo history should match what was actually
+        saved). Without this, a still-pending coalesced edit could fire
+        its OWN commit later, after an intervening undo/redo has already
+        changed the live stack out from under it -- pushing the wrong
+        state, at the wrong point in history, well after the fact."""
+        if self._undo_debounce_timer.isActive():
+            self._undo_debounce_timer.stop()
+            self._commit_pending_undo_push()
+
     def _undo(self):
+        self._flush_pending_undo_push()
         if not self._undo_history.can_undo:
             return
         state = self._undo_history.undo()
@@ -1890,6 +1960,7 @@ class MainWindow(QMainWindow):
         self._update_undo_redo_actions()
 
     def _redo(self):
+        self._flush_pending_undo_push()
         if not self._undo_history.can_redo:
             return
         state = self._undo_history.redo()
