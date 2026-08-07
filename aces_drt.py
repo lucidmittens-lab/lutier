@@ -160,7 +160,17 @@ def _apply_ocio_processor(cpu_processor, array):
     return flat.reshape(original_shape)
 
 
+@lru_cache(maxsize=None)
 def _get_output_transform_processor(config_name, working_colourspace, display, view):
+    """Cached: building an OCIO Processor/CPUProcessor from a Config is
+    real work (constructs a transform graph), and this function's own
+    arguments are already exactly its cache key -- all strings, and the
+    result depends on nothing else. Uncached, this ran fresh on every
+    single call to apply_aces_output_transform, including every live
+    preview repaint while dragging any control on a Stack that has an
+    ACES DRT stage (see stack.py's _apply_stage_to_array -- every stack
+    mutation re-evaluates every stage), rebuilding an identical processor
+    over and over for parameters that hadn't changed."""
     _require_ocio()
     cfg = _get_config(config_name)
     processor = cfg.getProcessor(
@@ -186,8 +196,24 @@ def apply_aces_output_transform(image_array, working_colourspace, display, view,
     return _apply_ocio_processor(cpu, image_array)
 
 
+@lru_cache(maxsize=None)
 def _find_native_linear_colourspace(cfg, working_colourspace):
-    """Find the color space in `cfg` that shares `working_colourspace`'s own
+    """Cached: this does a linear scan of every color space in `cfg`
+    (getColorSpaceNames(), then getFamily()/getEncoding() per candidate)
+    to find the sibling -- real cost against the Studio config's large
+    registry, and every call for the same (cfg, working_colourspace) pair
+    gives the identical answer (the result depends on nothing else).
+    `cfg` is hashable (default identity hash) and _get_config already
+    caches by config_name, so the same cfg object -- and therefore the
+    same cache entry -- is reused correctly across calls for the same
+    config. Uncached, this ran on every single decode_to_linear/
+    encode_from_linear call, i.e. every live preview repaint while
+    dragging a Printer Lights R/G/B slider (see printer_lights.py's
+    apply_printer_lights_in_working_space and stack.py's
+    _apply_stage_to_array, which re-evaluates every stage on every stack
+    mutation).
+
+    Find the color space in `cfg` that shares `working_colourspace`'s own
     native primaries/gamut but is scene-linear (no encoding curve applied)
     -- e.g. 'Linear CinemaGamut D55' for 'CanonLog2 CinemaGamut D55'.
 
@@ -262,6 +288,22 @@ def _find_native_linear_colourspace(cfg, working_colourspace):
     )
 
 
+@lru_cache(maxsize=None)
+def _get_colourspace_conversion_processor(config_name, src_space, dst_space):
+    """Cached for the same reason _get_output_transform_processor is:
+    cfg.getProcessor(...).getDefaultCPUProcessor() builds a real transform
+    graph, and (config_name, src_space, dst_space) is already this
+    function's whole cache key -- decode_to_linear/encode_from_linear
+    each call this once per invocation, previously rebuilding an
+    identical processor from scratch every time (every live preview
+    repaint while dragging a Printer Lights slider, same hot path
+    _find_native_linear_colourspace's docstring describes)."""
+    _require_ocio()
+    cfg = _get_config(config_name)
+    processor = cfg.getProcessor(ocio.ColorSpaceTransform(src=src_space, dst=dst_space))
+    return processor.getDefaultCPUProcessor()
+
+
 def decode_to_linear(image_array, working_colourspace, config_name=DEFAULT_CONFIG_NAME):
     """Convert `image_array` from encoded code values in
     `working_colourspace` to that SAME gamut's linear equivalent (see
@@ -282,9 +324,8 @@ def decode_to_linear(image_array, working_colourspace, config_name=DEFAULT_CONFI
     _require_ocio()
     cfg = _get_config(config_name)
     linear_space = _find_native_linear_colourspace(cfg, working_colourspace)
-    processor = cfg.getProcessor(
-        ocio.ColorSpaceTransform(src=working_colourspace, dst=linear_space))
-    return _apply_ocio_processor(processor.getDefaultCPUProcessor(), image_array)
+    cpu = _get_colourspace_conversion_processor(config_name, working_colourspace, linear_space)
+    return _apply_ocio_processor(cpu, image_array)
 
 
 def encode_from_linear(image_array, working_colourspace, config_name=DEFAULT_CONFIG_NAME):
@@ -294,9 +335,8 @@ def encode_from_linear(image_array, working_colourspace, config_name=DEFAULT_CON
     _require_ocio()
     cfg = _get_config(config_name)
     linear_space = _find_native_linear_colourspace(cfg, working_colourspace)
-    processor = cfg.getProcessor(
-        ocio.ColorSpaceTransform(src=linear_space, dst=working_colourspace))
-    return _apply_ocio_processor(processor.getDefaultCPUProcessor(), image_array)
+    cpu = _get_colourspace_conversion_processor(config_name, linear_space, working_colourspace)
+    return _apply_ocio_processor(cpu, image_array)
 
 
 def bake_aces_output_transform_to_lut3d(working_colourspace, display, view,
