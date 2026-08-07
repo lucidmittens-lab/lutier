@@ -255,6 +255,7 @@ class SampleImagePanel(QWidget):
 
     def _build_layout(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
 
         # Not added to this panel's own layout -- MainWindow hands this to
         # PanelFrame as `corner_widget` so it sits on the SAME row as the

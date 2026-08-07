@@ -102,12 +102,13 @@ from pathlib import Path
 from itertools import zip_longest
 
 import numpy as np
-from PySide6.QtCore import Qt, QObject, Signal
+from PySide6.QtCore import Qt, QObject, QSize, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QDoubleSpinBox,
     QGroupBox, QSlider, QCheckBox, QLineEdit, QStackedWidget, QInputDialog,
     QDialog, QDialogButtonBox, QFrame, QToolButton, QAbstractItemView, QMenu,
+    QSizePolicy,
 )
 
 import stack as st
@@ -194,17 +195,60 @@ def _format_fork_merge_label(params):
 _STACK_DEFAULTS = st.Stack()
 
 
-def _elide(text, max_chars):
-    """Simple character-count elision (not QFontMetrics-based -- this
-    panel doesn't know the actual pixel width a compact grid cell will
-    render at until layout time) for a fork branch cell's label, per Tom:
-    "you can truncate the text information for those stage rows if it
-    makes it easier to fit." The full, untruncated text always remains
-    available as the row's tooltip (see _StageRowWidget), so nothing is
-    actually lost -- just visually shortened in the 50%-width column."""
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars - 1].rstrip() + "…"
+class _ElidingLabel(QLabel):
+    """A QLabel that elides its own text with "…" to fit whatever width
+    it's actually given, instead of Qt's default QLabel behavior (its
+    minimumSizeHint equals its full-text sizeHint with word-wrap off),
+    which would force the row's QHBoxLayout to either grow the whole row
+    past the panel's edge or squeeze a sibling widget instead -- per Tom:
+    a stage row's label should truncate as needed so the row's own
+    delete button ("x" at the far end) stays visible regardless of panel
+    width, not get pushed off past it. The full, untruncated text always
+    remains available as a tooltip, so nothing is actually lost, just
+    visually shortened when the row is narrow.
+
+    QFontMetrics-based (real per-pixel measurement of THIS label's own
+    font against its actual current width, re-measured on every resize),
+    not a fixed character-count guess -- correct at any zoom/font/DPI
+    setting and any panel width, unlike a hardcoded "N characters" rule."""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(parent)
+        self._full_text = text
+        # Ignored (not the QLabel default Preferred): tells the layout
+        # this label's sizeHint should NOT set a floor on how wide the
+        # row/layout needs to be -- without this, Qt would size the row
+        # to comfortably fit the FULL text and elision would never
+        # actually be exercised except by an explicit, tighter resize.
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._apply_elided_text()
+
+    def setText(self, text):
+        self._full_text = text
+        self._apply_elided_text()
+
+    def full_text(self):
+        return self._full_text
+
+    def _apply_elided_text(self):
+        elided = self.fontMetrics().elidedText(
+            self._full_text, Qt.TextElideMode.ElideRight, max(self.width(), 0))
+        super().setText(elided)
+        # Tooltip only when actually truncated -- a tooltip that just
+        # repeats the fully-visible text on hover would be pure noise.
+        self.setToolTip(self._full_text if elided != self._full_text else "")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_elided_text()
+
+    def minimumSizeHint(self):
+        # A few characters' worth is enough of a floor -- anything
+        # smaller and there'd be nothing readable left to elide down to;
+        # Qt's own default (the full untruncated text's width) is
+        # exactly what this class exists to override.
+        fm = self.fontMetrics()
+        return QSize(fm.horizontalAdvance("…m"), super().minimumSizeHint().height())
 
 
 class _StageRowWidget(QFrame):
@@ -237,7 +281,7 @@ class _StageRowWidget(QFrame):
     that two-column table (via _ForkBranchGridRowWidget) -- tighter
     margins, no stage-number prefix (a single incrementing number doesn't
     mean much once two branches run in parallel), an elided label (see
-    _elide, full text still in the tooltip), and a narrow single-letter
+    _ElidingLabel, full text still in the tooltip), and a narrow single-letter
     branch combo ("A"/"B"/"—") instead of the full "Branch A"/"Branch B"/
     "No branch" text, since a compact cell is only ever used for a stage
     that's ALREADY inside a fork region (column position already implies
@@ -284,14 +328,17 @@ class _StageRowWidget(QFrame):
         text_col = QVBoxLayout()
         text_col.setSpacing(0)
         label_text = stage.label if display_number is None else f"{display_number}. {stage.label}"
-        full_label_text = label_text
-        if compact:
-            label_text = _elide(label_text, 20)
-        self.label_widget = QLabel(label_text)
+        # _ElidingLabel truncates with "…" to fit whatever width it
+        # actually ends up with (compact fork-grid cell or a full-width
+        # row alike), keeping the untruncated text as its own tooltip --
+        # see that class's docstring. Same mechanism for both cases now
+        # (previously compact-only, via a cruder fixed-character-count
+        # _elide()) since a full-width row can run out of space too, per
+        # Tom: the delete button at the row's far end should stay visible
+        # regardless of panel width, not get pushed off past it.
+        self.label_widget = _ElidingLabel(label_text)
         self.label_widget.setObjectName("stageLabel")
         self.label_widget.setProperty("stageEnabled", stage.enabled)
-        if compact and label_text != full_label_text:
-            self.label_widget.setToolTip(full_label_text)
         # Transparent to mouse events -- otherwise a click on the label
         # text itself is swallowed by the QLabel rather than reaching this
         # frame's mousePressEvent below, and "click anywhere on the card
@@ -602,6 +649,7 @@ class StackPanel(QObject):
 
     def _build_list_ui(self):
         layout = QVBoxLayout(self.list_widget_area)
+        layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
 
         # _StackListWidget (not plain QListWidget) -- adds card-style rows
         # with a clickable enable toggle per stage, drag-to-reorder, and
@@ -720,6 +768,7 @@ class StackPanel(QObject):
 
     def _build_params_ui(self):
         layout = QVBoxLayout(self.params_widget_area)
+        layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
 
         self.inspector_stack = QStackedWidget()
         self._build_empty_inspector()

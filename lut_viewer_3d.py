@@ -297,6 +297,7 @@ class LutViewer3D(QWidget):
 
     def _build_layout(self):
         self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
 
         # Not added to this panel's own layout -- MainWindow hands
         # self.menu_button to PanelFrame as corner_widget, same as

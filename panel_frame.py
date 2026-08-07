@@ -45,6 +45,15 @@ class PanelFrame(QFrame):
         self.setFrameShape(QFrame.Shape.StyledPanel)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 10)
-        layout.setSpacing(6)
+        # Tightened from (10, 8, 10, 10) per Tom -- panels read as having a
+        # lot of dead space between their actual content and the panel
+        # edge. This is one of two stacked sources of that: every panel's
+        # OWN top-level layout also used to rely on Qt's default content
+        # margins (a further ~9-11px per side on most styles) rather than
+        # setting its own -- see each panel's __init__/_build_*_ui, now
+        # zeroed out so this smaller margin here is the only gutter, not
+        # doubled up with another layer's default. Not zero here: still
+        # enough space that content doesn't visually clip into
+        # PANEL_BORDER_RADIUS's rounded corner (style.py, 6px).
+        layout.setContentsMargins(4, 4, 4, 4)
         layout.addWidget(content_widget, stretch=1)

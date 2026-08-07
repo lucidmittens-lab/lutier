@@ -128,6 +128,7 @@ class CDLLibraryPanel(QWidget):
 
     def _build_layout(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
 
         self.list_widget = _CDLDropListWidget(self)
         self.list_widget.itemDoubleClicked.connect(self._on_apply_clicked)

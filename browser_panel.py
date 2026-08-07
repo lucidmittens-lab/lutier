@@ -102,6 +102,7 @@ class BrowserPanel(QWidget):
 
     def _build_layout(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
 
         folder_row = QHBoxLayout()
         self.folder_label = QLabel("No folder selected")

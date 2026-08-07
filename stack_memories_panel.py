@@ -84,6 +84,7 @@ class StackMemoriesPanel(QWidget):
 
     def _build_layout(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
 
         self.list_widget = QListWidget()
         self.list_widget.itemDoubleClicked.connect(self._on_load_clicked)

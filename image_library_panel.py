@@ -57,6 +57,7 @@ class ImageLibraryPanel(QWidget):
 
     def _build_layout(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
 
         self.list_widget = QListWidget()
         # Double-click defaults to "Load as Sample" -- the more common of

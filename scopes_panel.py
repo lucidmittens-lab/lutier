@@ -148,6 +148,7 @@ class ScopesPanel(QWidget):
 
     def _build_layout(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
 
         # No on-panel controls at all anymore -- which scope is showing,
         # Waveform Style, and Waveform Graticule are all picked from the
