@@ -159,6 +159,35 @@ def test_lut_stage_with_retarget_matches_bake_retargeted_lut():
           "matches app_logic.bake_retargeted_lut exactly -- OK")
 
 
+def test_lut_stage_with_empty_string_retarget_spaces_fails_loudly():
+    """Regression guard: make_lut_stage's own constructor validates
+    retarget_from/retarget_to with `is None` (an empty string counts as
+    "given"), so _apply_stage_to_array's dispatch must use the same check
+    -- not plain truthiness, which used to treat "" as "not given" and
+    silently apply the raw LUT with no space conversion at all instead of
+    raising. Empty-string space names aren't realistic from the GUI, but
+    the two checks disagreeing was a real inconsistency worth locking
+    down either way."""
+    lut = create_identity_lut(size=5)
+    stack = st.Stack(size=5)
+    stage = st.make_lut_stage(lut, retarget_from="ACEScct", retarget_to="ACES2065-1")
+    stage.params["retarget_from"] = ""
+    stage.params["retarget_to"] = ""
+    stack.add_stage(stage)
+    try:
+        st.bake_stack_to_lut3d(stack)
+        raise AssertionError(
+            "expected an empty-string retarget space to fail loudly, not "
+            "silently skip the retarget")
+    except AssertionError:
+        raise
+    except Exception:
+        pass  # any real failure from colorspace.convert() is the correct outcome
+    print("_apply_stage_to_array: empty-string retarget_from/retarget_to "
+          "attempts a real (and failing) retarget rather than silently "
+          "skipping it -- OK")
+
+
 def test_printer_lights_stage_matches_bake_printer_lights_on_lut():
     lut = colour.read_LUT(SAMPLE_LUT_PATH)
     size = 9
@@ -911,6 +940,7 @@ if __name__ == "__main__":
     test_empty_stack_apply_to_image_is_noop()
     test_single_lut_stage_matches_direct_apply()
     test_lut_stage_with_retarget_matches_bake_retargeted_lut()
+    test_lut_stage_with_empty_string_retarget_spaces_fails_loudly()
     test_printer_lights_stage_matches_bake_printer_lights_on_lut()
     test_aces_drt_stage_matches_bake_aces_output_transform_to_lut3d()
     test_cdl_stage_matches_direct_apply_cdl()

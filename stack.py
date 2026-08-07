@@ -255,7 +255,7 @@ def make_lut_stage(lut, label=None, retarget_from=None, retarget_to=None,
         raise ValueError("retarget_from and retarget_to must be given together")
     params = {"lut": lut, "retarget_from": retarget_from, "retarget_to": retarget_to}
     default_label = getattr(lut, "name", None) or "LUT"
-    if retarget_from and retarget_to:
+    if retarget_from is not None and retarget_to is not None:
         default_label += f" (retarget {retarget_from} -> {retarget_to})"
     return Stage("lut", label or default_label, params, enabled, opacity)
 
@@ -361,7 +361,7 @@ def _apply_stage_to_array(stage, array):
         lut = stage.params["lut"]
         retarget_from = stage.params.get("retarget_from")
         retarget_to = stage.params.get("retarget_to")
-        if retarget_from and retarget_to:
+        if retarget_from is not None and retarget_to is not None:
             wrapped = retarget_io(lut, from_space=retarget_from, to_space=retarget_to)
             return np.asarray(wrapped(array), dtype=np.float64)
         return np.asarray(lut.apply(array), dtype=np.float64)
