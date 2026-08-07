@@ -225,16 +225,23 @@ def embedded_dict_to_lut(data):
 
 def stage_to_session_dict(stage):
     """One stack.Stage -> plain JSON-able dict (kind/label/enabled/opacity/
-    branch plus whatever fields that kind needs), or None if it has no
-    reconstructable provenance (shouldn't happen for anything created
-    through the normal add_lut_stage_from_path/add_identity_stage paths,
-    but could in principle for a stage built some other way) -- there's
-    nothing useful to write for those, same "silently skip, don't embed
-    un-reconstructably" rule stack_to_session_dict always used. Every
-    entry carries "branch" (None/"a"/"b", see this module's docstring on
-    STACK FORKING) regardless of kind, since branch is an orthogonal tag
-    any stage can carry, not something specific to fork_split/fork_merge
-    themselves."""
+    branch plus whatever fields that kind needs). Raises ValueError if the
+    stage has no reconstructable provenance (a "lut" stage with an
+    unrecognized/missing source_kind) -- shouldn't happen for anything
+    created through the normal add_lut_stage_from_path/add_identity_stage
+    paths, but if some other path ever produces one, failing loudly here
+    is deliberate: this used to silently return None and have
+    stack_to_session_dict drop the stage with zero indication anything
+    was lost, asymmetric with the load path (stage_from_session_dict),
+    which always surfaces a reconstruction failure as a warning rather
+    than silently discarding it. A save that can't represent a stage
+    should fail the whole save (main_window's existing "Failed to save
+    session" error dialog around session_io.save_session already handles
+    surfacing this), not silently produce a session file quietly missing
+    a stage the user never gets told about. Every entry carries "branch"
+    (None/"a"/"b", see this module's docstring on STACK FORKING)
+    regardless of kind, since branch is an orthogonal tag any stage can
+    carry, not something specific to fork_split/fork_merge themselves."""
     entry = {
         "kind": stage.kind,
         "label": stage.label,
@@ -259,7 +266,9 @@ def stage_to_session_dict(stage):
                 "lut": lut_to_embedded_dict(stage.params["lut"]),
             }
         else:
-            return None
+            raise ValueError(
+                f'Cannot save "lut" stage {stage.label!r}: unrecognized or '
+                f"missing source_kind {source_kind!r}")
         entry["retarget_from"] = stage.params.get("retarget_from")
         entry["retarget_to"] = stage.params.get("retarget_to")
     elif stage.kind == "printer_lights":
@@ -289,26 +298,19 @@ def stage_to_session_dict(stage):
     elif stage.kind == "fork_merge":
         entry["blend"] = stage.params.get("blend", 0.5)
     else:  # pragma: no cover -- Stage() already validates kind
-        return None
+        raise ValueError(f"Cannot save stage {stage.label!r}: unknown kind {stage.kind!r}")
     return entry
 
 
 def stack_to_session_dict(stack):
     """stack.Stack -> plain JSON-able dict, via stage_to_session_dict per
     stage (see that function for the per-kind field list and why an
-    unreconstructable stage is silently skipped rather than embedded
-    un-reconstructably)."""
-    stages = []
-    for stage in stack.stages:
-        entry = stage_to_session_dict(stage)
-        if entry is not None:
-            stages.append(entry)
-
+    unreconstructable stage raises rather than being silently dropped)."""
     return {
         "size": stack.size,
         "domain_min": list(stack.domain_min),
         "domain_max": list(stack.domain_max),
-        "stages": stages,
+        "stages": [stage_to_session_dict(stage) for stage in stack.stages],
     }
 
 

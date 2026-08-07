@@ -180,6 +180,29 @@ def test_branch_tagged_stage_skipped_individually_when_it_cant_reconstruct():
           "leaving fork_split/the other branch/fork_merge intact -- OK")
 
 
+def test_stack_to_session_dict_raises_loudly_for_unreconstructable_lut_stage():
+    """Regression guard: this used to silently return None from
+    stage_to_session_dict and have stack_to_session_dict drop the stage
+    with zero indication -- asymmetric with the load side
+    (stage_from_session_dict), which always reports a reconstruction
+    failure via warnings rather than discarding it silently. A "lut"
+    stage with no recognizable source_kind at all (not "file"/"identity"/
+    "embedded" -- shouldn't happen via any real GUI path, but this is
+    exactly the "some other path built it" case the docstring warns
+    about) must now fail the save loudly instead of quietly losing the
+    stage."""
+    stage = st.make_lut_stage(_make_lut3d(size=3), label="Mystery")
+    stage.params["source_kind"] = "not_a_real_source_kind"
+    stack = st.Stack(stages=[stage])
+    try:
+        session_io.stack_to_session_dict(stack)
+        raise AssertionError("expected ValueError for an unreconstructable lut stage")
+    except ValueError as e:
+        assert "Mystery" in str(e)
+    print("stack_to_session_dict: an unreconstructable 'lut' stage raises "
+          "ValueError rather than being silently dropped -- OK")
+
+
 def test_load_session_with_unknown_future_stage_kind_still_loads_others():
     """A stage entry with a genuinely unrecognized kind (e.g. from a
     newer app version) should be skipped with a warning like any other
@@ -496,6 +519,7 @@ if __name__ == "__main__":
     test_embedded_lut_stage_round_trips_without_any_file()
     test_fork_split_and_merge_round_trip_with_branch_tagged_stages()
     test_branch_tagged_stage_skipped_individually_when_it_cant_reconstruct()
+    test_stack_to_session_dict_raises_loudly_for_unreconstructable_lut_stage()
     test_load_session_with_unknown_future_stage_kind_still_loads_others()
     test_lut_library_session_round_trip()
     test_lut_library_from_session_list_skips_bad_entry_with_warning()
