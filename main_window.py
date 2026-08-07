@@ -2186,6 +2186,17 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    """Entry point for running this module directly (`python3
+    main_window.py`) -- constructs its own QApplication and shows the
+    real window immediately, with none of splash_launcher.py's splash
+    (that's the actual packaged-app entry point, see setup.py's APP
+    list). Skipping the splash is the point here: useful during
+    development, when this module's own ~5-second import cost (colour-
+    science/pyqtgraph/OpenColorIO/scipy, all loaded transitively by the
+    imports at the top of this file) isn't worth padding with a splash
+    that would just sit there through the exact same wait. See
+    build_window() below for the part splash_launcher.py actually
+    shares with this function."""
     # THE ACTUAL ROOT CAUSE of the 3D Viewer's blank/black rendering, per
     # the real traceback Tom pasted (glUseProgram raising GLError 1281/
     # 1282, "invalid value"/"invalid operation", from inside pyqtgraph's
@@ -2217,6 +2228,29 @@ def main():
     # exactly once, at that point.
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
     app = QApplication(sys.argv)
+    window = build_window(app)
+    sys.exit(app.exec())
+
+
+def build_window(app):
+    """Applies this app's fixed styling to `app` and constructs+shows a
+    MainWindow, returning it -- split out of main() so splash_launcher.py
+    (the app's actual entry point, see setup.py's APP list -- shows a
+    QSplashScreen using ITS OWN already-constructed QApplication before
+    `import main_window` even happens, since that import alone is the
+    slow part: colour-science/pyqtgraph/OpenColorIO/scipy all load
+    transitively through this module's own top-level imports) can reuse
+    the SAME QApplication instead of main() constructing a second one --
+    Qt only ever supports one QApplication per process. main() (used when
+    running `python3 main_window.py` directly, skipping the splash --
+    handy during development, when waiting on it isn't worth it) still
+    constructs its own app and calls this with it, so this function's
+    behavior is identical either way; only who calls app.exec() and when
+    the splash gets finish()ed differs between the two entry points.
+
+    Does NOT call app.exec() -- that's each caller's own job, since
+    splash_launcher.py needs to finish() the splash in between
+    window.show() and the actual exec() call."""
     # macOS's native ("Aqua") widget style largely ignores QSS on
     # QPushButton -- background-color, border, and checked-state styling
     # in particular get silently dropped, which is almost certainly why
@@ -2240,7 +2274,7 @@ def main():
     app.setStyleSheet(STYLESHEET)
     window = MainWindow()
     window.show()
-    sys.exit(app.exec())
+    return window
 
 
 if __name__ == "__main__":

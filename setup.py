@@ -9,7 +9,15 @@ Build with:
 """
 from setuptools import setup
 
-APP = ['main_window.py']
+APP = ['splash_launcher.py']
+# splash_launcher.py (not main_window.py directly, as of the splash-screen
+# work) -- shows a QSplashScreen using its own minimal PySide6-only
+# imports, then does the slow `import main_window` (colour-science/
+# pyqtgraph/OpenColorIO/scipy all load transitively through THAT module's
+# own top-level imports) while the splash is already on screen. See
+# splash_launcher.py's own docstring. `python3 main_window.py` directly
+# still works too (skips the splash) -- that entry point is unaffected,
+# this only changes what the PACKAGED .app launches.
 # Bundled default reference still (see app_logic.default_sample_image_path)
 # plus the herringbone background texture and grain separator texture
 # (see style.py's _texture_asset_path, same RESOURCEPATH-anchoring logic
@@ -19,14 +27,25 @@ APP = ['main_window.py']
 # (Path(__file__).parent / "assets" / ... when unfrozen, RESOURCEPATH /
 # "assets" / ... when frozen) whether running from source or from the
 # packaged .app.
-DATA_FILES = [(
-    'assets',
-    [
-        'assets/default_sample_image_acescct_ap1.tif',
-        'assets/bg_herringbone.png',
-        'assets/border_grain.png',
-    ],
-)]
+DATA_FILES = [
+    (
+        'assets',
+        [
+            'assets/default_sample_image_acescct_ap1.tif',
+            'assets/bg_herringbone.png',
+            'assets/border_grain.png',
+        ],
+    ),
+    (
+        # Bundle root ('' -> Contents/Resources directly), matching where
+        # this file already sits relative to setup.py in source -- not
+        # under 'assets' above, since it isn't one of this app's runtime
+        # UI assets, just the icon source splash_launcher.py also happens
+        # to reuse at runtime now (see that file's _asset_path).
+        '',
+        ['AppIcon_source.png'],
+    ),
+]
 OPTIONS = {
     'argv_emulation': False,
     # PySide6, pyqtgraph, PyOpenGL, colour-science, colour_clf_io, numpy,
@@ -74,9 +93,17 @@ OPTIONS = {
     # py2app cannot cross-compile a macOS .app from here (see this
     # file's own docstring); please do one real `python3 setup.py
     # py2app` before shipping to confirm.
+    #
+    # Updated again for the splash-screen work: added 'main_window'
+    # itself (now imported from splash_launcher.py, the new APP entry,
+    # rather than being the entry script) plus 'atomic_write' and
+    # 'theme_prefs' -- two more genuinely-transitively-imported local
+    # modules this same "walk the real import graph" exercise had missed
+    # before either existed/was noticed.
     'includes': [
         'aces_drt',
         'app_logic',
+        'atomic_write',
         'browser_panel',
         'cdl',
         'cdl_file_io',
@@ -95,6 +122,7 @@ OPTIONS = {
         'lut_library',
         'lut_library_panel',
         'lut_viewer_3d',
+        'main_window',
         'panel_frame',
         'printer_lights',
         'retarget',
@@ -108,6 +136,7 @@ OPTIONS = {
         'stack_memory_file_io',
         'stack_panel',
         'style',
+        'theme_prefs',
         'undo_history',
         'wipe_compare_widget',
         'workspace_io',
