@@ -797,7 +797,7 @@ QLabel#panelTitle {{
    action; only these three buttons ever have a menu-indicator subcontrol
    to suppress at all, so the QToolButton::menu-indicator rule is safe
    as a blanket app-wide rule. */
-QToolButton#dockFloatButton, QToolButton#dockCloseButton, QToolButton#panelMenuButton {{
+QToolButton#dockCloseButton, QToolButton#panelMenuButton {{
     border: none;
     background: transparent;
     padding: 2px;
@@ -805,7 +805,7 @@ QToolButton#dockFloatButton, QToolButton#dockCloseButton, QToolButton#panelMenuB
     min-height: 18px;
 }}
 
-QToolButton#dockFloatButton:hover, QToolButton#dockCloseButton:hover, QToolButton#panelMenuButton:hover {{
+QToolButton#dockCloseButton:hover, QToolButton#panelMenuButton:hover {{
     background-color: palette(highlight);
     border-radius: 3px;
 }}
@@ -815,8 +815,8 @@ QToolButton#dockFloatButton:hover, QToolButton#dockCloseButton:hover, QToolButto
    ToolButtonPopupMode -- see panelMenuButton's own comment above.
    image: none removes the arrow glyph; width: 0px reclaims the space
    Fusion otherwise reserves for it, so "..." sits centered exactly like
-   dockFloatButton/dockCloseButton's icons do, not off-center to make
-   room for an arrow that's no longer there. */
+   dockCloseButton's icon does, not off-center to make room for an
+   arrow that's no longer there. */
 QToolButton::menu-indicator {{
     image: none;
     width: 0px;

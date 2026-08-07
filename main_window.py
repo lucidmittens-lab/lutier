@@ -396,22 +396,34 @@ def _build_dock_title_bar(dock, title, corner_widget=None):
     placed on the same row as the title, right-aligned, same spot it sat
     in PanelFrame's own title row before this migration.
 
-    Float/close buttons (per Tom, added after the fact -- originally this
-    row was just the label + corner_widget, with float/close reachable
-    only via the Workspace menu/shortcuts, since replacing Qt's native
-    title bar with this custom one also silently threw away its native
-    float/close buttons; see _PanelDockWidget's docstring). Built as
-    plain QToolButtons rather than relying on QDockWidget's own
-    ::float-button/::close-button QSS subcontrols -- ordinary buttons are
-    fully stylable with this file's existing QToolButton/QPushButton
-    rules and sit in this same custom row next to corner_widget, where a
-    native subcontrol button (tied to Qt's own title bar) couldn't. Icons
-    come from the current QStyle's standard set (SP_TitleBarNormalButton/
-    SP_TitleBarCloseButton) -- the same icons Qt's own native title bar
-    buttons would have used, so this doesn't invent new iconography, just
-    relocates/re-implements it. `dock` (the QDockWidget this title bar
-    belongs to) needs to be passed in now, unlike before, so these
-    buttons have something to call setFloating()/close() on.
+    Close button (per Tom, added after the fact -- originally this row
+    was just the label + corner_widget, with float/close reachable only
+    via the Workspace menu/shortcuts, since replacing Qt's native title
+    bar with this custom one also silently threw away its native float/
+    close buttons; see _PanelDockWidget's docstring). Built as a plain
+    QToolButton rather than relying on QDockWidget's own ::close-button
+    QSS subcontrol -- an ordinary button is fully stylable with this
+    file's existing QToolButton/QPushButton rules and sits in this same
+    custom row next to corner_widget, where a native subcontrol button
+    (tied to Qt's own title bar) couldn't. Its icon comes from the
+    current QStyle's standard set (SP_TitleBarCloseButton) -- the same
+    icon Qt's own native title bar button would have used, so this
+    doesn't invent new iconography, just relocates/re-implements it.
+    `dock` (the QDockWidget this title bar belongs to) needs to be
+    passed in now, unlike before, so this button has something to call
+    close() on.
+
+    NO float button here (per Tom, removed): dragging a panel by this
+    title bar already floats it via Qt's own native drag-to-float, and
+    the float button that used to sit here called dock.setFloating()
+    directly, bypassing _float_panel/_dock_panel's _reparent_gl_safely
+    wrapper (which suspends GL paint delivery during the transition and
+    triggers _rebuild_gl_content_for_panel afterward) -- exactly the
+    protection a GL-backed panel (the 3D Viewer) needs to not render
+    broken after a float/dock transition. The Workspace menu's per-panel
+    Float checkbox and the Cmd+Shift+<N> shortcuts (_make_float_action)
+    still exist and still go through that safe wrapper -- only this
+    redundant, unsafe title-bar shortcut to the same action is gone.
 
     WA_StyledBackground (per Tom, real bug caught on real hardware --
     RUNNING.md #54) -- a plain QWidget does NOT clip its background to a
@@ -435,16 +447,6 @@ def _build_dock_title_bar(dock, title, corner_widget=None):
     label = QLabel(title)
     label.setObjectName("panelTitle")
     row.addWidget(label, stretch=1)
-
-    float_button = QToolButton()
-    float_button.setObjectName("dockFloatButton")
-    float_button.setAutoRaise(True)
-    float_button.setToolTip("Float")
-    float_button.setIcon(
-        row_widget.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton))
-
-    float_button.clicked.connect(lambda: dock.setFloating(not dock.isFloating()))
-    row.addWidget(float_button)
 
     close_button = QToolButton()
     close_button.setObjectName("dockCloseButton")
