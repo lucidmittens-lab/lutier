@@ -24,6 +24,19 @@ replaced wholesale). That's what makes keeping a long, uncapped history
 cheap enough not to bother capping it for a first pass -- if a session
 ever turns out to need thousands of edits, add a cap then, not
 speculatively now.
+
+SCOPE ACROSS SESSION BOUNDARIES (per Tom): a history is per-document --
+MainWindow resets it (a fresh single-state history for whatever stack
+just loaded) on New Session and Open Session, rather than letting undo
+walk back across an unrelated document's edits, which the previous
+"session load is just another history entry" design allowed. When a
+session IS saved and later reopened, its history travels with it: see
+session_io.py's undo_history_to_session_list/undo_history_from_session_
+list and this class's own from_states/states/pointer, which exist
+specifically for that round-trip (capped at a fixed number of persisted
+states there, unlike the uncapped in-memory case here -- serializing a
+snapshot is not the "shared reference, free" case this docstring
+describes above; it duplicates whatever LUT tables that snapshot embeds).
 """
 
 
@@ -36,6 +49,32 @@ class UndoHistory:
     def __init__(self, initial_state):
         self._history = [initial_state]
         self._pointer = 0
+
+    @classmethod
+    def from_states(cls, states, pointer):
+        """Rebuild a history from a persisted (states, pointer) pair --
+        see session_io.py's undo_history_to_session_list/
+        undo_history_from_session_list, which save/restore this across a
+        session save/reopen. `states` must be non-empty; `pointer` is
+        clamped into range defensively (a hand-edited or corrupted
+        session file shouldn't be able to put this in an invalid state)."""
+        if not states:
+            raise ValueError("UndoHistory.from_states requires at least one state")
+        history = cls(states[0])
+        history._history = list(states)
+        history._pointer = max(0, min(pointer, len(states) - 1))
+        return history
+
+    @property
+    def states(self):
+        """The full snapshot list, oldest first -- read-only view for
+        persisting this history (see from_states)."""
+        return list(self._history)
+
+    @property
+    def pointer(self):
+        """Index into `states` of the current position -- see from_states."""
+        return self._pointer
 
     def push(self, state):
         """Record a new state as the current point in history, discarding

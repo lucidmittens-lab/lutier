@@ -20,6 +20,7 @@ import session_io
 import stack as st
 from lut_library import LUTLibraryEntry, LUTLibrary
 from image_library import ImageLibraryEntry, ImageLibrary
+from undo_history import UndoHistory
 
 
 def _make_lut3d(gain=2.0, size=3, name="test_lut"):
@@ -197,7 +198,7 @@ def test_load_session_with_unknown_future_stage_kind_still_loads_others():
             json.dump(data, f)
 
         (loaded_stack, _sample_image_state, _memory_library, _cdl_library,
-         _lut_library, _image_library,
+         _lut_library, _image_library, _undo_history_state,
          warnings) = session_io.load_session(path)
 
         assert len(loaded_stack.stages) == 1
@@ -256,7 +257,7 @@ def test_save_and_load_session_round_trips_lut_library_and_embedded_stage():
         session_io.save_session(path, stack, None, lut_library=lut_library)
 
         (loaded_stack, sample_image_state, memory_library, cdl_library,
-         loaded_lut_library, loaded_image_library,
+         loaded_lut_library, loaded_image_library, undo_history_state,
          warnings) = session_io.load_session(path)
 
         assert warnings == []
@@ -310,7 +311,7 @@ def test_load_session_ignores_a_leftover_workspace_key_from_version_6():
             json.dump(data, f)
 
         result = session_io.load_session(path)
-        assert len(result) == 7  # no workspace element in the returned tuple
+        assert len(result) == 8  # no workspace element in the returned tuple
         warnings = result[-1]
         assert warnings == []
     print("load_session: a VERSION 6 file's leftover 'workspace' key is "
@@ -390,13 +391,102 @@ def test_load_session_without_lut_library_key_defaults_to_empty():
             json.dump(data, f)
 
         (_stack, _sample_image_state, _memory_library, _cdl_library,
-         lut_library, image_library,
+         lut_library, image_library, _undo_history_state,
          warnings) = session_io.load_session(path)
         assert warnings == []
         assert lut_library.entries == []
         assert image_library.entries == []
     print("load_session: a session file with no 'lut_library' key at "
           "all (pre-version-4) loads fine with an empty LUT Library -- OK")
+
+
+# ---- undo_history_to_session_list / from_session_list, and its wiring ----
+# through save_session/load_session (VERSION 8, per Tom: "reset on new/
+# open session but keep undo history inside of project data if possible")
+
+def test_save_and_load_session_round_trips_undo_history():
+    stack_a = st.Stack()
+    lut_stage = st.make_lut_stage(_make_lut3d(size=3))
+    lut_stage.params["source_kind"] = "embedded"
+    stack_b = st.Stack(stages=[lut_stage])
+    history = UndoHistory(stack_a.copy())
+    history.push(stack_b.copy())
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "test_session.ltr")
+        session_io.save_session(path, stack_b, None, undo_history=history)
+
+        (_stack, _sample_image_state, _memory_library, _cdl_library,
+         _lut_library, _image_library, undo_history_state,
+         warnings) = session_io.load_session(path)
+
+        assert warnings == []
+        assert undo_history_state is not None
+        states, pointer = undo_history_state
+        assert pointer == 1
+        rebuilt = UndoHistory.from_states(states, pointer)
+        assert len(rebuilt.states[0].stages) == 0
+        assert len(rebuilt.states[1].stages) == 1
+        assert rebuilt.can_undo
+        assert not rebuilt.can_redo
+    print("save_session/load_session: undo history (every state + the "
+          "current pointer) survives a real file round trip -- OK")
+
+
+def test_save_session_with_no_undo_history_omits_it_and_load_returns_none():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "test_session.ltr")
+        session_io.save_session(path, st.Stack(), None)  # undo_history=None (default)
+        with open(path) as f:
+            data = json.load(f)
+        assert data["undo_history"] is None
+
+        result = session_io.load_session(path)
+        undo_history_state = result[-2]
+        assert undo_history_state is None
+    print("save_session: undo_history=None writes a null 'undo_history', "
+          "load_session reports None (fresh history) rather than an empty "
+          "one -- OK")
+
+
+def test_load_session_without_undo_history_key_defaults_to_none():
+    """A version < 8 file (or any file missing the key entirely) has no
+    undo_history at all -- must still load fine, per this module's VERSION
+    8 note, exactly like every other backward-compatible key before it."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "old_session.ltr")
+        session_io.save_session(path, st.Stack(), None)
+        with open(path) as f:
+            data = json.load(f)
+        del data["undo_history"]
+        data["version"] = 7
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+        result = session_io.load_session(path)
+        undo_history_state = result[-2]
+        warnings = result[-1]
+        assert undo_history_state is None
+        assert warnings == []
+    print("load_session: a pre-version-8 file with no 'undo_history' key "
+          "loads fine, reports None (fresh history) -- OK")
+
+
+def test_undo_history_to_session_list_caps_at_max_persisted_states():
+    states = [st.Stack() for _ in range(session_io.MAX_PERSISTED_UNDO_STATES + 10)]
+    history = UndoHistory(states[0])
+    for state in states[1:]:
+        history.push(state)
+    assert history.pointer == len(states) - 1
+
+    data = session_io.undo_history_to_session_list(history)
+    assert len(data["states"]) == session_io.MAX_PERSISTED_UNDO_STATES
+    # Dropped from the oldest end -- current position (the redo-tail-free
+    # end) is preserved exactly, just shifted to match the shorter list.
+    assert data["pointer"] == session_io.MAX_PERSISTED_UNDO_STATES - 1
+    print("undo_history_to_session_list: caps at MAX_PERSISTED_UNDO_STATES, "
+          "dropping from the oldest end and shifting the pointer to match "
+          "-- OK")
 
 
 if __name__ == "__main__":
@@ -415,5 +505,9 @@ if __name__ == "__main__":
     test_image_library_from_session_list_skips_missing_file_with_warning()
     test_save_and_load_session_round_trips_lut_library_and_embedded_stage()
     test_load_session_without_lut_library_key_defaults_to_empty()
+    test_save_and_load_session_round_trips_undo_history()
+    test_save_session_with_no_undo_history_omits_it_and_load_returns_none()
+    test_load_session_without_undo_history_key_defaults_to_none()
+    test_undo_history_to_session_list_caps_at_max_persisted_states()
     print()
     print("All session_io tests passed.")

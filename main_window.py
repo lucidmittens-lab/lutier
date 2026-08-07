@@ -1167,7 +1167,17 @@ class MainWindow(QMainWindow):
         # layout otherwise, so this is the one place that needs its own
         # explicit call rather than inheriting it from load_workspace_state.
         self._dock_all_floating_panels()
-        self.stack_panel.set_stack(st.Stack())
+        new_stack = st.Stack()
+        self._restoring_stack_history = True
+        try:
+            self.stack_panel.set_stack(new_stack)
+        finally:
+            self._restoring_stack_history = False
+        # Fresh history for this new, empty stack -- undo must not be able
+        # to walk back into whatever the previous (now-discarded) session
+        # had (per Tom: "reset on new/open session").
+        self._undo_history = UndoHistory(new_stack.copy())
+        self._update_undo_redo_actions()
         self.stack_memories_panel.load_library(StackMemoryLibrary())
         self.cdl_library_panel.load_library(CDLLibrary())
         self.lut_library_panel.load_library(LUTLibrary())
@@ -1184,13 +1194,30 @@ class MainWindow(QMainWindow):
             return
         try:
             (new_stack, sample_image_state, memory_library, cdl_library,
-             lut_library, image_library,
+             lut_library, image_library, undo_history_state,
              warnings) = session_io.load_session(path)
         except Exception as e:  # noqa: BLE001 -- surface any read/parse failure to the user
             QMessageBox.critical(self, "Failed to open session", str(e))
             return
 
-        self.stack_panel.set_stack(new_stack)
+        self._restoring_stack_history = True
+        try:
+            self.stack_panel.set_stack(new_stack)
+        finally:
+            self._restoring_stack_history = False
+        # Reset undo history to this session's own -- either what it was
+        # saved with (undo_history_state) or, for a file with none (no
+        # history saved, or a pre-version-8 file), a fresh single-state
+        # history for the stack just loaded. Either way, undo can no
+        # longer walk back into whatever the PREVIOUS session had (per
+        # Tom: "reset on new/open session but keep undo history inside of
+        # project data if possible").
+        if undo_history_state is not None:
+            states, pointer = undo_history_state
+            self._undo_history = UndoHistory.from_states(states, pointer)
+        else:
+            self._undo_history = UndoHistory(new_stack.copy())
+        self._update_undo_redo_actions()
         self.stack_memories_panel.load_library(memory_library)
         self.cdl_library_panel.load_library(cdl_library)
         self.lut_library_panel.load_library(lut_library)
@@ -1232,7 +1259,8 @@ class MainWindow(QMainWindow):
                 stack_memory_library=self.stack_memories_panel.get_library(),
                 cdl_library=self.cdl_library_panel.get_library(),
                 lut_library=self.lut_library_panel.get_library(),
-                image_library=self.image_library_panel.get_library())
+                image_library=self.image_library_panel.get_library(),
+                undo_history=self._undo_history)
         except Exception as e:  # noqa: BLE001 -- surface any write failure to the user
             QMessageBox.critical(self, "Failed to save session", str(e))
             return

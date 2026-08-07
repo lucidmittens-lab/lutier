@@ -95,6 +95,50 @@ def test_len_reflects_total_history_including_redo_tail():
           "not-yet-discarded redo tail -- OK")
 
 
+# ---- states / pointer / from_states (session save/reopen round-trip) ----
+
+def test_states_and_pointer_reflect_current_history():
+    history = UndoHistory("A")
+    history.push("B")
+    history.push("C")
+    history.undo()
+    assert history.states == ["A", "B", "C"]
+    assert history.pointer == 1
+    print("states/pointer: reflect the full history and current position, "
+          "including the undone-past redo tail -- OK")
+
+
+def test_from_states_rebuilds_an_equivalent_history():
+    rebuilt = UndoHistory.from_states(["A", "B", "C"], 1)
+    assert rebuilt.states == ["A", "B", "C"]
+    assert rebuilt.pointer == 1
+    assert rebuilt.can_undo and rebuilt.can_redo
+    assert rebuilt.undo() == "A"
+    assert rebuilt.redo() == "B"
+    print("from_states: rebuilds a history that undoes/redoes exactly "
+          "like the original it was saved from -- OK")
+
+
+def test_from_states_clamps_an_out_of_range_pointer():
+    # Defensive: a hand-edited or corrupted session file shouldn't be
+    # able to put this in an invalid state.
+    assert UndoHistory.from_states(["A", "B"], 99).pointer == 1
+    assert UndoHistory.from_states(["A", "B"], -5).pointer == 0
+    print("from_states: clamps an out-of-range persisted pointer into "
+          "bounds instead of trusting it -- OK")
+
+
+def test_from_states_rejects_empty_states():
+    try:
+        UndoHistory.from_states([], 0)
+        raised = False
+    except ValueError:
+        raised = True
+    assert raised
+    print("from_states: refuses an empty states list rather than "
+          "constructing a pointer-less history -- OK")
+
+
 if __name__ == "__main__":
     test_starts_with_one_state_nothing_to_undo_or_redo()
     test_push_then_undo_returns_previous_state()
@@ -104,5 +148,9 @@ if __name__ == "__main__":
     test_push_after_undo_discards_the_redo_tail()
     test_multi_step_undo_redo_sequence()
     test_len_reflects_total_history_including_redo_tail()
+    test_states_and_pointer_reflect_current_history()
+    test_from_states_rebuilds_an_equivalent_history()
+    test_from_states_clamps_an_out_of_range_pointer()
+    test_from_states_rejects_empty_states()
     print()
     print("All undo_history tests passed.")

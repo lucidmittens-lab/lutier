@@ -165,7 +165,24 @@ from image_library import ImageLibraryEntry, ImageLibrary
 from atomic_write import atomic_open
 
 SESSION_FORMAT = "lutier-session"
-SESSION_VERSION = 7
+SESSION_VERSION = 8
+
+# VERSION 8 adds "undo_history" (per Tom, "reset on new/open session but
+# keep undo history inside of project data if possible"): MainWindow now
+# resets undo history to a single fresh state on New/Open Session instead
+# of letting it span unrelated documents (see undo_history.py's SCOPE ACROSS
+# SESSION BOUNDARIES note), but a session that WAS saved with history still
+# has it restored when that same session is reopened. Capped at
+# MAX_PERSISTED_UNDO_STATES: unlike the in-memory case (cheap by
+# construction, see undo_history.py), each persisted state is a full
+# stack_to_session_dict serialization, which duplicates any embedded LUT
+# table independently per state rather than sharing a reference to it --
+# an uncapped history here would make a long editing session's .ltr file
+# grow without bound. A file missing this key (version < 8, or version 8
+# saved with no undo_history passed in) simply loads with no persisted
+# history, same "old file loads fine, just without the newer feature"
+# convention every prior version bump in this module already follows.
+MAX_PERSISTED_UNDO_STATES = 50
 
 
 def lut_to_embedded_dict(lut):
@@ -463,6 +480,49 @@ def memory_library_from_session_list(entries):
     return library, warnings
 
 
+def undo_history_to_session_list(undo_history):
+    """undo_history.UndoHistory -> plain JSON-able dict of {"states":
+    [...], "pointer": int}, each state its own stack_to_session_dict --
+    same "it's just an independent stack, serialized the identical way"
+    relationship memory_library_to_session_list has to a Stack Memory.
+    Capped to the most recent MAX_PERSISTED_UNDO_STATES states (see this
+    module's VERSION 8 note on why, unlike the in-memory case, this can't
+    be left uncapped) -- states are dropped from the OLDEST end first,
+    with `pointer` shifted to match so the current position/redo tail is
+    preserved exactly; only how far back undo can reach is reduced."""
+    states = undo_history.states
+    pointer = undo_history.pointer
+    if len(states) > MAX_PERSISTED_UNDO_STATES:
+        dropped = len(states) - MAX_PERSISTED_UNDO_STATES
+        states = states[dropped:]
+        pointer = max(0, pointer - dropped)
+    return {
+        "states": [stack_to_session_dict(state) for state in states],
+        "pointer": pointer,
+    }
+
+
+def undo_history_from_session_list(data):
+    """Inverse of undo_history_to_session_list. Returns (states, pointer,
+    warnings) where `states` is None if `data` has no usable states (empty/
+    missing/malformed -- callers treat that as "this file has no persisted
+    history," same as a missing key entirely). A bad stage inside one
+    persisted state reports its warnings prefixed with that state's index,
+    same per-item "one bad thing doesn't sink everything else" rule
+    memory_library_from_session_list uses for Stack Memories."""
+    raw_states = data.get("states") or []
+    warnings = []
+    states = []
+    for i, raw_state in enumerate(raw_states):
+        stack, stage_warnings = stack_from_session_dict(raw_state)
+        warnings.extend(f"[Undo history #{i}] {msg}" for msg in stage_warnings)
+        states.append(stack)
+    if not states:
+        return None, None, warnings
+    pointer = data.get("pointer", len(states) - 1)
+    return states, pointer, warnings
+
+
 def cdl_library_to_session_list(library):
     """cdl_library.CDLLibrary -> plain JSON-able list. Unlike
     memory_library_to_session_list, this doesn't delegate to another
@@ -593,7 +653,8 @@ def image_library_from_session_list(entries_data):
 
 
 def save_session(path, stack, sample_image_state, stack_memory_library=None,
-                  cdl_library=None, lut_library=None, image_library=None):
+                  cdl_library=None, lut_library=None, image_library=None,
+                  undo_history=None):
     """sample_image_state: whatever SampleImagePanel.get_session_state()
     returned (a dict, or None if no image is currently loaded).
     stack_memory_library: whatever StackMemoriesPanel.get_library()
@@ -604,7 +665,11 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
     LUTLibraryPanel.get_library() returned (a lut_library.LUTLibrary, or
     None to save with no LUT Library entries). image_library: whatever
     ImageLibraryPanel.get_library() returned (an image_library.ImageLibrary,
-    or None to save with no Image Library entries).
+    or None to save with no Image Library entries). undo_history: the
+    MainWindow's undo_history.UndoHistory for the working Stack, or None
+    to save with no persisted undo history (e.g. for callers -- tests,
+    Stack Memory export -- that have no undo history of their own; see
+    this module's VERSION 8 note).
 
     No `workspace` parameter as of VERSION 7 (see this module's docstring)
     -- workspace layout is saved/loaded independently now, via
@@ -630,6 +695,10 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
             image_library_to_session_list(image_library)
             if image_library is not None else []
         ),
+        "undo_history": (
+            undo_history_to_session_list(undo_history)
+            if undo_history is not None else None
+        ),
     }
     with atomic_open(path, "w") as f:
         json.dump(data, f, indent=2)
@@ -637,17 +706,24 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
 
 def load_session(path):
     """Returns (stack, sample_image_state_or_None, stack_memory_library,
-    cdl_library, lut_library, image_library, warnings). Raises ValueError
-    if `path` isn't a LUTier session file at all (wrong format/not JSON)
-    -- that's a hard failure, unlike a single unreconstructable stage/
-    memory/LUT Library/Image Library entry. Files saved before Stack
-    Memories existed (version 1), before the CDL Library existed
-    (version 1/2), before the LUT Library existed (version 1/2/3), or
-    before the Image Library/Reference image existed (version 1-4) load
-    fine with an empty memory library/CDL Library/LUT Library/Image
-    Library (and no Reference image), via the .get("stack_memories", [])/
-    .get("cdl_library", [])/.get("lut_library", [])/
-    .get("image_library", []) defaults below.
+    cdl_library, lut_library, image_library, undo_history_state, warnings).
+    Raises ValueError if `path` isn't a LUTier session file at all (wrong
+    format/not JSON) -- that's a hard failure, unlike a single
+    unreconstructable stage/memory/LUT Library/Image Library entry. Files
+    saved before Stack Memories existed (version 1), before the CDL
+    Library existed (version 1/2), before the LUT Library existed
+    (version 1/2/3), or before the Image Library/Reference image existed
+    (version 1-4) load fine with an empty memory library/CDL Library/LUT
+    Library/Image Library (and no Reference image), via the
+    .get("stack_memories", [])/.get("cdl_library", [])/
+    .get("lut_library", [])/.get("image_library", []) defaults below.
+
+    undo_history_state is None for any file with no persisted undo
+    history -- version < 8, or a version 8+ file saved with
+    undo_history=None -- callers (MainWindow) treat that as "start a
+    fresh history for this newly loaded stack" exactly like New Session.
+    When present it's a (states, pointer) pair ready for
+    undo_history.UndoHistory.from_states(*undo_history_state).
 
     No `workspace` element as of VERSION 7 (see this module's docstring)
     -- a VERSION 6 file's leftover "workspace" key, if present, is simply
@@ -669,5 +745,14 @@ def load_session(path):
         data.get("image_library", []))
     warnings = warnings + image_library_warnings
     sample_image_state = data.get("sample_image")
+
+    undo_history_state = None
+    undo_data = data.get("undo_history")
+    if undo_data:
+        undo_states, undo_pointer, undo_warnings = undo_history_from_session_list(undo_data)
+        warnings = warnings + undo_warnings
+        if undo_states is not None:
+            undo_history_state = (undo_states, undo_pointer)
+
     return (stack, sample_image_state, memory_library, cdl_library,
-            lut_library, image_library, warnings)
+            lut_library, image_library, undo_history_state, warnings)
