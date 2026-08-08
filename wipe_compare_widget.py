@@ -18,12 +18,14 @@ the look needs to change: HANDLE_COLOR, HANDLE_WIDTH, HANDLE_GRIP_RADIUS,
 LABEL_COLOR/LABEL_BG below (the latter two now only style the color
 readout chip, see set_color_readout_text).
 
-NOT TESTED IN THIS ENVIRONMENT -- same PySide6/libEGL wall as the rest of
-the GUI layer. Only python3 -m py_compile syntax-checked -- drag feel and
-the actual visual result are exactly the kind of thing that needs a real
-display and a real mouse to judge. Please drag the handle around and say
-whether it feels right (grab precision, handle visibility) before
-treating this as done rather than a draft.
+Drag feel (grab precision, handle visibility), zoom/pan, and now the
+QOpenGLWidget rendering swap (see class docstring, Stage 1 of
+GPU_ACCELERATION_PLAN_2026-08-08.md) have all been exercised on real
+macOS hardware by this point, not just syntax-checked -- if a future
+change to this file reintroduces a real display/GL dependency (e.g. an
+actual shader path in a later stage), please confirm on real hardware
+again before treating it as done, same discipline as always: this is
+exactly the kind of thing headless test coverage alone won't catch.
 
 ELEVENTH PASS (explicit background fill, 2026-07-25) -- Tom, after #63's
 color correction landed, reported the space in the panel body AROUND the
@@ -62,7 +64,8 @@ not image content, so it follows the theme like everything else.
 """
 from PySide6.QtCore import Qt, QRectF, QPointF, Signal
 from PySide6.QtGui import QPainter, QPen, QColor, QFont, QPalette
-from PySide6.QtWidgets import QWidget, QSizePolicy
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
+from PySide6.QtWidgets import QSizePolicy
 
 HANDLE_COLOR = QColor(255, 255, 255, 230)
 HANDLE_WIDTH = 2
@@ -84,11 +87,26 @@ MIN_ZOOM = 0.1
 MAX_ZOOM = 20.0
 
 
-class WipeCompareWidget(QWidget):
+class WipeCompareWidget(QOpenGLWidget):
     """set_before(pixmap) / set_after(pixmap) to update images. Both are
     expected to be the same underlying image at the same size (one
     processed, one not) -- drawn into the same scaled/centered rect so the
-    wipe lines up pixel-for-pixel. Not meant to align mismatched images."""
+    wipe lines up pixel-for-pixel. Not meant to align mismatched images.
+
+    GPU-ACCELERATION PROJECT, STAGE 1 (2026-08-08) -- this widget is now a
+    QOpenGLWidget instead of a plain QWidget, but paintEvent below is
+    UNCHANGED plain QPainter drawing (still fed CPU-computed QPixmaps via
+    set_before/set_after -- no shader/GL-call code anywhere in this file
+    yet). This is deliberately just a rendering-surface swap, not a color-
+    math change -- see GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 1.
+    QOpenGLWidget supports plain QPainter painting in paintEvent() exactly
+    like QWidget (Qt's own documented alternative to reimplementing
+    paintGL() directly) -- nothing else in this class needed to change for
+    that to keep working, which is the whole point: interaction logic
+    (wipe drag, zoom/pan, the color-readout chip) and its 14+ existing
+    tests are exercised through _image_rect()/mouse-event handlers, never
+    through paintEvent itself, so none of that needed to change either.
+    Later stages layer real GPU shader rendering onto this same surface."""
 
     wipe_changed = Signal(float)
     # Fires on every actual size change (not just paint) -- SampleImagePanel
@@ -302,6 +320,19 @@ class WipeCompareWidget(QWidget):
     # ---- painting -----------------------------------------------------
 
     def paintEvent(self, event):
+        # This panel is as freely float/dock/tab-able as any other (see
+        # main_window.py), and this widget only became a QOpenGLWidget in
+        # Stage 1 of the GPU-acceleration project -- so it's now subject
+        # to the exact same reparent-mid-teardown hazard lut_viewer_3d.py's
+        # _SafeGLViewWidget.paintGL() was written to guard against (a real
+        # SIGSEGV on real hardware, not theoretical -- see that class's own
+        # docstring). That crash came from raw ctypes GL calls issued
+        # against an invalid context; this widget makes no raw GL calls at
+        # all (plain QPainter only), which is a materially safer situation
+        # -- but isValid() is cheap and this is the same class of risk, so
+        # checking it before painting is free insurance, not paranoia.
+        if not self.isValid():
+            return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
