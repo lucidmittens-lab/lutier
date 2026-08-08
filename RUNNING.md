@@ -3307,3 +3307,102 @@ actual image correctly through the new QImage path.
 **Not yet confirmed on real hardware**, same as every visual/paint
 change this arc -- and #2 specifically still needs a real macOS py2app
 build, which nothing in this sandbox can do.
+
+## 69. Full review-and-polish arc: bug fixes, perf pass, two rounds of UI polish, GPU-preview investigation, and a real py2app build
+
+One long session, on real macOS hardware throughout (not the sandbox) --
+everything below was actually launched and looked at, not just
+`py_compile`-checked. Six phases:
+
+**1. Bug-fix pass** (3 parallel review agents, then fix everything found):
+atomic saves in `session_io.py`/`stack_memory_file_io.py`/`workspace_io.py`
+(a crash or power-loss mid-write could previously corrupt an existing
+session/memory/workspace file -- now write-to-temp-then-rename); CDL
+`style="asc"` was silently clipping values outside its default range
+before a user ever touched a slider, a real HDR-clipping bug; undo history
+wasn't reset on New Session/Open Session (could undo across session
+boundaries into stale state); a dialog titled "Adapt Sample Image" that
+actually showed "Adapt Reference Image"; `retarget_from`/`retarget_to`
+inconsistently checked `is None` in some branches and plain truthiness in
+others; the save path could silently drop stages it couldn't serialize
+with no warning surfaced to the user.
+
+**2. Performance pass**: uncached OCIO processor lookups (rebuilding a
+`Processor` from scratch on every single preview repaint instead of
+caching by config+transform), undebounced undo-history writes, a
+non-vectorized waveform scope computation, and a missing visibility guard
+on the 3D viewer's GL repaint (it kept repainting even while docked behind
+another panel/tab).
+
+**3. UI polish round 1** (Tom's numbered list, one task at a time):
+hamburger menu replacing the ellipses menu on each panel; close-button
+restyle (0px inner border, always right-aligned, consistent position per
+panel); reduced empty panel padding, which surfaced a "double border"
+regression -- traced back to a deliberate choice in an earlier session to
+keep `panelTitleRow` and `panelFrame` as two separately-bordered shapes
+(avoiding a herringbone-texture-bleed bug at the time), confirmed that an
+intervening fix (QDockWidget's own opaque background) had since
+neutralized that risk, then safely merged them into one continuous
+QDockWidget-level border; Stack entry text truncation so the delete
+button never gets pushed off the visible row; a drop-position indicator
+line while dragging to reorder Stack entries; an Alt+hover inspector
+overlay across panels (Flame-style hover card).
+
+**4. UI polish round 2** (again one task at a time, plan approved first):
+moved the Graph panel's Grid density/Cage opacity sliders out of the
+always-visible GL panel into a "3D Settings..." dialog reachable from the
+☰ menu; converted the Stack's numeric text fields (domain min/max,
+opacity, CDL master/per-channel/saturation) into real `QDoubleSpinBox`es
+with horizontal click-drag-to-scrub (new `spinbox_scrub.py` module,
+`enable_drag_to_scrub()`), Shift held for fine (1/10-speed) adjustment --
+this took two rounds of clarifying questions since "spin boxes don't
+work" initially read as a functional bug in the existing widgets, not a
+request for a scrubbing gesture that didn't exist yet; added zoom/pan to
+the Viewer's compare widget (scroll wheel to zoom anchored under the
+cursor, middle-drag to pan, middle-double-click to reset) with 14 new
+tests in `test_wipe_compare_widget.py` covering the cursor-anchoring math
+specifically, not just "it zooms."
+
+**5. GPU-acceleration investigation** (Tom asked pointed questions about
+whether the zoom/scale math was "concatenated" into one operation, then
+whether the preview was baked-per-stage vs. one-cube-applied, then
+whether any of it was hardware accelerated): confirmed via a real
+benchmark, not speculation, that `stack.apply_stack_to_image_array` is
+100% CPU-bound -- 46ms/apply at the 480x270 live-preview resolution,
+764ms/apply at native 1920x1080, matching the ~16x pixel-count increase
+almost exactly (linear scaling, no accidental cache or GPU path kicking
+in at any resolution). Confirmed OCIO 2.5.2's GPU shader API
+(`getDefaultGPUProcessor()`) is present and functional in this
+environment, which is the real fix -- shipped a band-aid instead for now
+(wired the Viewer's zoom level into the existing resize-triggered
+preview-resolution-upgrade mechanism in `sample_image_panel.py`, so
+zooming in requests a higher-res preview render the same way widening the
+panel already did) and saved the GPU work as a dedicated future project
+per Tom: "I know the way that Resolve handles cubes is to convert them
+into shaders and keep them in a system library folder."
+
+**6. Real py2app build** (first one this session, on real hardware):
+`setup.py` was configured for a `universal2` (Intel + Apple Silicon)
+build, but `lipo -info` confirmed the installed `numpy`/`scipy` wheels are
+arm64-only even under a universal2 python.org Python -- exactly the
+failure mode `BUILD_ON_MAC.md` already warned about. Removed
+`'arch': 'universal2'` from `setup.py` and built single-arch (arm64) per
+that doc's own documented fallback; `python3 setup.py py2app` completed
+clean, the resulting `dist/LUTier.app` was launched and confirmed working
+by Tom directly (splash screen then main window, no errors). Also updated
+`BUILD_ON_MAC.md`: the universal2 troubleshooting note now states the
+confirmed root cause instead of a hypothetical, the "ACES DRT panel"
+references were corrected to "ACES DRT stage" (it's a Stack stage type
+now, not a standalone panel, since an earlier cleanup pass), and the
+"never run on real hardware" framing in step 0 was corrected since the
+whole app has by now been exercised extensively on Tom's actual Mac.
+
+Verified: full suite run file-by-file (all 33 `test_*.py` files, 383
+individual `-- OK` checks across them) -- all pass, zero failures. Real
+`python3 setup.py py2app` build succeeded and the packaged app was
+confirmed launching correctly on real hardware, not just script-mode.
+
+**Still pending, not part of this entry**: low-profile rectangular slider
+handles (currently circular), and deriving a tertiary UI color
+automatically from the accent color (33% darker). Next up: the GPU
+hardware-acceleration project scoped in phase 5 above.

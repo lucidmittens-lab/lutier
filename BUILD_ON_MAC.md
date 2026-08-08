@@ -12,11 +12,11 @@ the path, if you don't want to type it out).
 
 ## 0. Test the GUI as a plain script first
 
-Do this before packaging anything. This app is heavier than the HDR
-metadata patcher -- PySide6, pyqtgraph's OpenGL module, colour-science,
-scipy -- and none of `browser_panel.py`, `lut_viewer_3d.py`, or
-`main_window.py` have ever actually been run on a real display; only
-syntax-checked. The 3D viewer specifically is the least certain part.
+Do this before packaging anything, even though the app (including the 3D
+viewer) has by now been run and exercised extensively on real macOS
+hardware across many sessions -- packaging can still surface its own
+issues (missing bundled assets, Qt plugin bundling) independent of
+whether the unpackaged script runs fine.
 
 ```
 pip3 install -r requirements.txt
@@ -65,6 +65,9 @@ scipy) so expect it to take noticeably longer and produce a few hundred MB
 ```
 dist/LUTier.app
 ```
+
+Confirmed working end-to-end (single-arch build, this exact sequence) on
+2026-08-08.
 
 ## 4. First launch
 
@@ -119,31 +122,37 @@ application.
 
 ## Troubleshooting
 
-**`universal2` build fails** -- `setup.py` requests a universal2 (Intel +
-Apple Silicon) build, which needs your build-time Python itself to be
-universal2 *and* universal2 wheels for `numpy`/`scipy` specifically (the
-HDR tool sidestepped this entirely by being pure stdlib -- this one
-doesn't). python.org installers are universal2 by default (3.9.1+);
-Homebrew's usually aren't, and Homebrew's scipy/numpy wheels are typically
-single-arch. Either install Python from python.org and reinstall
-`requirements.txt` under it, or delete the `'arch': 'universal2'` line in
-`setup.py` and build single-arch for whichever Mac you're on -- fine for
-peer testing, revisit before wider distribution.
+**`universal2` build fails, or you want one** -- `setup.py` currently
+builds single-arch (whatever Mac you run it on), not universal2, because
+of a confirmed wheel mismatch: as of 2026-08-08 the `numpy`/`scipy`
+installed here (via `pip3 install -r requirements.txt` under a python.org
+universal2 Python) are arm64-only wheels (checked with `lipo -info` on
+their compiled `.so` files), not universal2, even though the Python
+interpreter itself is a proper universal2 fat binary. A universal2
+py2app build needs universal2 wheels for `numpy`/`scipy` specifically, not
+just a universal2 Python (the HDR tool sidestepped this entirely by being
+pure stdlib -- this one doesn't). To get a true universal2 build later:
+find/build universal2 wheels for `numpy`/`scipy` (Homebrew's are typically
+single-arch and won't help) and reinstall under them, then add back
+`'arch': 'universal2'` in `setup.py`'s `OPTIONS`. Until then, single-arch
+is fine for peer testing on Macs matching the build machine's
+architecture.
 
 **Need to change the icon again later** -- just rerun step 1 with a new
 source image, then steps 3-4.
 
-**ACES DRT panel is grayed out / "PyOpenColorIO isn't installed"** -- the
-Scopes panel doesn't need this, but the ACES DRT panel does:
+**ACES DRT stage is grayed out / "PyOpenColorIO isn't installed"** -- the
+Scopes panel doesn't need this, but the Stack's ACES DRT stage type does:
 `pip3 install opencolorio` (already in `requirements.txt`, so step 0's
-`pip3 install -r requirements.txt` should have covered it -- if the panel
-is still disabled after that, check for a real import error by running
+`pip3 install -r requirements.txt` should have covered it -- if it's
+still disabled after that, check for a real import error by running
 `python3 -c "import PyOpenColorIO"` directly and paste whatever it says).
-OCIO ships as a compiled extension, so the same universal2 caveat as
-numpy/scipy applies if you hit arch-related build errors.
+OCIO ships as a compiled extension, so the same single-arch/universal2
+caveat as numpy/scipy applies if you hit arch-related build errors.
 
-**Build succeeds but the window is blank / crashes on 3D view** -- almost
-certainly the untested `lut_viewer_3d.py` (OpenGL widget). Note whether it
-crashes immediately or only when a LUT is loaded, and paste the Terminal
-output from running the binary directly (step 5.1 above) so we can narrow
-it down.
+**Build succeeds but the window is blank / crashes on 3D view** -- check
+whether it's packaging-specific (works fine via `python3 main_window.py`
+but not from the built `.app`) or a real regression in `lut_viewer_3d.py`
+(OpenGL widget) itself. Note whether it crashes immediately or only when a
+LUT is loaded, and paste the Terminal output from running the binary
+directly (step 5.1 above) so we can narrow it down.

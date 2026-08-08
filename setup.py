@@ -143,11 +143,12 @@ OPTIONS = {
         'wipe_compare_widget',
         'workspace_io',
     ],
-    # Build a universal binary so the same .app runs on both Intel and
-    # Apple Silicon Macs. Requires a universal2 Python build AND universal2
-    # wheels for numpy/scipy -- see BUILD_ON_MAC.md if this fails; the fix
-    # is usually to delete this line and build single-arch instead.
-    'arch': 'universal2',
+    # Universal2 ('arch': 'universal2') would make the same .app run on both
+    # Intel and Apple Silicon, but needs universal2 wheels for numpy/scipy --
+    # confirmed 2026-08-08 that the installed numpy/scipy wheels are arm64-only
+    # (single-arch), so that build fails here. Building single-arch (whatever
+    # this machine is) instead; see BUILD_ON_MAC.md for how to get universal2
+    # wheels if wider distribution is needed later.
     # Generate this with make_icon.sh from a square source PNG. Comment
     # this line out (or leave AppIcon.icns missing) to build with the
     # default generic py2app icon.
