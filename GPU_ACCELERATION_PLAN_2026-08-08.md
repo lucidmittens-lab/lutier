@@ -58,7 +58,15 @@ real fix for both the resolution ceiling and the interaction latency.
   that gets regenerated per slider tick -- the CPU side already learned
   this lesson (there's no equivalent "cache the CDL processor" perf fix
   because it wouldn't help), and the GPU design should start from it
-  rather than rediscovering it.
+  rather than rediscovering it. **Confirmed in Stage 2 (see that
+  section's findings below): OCIO's own GPU codegen does NOT do this for
+  free** -- `getDefaultGPUProcessor()` bakes CDL's values as literal GLSL
+  constants by default, same as everything else it generates. Getting
+  real uniforms means either switching to `ocio.GradingPrimaryTransform`
+  (has `makeDynamic()`) or hand-writing CDL's shader directly instead of
+  going through OCIO's codegen for this one stage kind -- a real decision
+  Stage 3 needs to make explicitly, not something OCIO hands over
+  automatically just because CDL's math happens to be uniform-friendly.
 - **There is already a block-level result cache: `StageCache`
   (`stack.py`).** It partitions the stage list into blocks (one ordinary
   stage = one block; a fork_split..fork_merge region = one block),
@@ -161,6 +169,71 @@ delta from Stage 0's trade-off decision, instead of an assumption.
 
 Deliverable: a written note (numbers, not vibes) on max/mean pixel delta
 between CPU and GPU output for a representative stack.
+
+**DONE (2026-08-08) -- see `gpu_shader_prototype.py`, run directly with
+`python3 gpu_shader_prototype.py`.** Real GPU render via a Qt
+`QOffscreenSurface`/`QOpenGLContext` (no visible window, but a genuine
+GPU context -- `GL_VERSION` reported `4.1 Metal - 88`, `GL_RENDERER`
+`Apple M1`), full float32 throughout (input texture, FBO attachment, and
+readback all `RGBA32F`) so the measured delta reflects the shader math
+itself, not an incidental 8-bit texture round-trip. Tested against both a
+real bundled sample image and a synthetic gradient deliberately spanning
+outside [0,1] (since ACES-family working spaces routinely produce
+negative and >1.0 values, and CDL's `power()` term in particular could in
+principle behave differently GPU vs. CPU on a negative base):
+
+| Transform | Test image | max \|delta\| | mean \|delta\| | CPU output range |
+|---|---|---|---|---|
+| CDL | bundled sample (256px, [0,1]) | 0.0000102 | 0.0000031 | [0.09, 0.87] |
+| CDL | synthetic gradient ([-0.1, 1.1]) | 0.0000174 | 0.0000038 | [-0.31, 1.42] |
+| ACES DRT | bundled sample (256px, [0,1]) | 0.0000422 | 0.0000024 | [-0.93, 1.00] |
+| ACES DRT | synthetic gradient ([-0.1, 1.1]) | 0.0001533 | 0.0000041 | [-6.10, 1.20] |
+
+**Verdict on Stage 0's precision question**: negligible in practice. Even
+the worst case (ACES DRT, wide-range synthetic input) is ~0.00015 against
+a multi-unit output range -- more than 30x smaller than one 8-bit display
+quantization step (1/255 ≈ 0.0039), and still under one 12-bit code value
+(1/4095 ≈ 0.000244) -- checked since 8-bit is a low bar for a color tool:
+CDL's worst case is ~0.07 of a 12-bit step (0.0000174 / 0.000244), ACES
+DRT's worst case is ~0.63 of a 12-bit step on the synthetic out-of-range
+test but only ~0.17 of a step (0.0000422 / 0.000244) on the realistic
+bundled-image test -- the worst number only shows up on deliberately
+extreme synthetic input, not realistic content. Stage 0's "surface an
+approximate-preview indicator in the UI" branch does not appear
+warranted based on this measurement, at either bit depth; the "fast and
+representative" framing needs no visible caveat for these two transform
+kinds. (Not yet measured: the non-OCIO `lut` stage kind, deferred to
+Stage 4 where its GPU path is actually decided.)
+
+**A second, equally important finding -- shader SHAPE, not just
+accuracy**: `getDefaultGPUProcessor()`'s default codegen bakes BOTH
+CDL's and ACES DRT's parameter values as literal GLSL constants
+(0 uniforms, 0 textures, for both) rather than exposing them as
+uniforms. Checked directly: `ocio.CDLTransform` has no dynamic-property
+API at all; `ocio.GradingPrimaryTransform` (a newer, real-time-editing-
+oriented OCIO 2.x transform type) does, via `makeDynamic()`/`isDynamic()`
+/`makeNonDynamic()`. Practical implication for Stage 3:
+- **ACES DRT is fine as-is.** Its parameters (working colourspace,
+  display, view) are picked, not continuously dragged -- regenerating/
+  recompiling its shader only on an actual selection change matches
+  exactly how the CPU side already caches it
+  (`_get_output_transform_processor`, `lru_cache`d on those same
+  strings). No design change needed.
+- **CDL is the real design decision Stage 3 needs to make**, since its
+  slope/offset/power/sat come from continuously-dragged sliders and
+  regenerating+recompiling a shader on every tick would reintroduce
+  exactly the kind of per-edit cost this whole project exists to
+  eliminate. Two real options, not yet chosen: (a) migrate this app's
+  CDL representation from `ocio.CDLTransform` to
+  `ocio.GradingPrimaryTransform` to get real OCIO-managed uniforms via
+  `makeDynamic()`, or (b) bypass OCIO's CDL codegen entirely for this one
+  stage kind and hand-write the (small, ~10-line) CDL fragment shader
+  directly with explicit `glUniform3fv` calls for slope/offset/power and
+  a `glUniform1f` for saturation -- CDL's math is simple enough that
+  hand-writing it isn't a real burden, unlike ACES DRT's ~13,500-char
+  generated shader (B-spline curves, gamut tables), which is not
+  something to hand-write. Decide this at the start of Stage 3, not
+  during it.
 
 ### Stage 3 -- Shader generation + caching layer
 
