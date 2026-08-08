@@ -107,7 +107,7 @@ from PySide6.QtGui import QPainter, QPen
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QDoubleSpinBox,
-    QGroupBox, QSlider, QCheckBox, QLineEdit, QStackedWidget, QInputDialog,
+    QGroupBox, QSlider, QCheckBox, QStackedWidget, QInputDialog,
     QDialog, QDialogButtonBox, QFrame, QToolButton, QAbstractItemView, QMenu,
     QSizePolicy,
 )
@@ -121,6 +121,7 @@ from color_wheel_widget import ColorBalanceWheel
 from app_logic import load_lut_any_format, create_identity_lut, list_available_colourspaces
 from printer_lights import POINTS_PER_STOP, DEFAULT_WORKING_COLOURSPACE
 import hover_inspector
+from spinbox_scrub import enable_drag_to_scrub
 from browser_panel import LUT_PATH_MIME
 from floating_dialog import make_floating_tool_window, show_floating
 # style.HINT_TEXT_HEX -- see style.py's FOURTEENTH PASS docstring: hint
@@ -775,6 +776,7 @@ class StackPanel(QObject):
         self.opacity_spin.setRange(0, 100)
         self.opacity_spin.setValue(100)
         self.opacity_spin.setSuffix("%")
+        enable_drag_to_scrub(self.opacity_spin)
         self.opacity_spin.valueChanged.connect(self._on_opacity_changed)
         selection_row.addWidget(self.opacity_spin)
         selection_row.addStretch(1)
@@ -893,6 +895,23 @@ class StackPanel(QObject):
     # Own popup dialog rather than inline in Stack Params -- see this
     # module's docstring.
 
+    @staticmethod
+    def _make_domain_spin(default_value):
+        """One Domain min/max field (per Tom -- these used to be plain
+        QLineEdits, "supposed to be" spin boxes already but weren't).
+        Wide range and 4 decimals: a domain bound is a HDR/scene-linear
+        LUT's actual input range, which can legitimately be negative or
+        run well past [0,1] (e.g. an extended-range IDT/LMT), not just a
+        display-referred 0-1 value like most of this app's other numeric
+        fields."""
+        spin = QDoubleSpinBox()
+        spin.setRange(-10000.0, 10000.0)
+        spin.setDecimals(4)
+        spin.setSingleStep(0.01)
+        spin.setValue(default_value)
+        enable_drag_to_scrub(spin)
+        return spin
+
     def _build_global_settings_dialog(self):
         dialog = QDialog(self.list_widget_area)
         make_floating_tool_window(dialog)
@@ -918,10 +937,10 @@ class StackPanel(QObject):
         for channel in ("R", "G", "B"):
             row = QHBoxLayout()
             row.addWidget(QLabel(f"{channel} min:"))
-            min_field = QLineEdit("0.0")
+            min_field = self._make_domain_spin(0.0)
             row.addWidget(min_field)
             row.addWidget(QLabel(f"{channel} max:"))
-            max_field = QLineEdit("1.0")
+            max_field = self._make_domain_spin(1.0)
             row.addWidget(max_field)
             self._domain_fields[channel] = (min_field, max_field)
             outer.addLayout(row)
@@ -930,8 +949,8 @@ class StackPanel(QObject):
             min_field.setEnabled(False)
             max_field.setEnabled(False)
         r_min, r_max = self._domain_fields["R"]
-        r_min.textChanged.connect(self._sync_linked_domain_fields)
-        r_max.textChanged.connect(self._sync_linked_domain_fields)
+        r_min.valueChanged.connect(self._sync_linked_domain_fields)
+        r_max.valueChanged.connect(self._sync_linked_domain_fields)
 
         use_first_stage_button = QPushButton("Use Input Bounds From First Stack Entry")
         use_first_stage_button.setToolTip(
@@ -965,8 +984,8 @@ class StackPanel(QObject):
         lo, hi = self.stack.domain_min, self.stack.domain_max
         for i, channel in enumerate(("R", "G", "B")):
             min_field, max_field = self._domain_fields[channel]
-            min_field.setText(f"{lo[i]:g}")
-            max_field.setText(f"{hi[i]:g}")
+            min_field.setValue(lo[i])
+            max_field.setValue(hi[i])
         uniform = len(set(lo)) == 1 and len(set(hi)) == 1
         self.domain_link_checkbox.setChecked(uniform)
 
@@ -1013,8 +1032,8 @@ class StackPanel(QObject):
 
         for i, channel in enumerate(("R", "G", "B")):
             min_field, max_field = self._domain_fields[channel]
-            min_field.setText(f"{lo[i]:g}")
-            max_field.setText(f"{hi[i]:g}")
+            min_field.setValue(float(lo[i]))
+            max_field.setValue(float(hi[i]))
 
         uniform = bool(np.all(lo == lo[0]) and np.all(hi == hi[0]))
         self.domain_link_checkbox.setChecked(uniform)
@@ -1057,8 +1076,8 @@ class StackPanel(QObject):
         r_min, r_max = self._domain_fields["R"]
         for channel in ("G", "B"):
             min_field, max_field = self._domain_fields[channel]
-            min_field.setText(r_min.text())
-            max_field.setText(r_max.text())
+            min_field.setValue(r_min.value())
+            max_field.setValue(r_max.value())
 
     def _on_apply_global_settings_clicked(self):
         try:
@@ -1069,12 +1088,12 @@ class StackPanel(QObject):
         if size < 2:
             QMessageBox.warning(self._global_settings_dialog, "Invalid size", "Grid size must be at least 2.")
             return
-        try:
-            domain_min = [float(self._domain_fields[c][0].text()) for c in ("R", "G", "B")]
-            domain_max = [float(self._domain_fields[c][1].text()) for c in ("R", "G", "B")]
-        except ValueError:
-            QMessageBox.warning(self._global_settings_dialog, "Invalid domain", "Min/max must be numbers.")
-            return
+        # No "is this actually a number?" check needed anymore -- these
+        # are QDoubleSpinBox fields now (per Tom), which can never hold
+        # invalid text in the first place, unlike the plain QLineEdits
+        # they replaced.
+        domain_min = [self._domain_fields[c][0].value() for c in ("R", "G", "B")]
+        domain_max = [self._domain_fields[c][1].value() for c in ("R", "G", "B")]
         if any(mn >= mx for mn, mx in zip(domain_min, domain_max)):
             QMessageBox.warning(self._global_settings_dialog, "Invalid domain", "Each channel's min must be less than its max.")
             return
@@ -2072,6 +2091,7 @@ class StackPanel(QObject):
             master_spin.setDecimals(4)
             master_spin.setSingleStep(step)
             master_spin.setValue(default)
+            enable_drag_to_scrub(master_spin)
             master_spin.valueChanged.connect(
                 lambda _v, fk=field_key: self._on_cdl_master_changed(fk))
             master_col.addWidget(master_spin)
@@ -2085,6 +2105,7 @@ class StackPanel(QObject):
                 spin.setDecimals(4)
                 spin.setSingleStep(step)
                 spin.setValue(default)
+                enable_drag_to_scrub(spin)
                 spin.valueChanged.connect(
                     lambda _v, fk=field_key: self._on_cdl_channel_spin_changed(fk))
                 fine_row.addWidget(QLabel(channel))
@@ -2127,6 +2148,7 @@ class StackPanel(QObject):
         self.cdl_sat_spin.setSingleStep(0.01)
         self.cdl_sat_spin.setValue(1.0)
         self.cdl_sat_spin.setMaximumWidth(80)
+        enable_drag_to_scrub(self.cdl_sat_spin)
         self.cdl_sat_spin.valueChanged.connect(self._on_cdl_sat_spin_changed)
         sat_row.addWidget(self.cdl_sat_spin)
         outer.addLayout(sat_row)

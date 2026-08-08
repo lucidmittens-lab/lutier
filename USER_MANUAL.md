@@ -42,7 +42,10 @@ This is a quick feature outline for testers, not a full reference.
   dragging, toggle any stage on/off, give it its own opacity, click a
   stage to edit its parameters in the Parameters panel.
 - **Parameters** — the inspector for whichever stage is selected in the
-  Stack.
+  Stack. Every numeric field throughout the app (CDL Slope/Offset/Power/
+  Sat, Stack opacity, Domain min/max, ...) can be click-dragged left/right
+  to scrub its value up/down, not just typed into or nudged with its
+  up/down arrows — hold **Shift** while dragging for finer control.
 - **Scopes** — Histogram, Waveform, and Vectorscope share one panel (pick
   which shows from its "☰" menu or the Scopes menu bar entry). Two
   Waveform-only tree submenus live in that same menu: "Waveform Style"

@@ -131,6 +131,7 @@ OPTIONS = {
         'scopes',
         'scopes_panel',
         'session_io',
+        'spinbox_scrub',
         'stack',
         'stack_memories_panel',
         'stack_memory',
