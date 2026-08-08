@@ -112,6 +112,59 @@ def test_wheel_zoom_clamps_to_min_and_max():
           "MAX_ZOOM rather than running away -- OK")
 
 
+def test_zoom_getter_matches_internal_state():
+    w = _widget()
+    assert w.zoom() == 1.0
+    _wheel(w, (200, 150), notches=2)
+    assert w.zoom() == w._zoom
+    assert w.zoom() > 1.0
+    print("WipeCompareWidget.zoom(): public getter matches internal "
+          "state -- OK")
+
+
+def test_zoom_changed_emits_on_a_real_zoom_change():
+    w = _widget()
+    seen = []
+    w.zoom_changed.connect(lambda: seen.append(w.zoom()))
+
+    _wheel(w, (200, 150), notches=1)
+    assert len(seen) == 1
+    assert seen[0] == w.zoom()
+    print("WipeCompareWidget.zoom_changed: fires once per real wheel-"
+          "driven zoom change -- OK")
+
+
+def test_zoom_changed_does_not_emit_once_already_clamped():
+    w = _widget()
+    for _ in range(200):
+        _wheel(w, (200, 150), notches=-1)  # drive to MIN_ZOOM
+    assert w.zoom() == MIN_ZOOM
+
+    seen = []
+    w.zoom_changed.connect(lambda: seen.append(True))
+    _wheel(w, (200, 150), notches=-1)  # already at the floor -- no-op
+
+    assert seen == []
+    print("WipeCompareWidget.zoom_changed: does not fire when already "
+          "clamped at MIN_ZOOM/MAX_ZOOM (SampleImagePanel shouldn't "
+          "reload the preview for a scroll that changed nothing) -- OK")
+
+
+def test_zoom_changed_emits_on_reset_view_only_if_zoom_was_not_already_fit():
+    w = _widget()
+    _wheel(w, (200, 150), notches=2)
+    seen = []
+    w.zoom_changed.connect(lambda: seen.append(True))
+
+    w.reset_view()
+    assert len(seen) == 1
+
+    w.reset_view()  # already at fit -- must not re-fire
+    assert len(seen) == 1
+    print("WipeCompareWidget.reset_view: fires zoom_changed only when "
+          "zoom actually changes -- OK")
+
+
 def test_wheel_zoom_keeps_the_point_under_the_cursor_fixed():
     """The actual point of cursor-anchored zoom: whatever image-space
     point was under the cursor before zooming must still be under it
@@ -214,6 +267,10 @@ if __name__ == "__main__":
     test_zoom_scales_the_image_rect_relative_to_fit()
     test_wheel_up_zooms_in_wheel_down_zooms_out()
     test_wheel_zoom_clamps_to_min_and_max()
+    test_zoom_getter_matches_internal_state()
+    test_zoom_changed_emits_on_a_real_zoom_change()
+    test_zoom_changed_does_not_emit_once_already_clamped()
+    test_zoom_changed_emits_on_reset_view_only_if_zoom_was_not_already_fit()
     test_wheel_zoom_keeps_the_point_under_the_cursor_fixed()
     test_middle_drag_pans_the_image()
     test_middle_release_stops_panning()

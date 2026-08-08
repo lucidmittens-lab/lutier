@@ -97,6 +97,15 @@ class WipeCompareWidget(QWidget):
     # resizeEvent, not paintEvent, since a resize is the only thing that
     # changes the answer to "is the current preview resolution enough".
     resized = Signal()
+    # Same idea as `resized`, for zoom (per Tom, following up on the zoom/
+    # pan feature): zooming in raises the answer to "is the current
+    # preview resolution enough" exactly the same way growing the panel
+    # does -- SampleImagePanel listens to this the same way it already
+    # listens to `resized` (see _desired_preview_dimension_for, which
+    # factors in self.zoom() now too). Fired from wheelEvent/reset_view
+    # only when self._zoom actually changes, not on every wheel tick that
+    # happens to be clamped at MIN_ZOOM/MAX_ZOOM already.
+    zoom_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -178,6 +187,13 @@ class WipeCompareWidget(QWidget):
     def wipe_fraction(self):
         return self._wipe_fraction
 
+    def zoom(self):
+        """1.0 = fit (the original, only-ever behavior before zoom/pan
+        existed) -- see SampleImagePanel._desired_preview_dimension_for,
+        which factors this in when deciding how much source resolution
+        the current view actually needs."""
+        return self._zoom
+
     def set_wipe_fraction(self, fraction):
         self._wipe_fraction = max(0.0, min(1.0, fraction))
         self.update()
@@ -195,9 +211,12 @@ class WipeCompareWidget(QWidget):
         left button is exactly how this widget already keeps panning
         (middle-drag) from ever conflicting with the wipe drag
         (left-drag, see mousePressEvent)."""
+        zoom_changed = self._zoom != 1.0
         self._zoom = 1.0
         self._pan = QPointF(0.0, 0.0)
         self.update()
+        if zoom_changed:
+            self.zoom_changed.emit()
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -246,6 +265,7 @@ class WipeCompareWidget(QWidget):
         now_y = new_rect.top() + rel_y * new_rect.height()
         self._pan += QPointF(cursor.x() - now_x, cursor.y() - now_y)
         self.update()
+        self.zoom_changed.emit()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

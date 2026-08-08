@@ -252,6 +252,17 @@ class SampleImagePanel(QWidget):
         self._resize_reload_timer.timeout.connect(self._upgrade_preview_resolution_if_needed)
         self.compare.resized.connect(
             lambda: self._resize_reload_timer.start(RESIZE_RELOAD_DEBOUNCE_MS))
+        # Same mechanism, now also for zoom (per Tom, following up on the
+        # zoom/pan feature): zooming in raises "how much source detail
+        # does the current view actually need" exactly the same way
+        # growing the panel does -- see _desired_preview_dimension_for,
+        # which now factors in self.compare.zoom() too. Reuses the SAME
+        # debounce timer as resize (not a separate one) since both are
+        # really the same question asked from two different triggers;
+        # rapid scroll-wheel zooming coalesces into one reload attempt
+        # once it settles, same as a rapid panel resize already does.
+        self.compare.zoom_changed.connect(
+            lambda: self._resize_reload_timer.start(RESIZE_RELOAD_DEBOUNCE_MS))
 
     def _build_layout(self):
         layout = QVBoxLayout(self)
@@ -776,19 +787,31 @@ class SampleImagePanel(QWidget):
 
     def _desired_preview_dimension_for(self, native_size):
         """How many pixels (on the longer side) the current panel size
-        actually calls for, so drawPixmap in WipeCompareWidget is scaling
-        DOWN from a higher-res source instead of stretching UP from a
-        fixed-size one -- floored at the responsiveness-driven default,
-        capped at both a hard ceiling and the source's own native
-        resolution (no point loading more detail than the file has).
-        Shared by Sample and Reference (each passes its own native_size)
-        since the panel-size half of this calculation is identical for
-        both -- they share one WipeCompareWidget."""
+        AND zoom level actually call for, so drawPixmap in
+        WipeCompareWidget is scaling DOWN from a higher-res source
+        instead of stretching UP from a fixed-size one -- floored at the
+        responsiveness-driven default, capped at both a hard ceiling and
+        the source's own native resolution (no point loading more detail
+        than the file has). Shared by Sample and Reference (each passes
+        its own native_size) since the panel-size/zoom half of this
+        calculation is identical for both -- they share one
+        WipeCompareWidget.
+
+        zoom (per Tom, following up on the zoom/pan feature) scales the
+        target linearly: zoomed in 2x means the panel is effectively
+        showing the image at twice its fit size, so it needs roughly
+        twice the source resolution to stay sharp, the same reasoning
+        that already applied to the panel simply being bigger. Without
+        this, zooming in just upscaled whatever was already loaded for
+        the un-zoomed fit view -- exactly the "downscale once then
+        upscale separately" blur this whole mechanism exists to avoid
+        for a panel resize, just not yet closed for zoom."""
         w, h = self.compare.width(), self.compare.height()
         if w <= 0 or h <= 0:
             return PREVIEW_MAX_DIMENSION
         dpr = self.compare.devicePixelRatioF()
-        target = int(round(max(w, h) * dpr))
+        zoom = self.compare.zoom()
+        target = int(round(max(w, h) * dpr * zoom))
         target = max(target, PREVIEW_MAX_DIMENSION)
         target = min(target, PREVIEW_MAX_DIMENSION_CEILING)
         if native_size is not None:
