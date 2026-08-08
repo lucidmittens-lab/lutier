@@ -64,6 +64,10 @@ This is a quick feature outline for testers, not a full reference.
   "Enable Wipe" switches to a plain single-image view (showing whatever
   "Right Image" is set to) when you don't need the split-screen compare.
   Reference has its own "Adapt Reference..." entry, unmanaged by default.
+  Scroll to zoom in/out (anchored on the cursor), middle-mouse-drag to
+  pan around, middle-double-click to reset back to fit — independent of
+  the left-click wipe divider drag, so both work at once without
+  conflicting.
 - **Stack** — the main work area: an ordered list of stages (LUT,
   Printer Lights, ACES DRT, ASC CDL, Color Space Conversion). Reorder by
   dragging, toggle any stage on/off, give it its own opacity, click a

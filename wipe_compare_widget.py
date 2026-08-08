@@ -72,6 +72,17 @@ LABEL_BG = QColor(0, 0, 0, 140)
 EMPTY_TEXT_COLOR = QColor(150, 150, 150)
 PLACEHOLDER_BG = QColor(40, 40, 40)
 
+# Zoom/pan (per Tom) -- ZOOM_STEP is the multiplier applied per "notch"
+# of scroll wheel (angleDelta().y() normalized to /120, the traditional
+# one-notch unit -- see wheelEvent), so the step size is independent of
+# whatever units/resolution a given mouse or trackpad actually reports.
+# MIN/MAX_ZOOM bound how far in/out you can go relative to "fit" (1.0) --
+# wide enough for real use, not so wide that a runaway scroll lands
+# somewhere useless (a single pixel, or so far out the image is a speck).
+ZOOM_STEP = 1.1
+MIN_ZOOM = 0.1
+MAX_ZOOM = 20.0
+
 
 class WipeCompareWidget(QWidget):
     """set_before(pixmap) / set_after(pixmap) to update images. Both are
@@ -101,6 +112,20 @@ class WipeCompareWidget(QWidget):
         # ignored while this is False, not cleared -- re-enabling the wipe
         # doesn't lose whatever was on the left side.
         self._wipe_enabled = True
+        # Zoom/pan (per Tom) -- zoom is a multiplier on top of the normal
+        # "fit to panel" scale _image_rect already computes (1.0 = fit,
+        # unchanged from before this existed), pan is a widget-space
+        # pixel offset added to the centered position. Deliberately NOT
+        # reset by set_before/set_after: those fire on every single live
+        # stack edit (see sample_image_panel.py's refresh_preview), so
+        # resetting here would mean zooming in to inspect a detail while
+        # grading gets thrown away on the very next slider tick -- see
+        # reset_view for the actual, explicit way to get back to "fit".
+        self._zoom = 1.0
+        self._pan = QPointF(0.0, 0.0)
+        self._panning = False
+        self._pan_start_mouse = None
+        self._pan_start_offset = None
         self.setMinimumHeight(220)
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -161,8 +186,66 @@ class WipeCompareWidget(QWidget):
     def reset_wipe(self):
         self.set_wipe_fraction(0.5)
 
+    def reset_view(self):
+        """Resets zoom/pan back to "fit" -- the middle-mouse-button
+        double-click gesture (per Tom). Deliberately a SEPARATE gesture
+        from the existing left-button double-click above (reset_wipe) --
+        zoom/pan and the wipe divider are two independent things a user
+        might want to reset without disturbing the other, and middle vs.
+        left button is exactly how this widget already keeps panning
+        (middle-drag) from ever conflicting with the wipe drag
+        (left-drag, see mousePressEvent)."""
+        self._zoom = 1.0
+        self._pan = QPointF(0.0, 0.0)
+        self.update()
+
     def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self.reset_view()
+            return
         self.reset_wipe()
+
+    def wheelEvent(self, event):
+        """Scroll to zoom (per Tom), anchored on the cursor -- the image
+        point currently under the cursor stays under it as the zoom
+        level changes, the standard behavior in image viewers/DCC tools
+        (zooming around the widget's center regardless of where the
+        cursor actually is would feel wrong the moment you're not
+        centered)."""
+        old_rect = self._image_rect()
+        if old_rect is None or old_rect.width() <= 0 or old_rect.height() <= 0:
+            return
+        cursor = event.position()
+        # Cursor's position as a FRACTION of the current image rect
+        # (0/1 = left/right edge) -- kept fixed across the zoom change,
+        # rather than the absolute pixel position, since the rect itself
+        # is about to change size. Extrapolates harmlessly (a fraction
+        # outside [0,1]) if the cursor is over the letterboxed gutter
+        # rather than the image itself.
+        rel_x = (cursor.x() - old_rect.left()) / old_rect.width()
+        rel_y = (cursor.y() - old_rect.top()) / old_rect.height()
+
+        # angleDelta().y() is in eighths of a degree, 120 per traditional
+        # "one wheel notch" -- normalizing to notches keeps the zoom step
+        # consistent regardless of whatever units/resolution a given
+        # mouse or trackpad actually reports.
+        notches = event.angleDelta().y() / 120.0
+        if notches == 0:
+            return
+        new_zoom = max(MIN_ZOOM, min(MAX_ZOOM, self._zoom * (ZOOM_STEP ** notches)))
+        if new_zoom == self._zoom:
+            return
+        self._zoom = new_zoom
+
+        # Where that same relative point landed after the zoom change,
+        # BEFORE correcting pan -- the gap between this and the cursor's
+        # actual (unchanged) position is exactly how far pan needs to
+        # move to put it back under the cursor.
+        new_rect = self._image_rect()
+        now_x = new_rect.left() + rel_x * new_rect.width()
+        now_y = new_rect.top() + rel_y * new_rect.height()
+        self._pan += QPointF(cursor.x() - now_x, cursor.y() - now_y)
+        self.update()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -173,7 +256,15 @@ class WipeCompareWidget(QWidget):
 
     def _image_rect(self):
         """Centered, aspect-preserved rect both pixmaps are drawn into,
-        sized off whichever pixmap is available."""
+        sized off whichever pixmap is available. self._zoom (1.0 = fit,
+        matching the original always-fit behavior exactly) multiplies
+        the base fit scale; self._pan then offsets the centered position
+        by a widget-space pixel amount -- see wheelEvent/mousePressEvent
+        for how each actually changes. When zoomed in, this legitimately
+        returns a rect LARGER than the widget's own -- paintEvent's
+        existing QPainter (clipped to this widget by Qt already) simply
+        shows whatever portion of it falls within the panel, same as any
+        other image viewer's zoomed-in view."""
         reference = self._after if self._after is not None else self._before
         if reference is None or reference.isNull():
             return None
@@ -181,10 +272,11 @@ class WipeCompareWidget(QWidget):
         if img_w == 0 or img_h == 0:
             return None
         widget_rect = QRectF(self.rect())
-        scale = min(widget_rect.width() / img_w, widget_rect.height() / img_h)
+        fit_scale = min(widget_rect.width() / img_w, widget_rect.height() / img_h)
+        scale = fit_scale * self._zoom
         draw_w, draw_h = img_w * scale, img_h * scale
-        x = (widget_rect.width() - draw_w) / 2
-        y = (widget_rect.height() - draw_h) / 2
+        x = (widget_rect.width() - draw_w) / 2 + self._pan.x()
+        y = (widget_rect.height() - draw_h) / 2 + self._pan.y()
         return QRectF(x, y, draw_w, draw_h)
 
     # ---- painting -----------------------------------------------------
@@ -300,6 +392,16 @@ class WipeCompareWidget(QWidget):
     # ---- mouse interaction ----------------------------------------------
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.MiddleButton:
+            # Panning (per Tom) -- middle button specifically, so it can
+            # never conflict with the left-button wipe-divider drag right
+            # below: both can be reached from the exact same cursor
+            # position without either one stealing the other's gesture.
+            self._panning = True
+            self._pan_start_mouse = event.position()
+            self._pan_start_offset = QPointF(self._pan)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
         if not self._wipe_enabled:
             return
         image_rect = self._image_rect()
@@ -308,6 +410,11 @@ class WipeCompareWidget(QWidget):
             self._update_wipe_from_x(event.position().x(), image_rect)
 
     def mouseMoveEvent(self, event):
+        if self._panning:
+            delta = event.position() - self._pan_start_mouse
+            self._pan = self._pan_start_offset + delta
+            self.update()
+            return
         if not self._wipe_enabled:
             return
         image_rect = self._image_rect()
@@ -323,6 +430,12 @@ class WipeCompareWidget(QWidget):
         )
 
     def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._panning = False
+            self._pan_start_mouse = None
+            self._pan_start_offset = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            return
         self._dragging = False
 
     def _update_wipe_from_x(self, x, image_rect):
