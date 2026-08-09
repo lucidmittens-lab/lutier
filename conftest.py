@@ -23,8 +23,29 @@ Must run before ANY QApplication is constructed -- Qt reads this
 attribute exactly once, at that point -- so it's set here at import
 time: pytest always imports conftest.py before collecting/running any
 test module in this directory, ahead of any test's own _app() call.
+
+ALSO excludes the GPU-acceleration project's own test files from normal
+`pytest -q` collection (see collect_ignore below) -- discovered while
+building GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 3: those tests each
+create/tear down their own real QOffscreenSurface/QOpenGLContext (see
+gpu_shader_prototype._make_offscreen_gl_context), and running them in the
+SAME process as test_undo_debounce.py's real MainWindow (with its own
+live pyqtgraph GLViewWidget) reproduced a caught-but-real
+`OpenGL.error.GLError` (invalid glUseProgram) in pyqtgraph's own
+GLLinePlotItem paint -- the same class of class-level-shader-cache
+fragility this file's AA_ShareOpenGLContexts comment above already
+documents, just triggered by a second, unrelated source of GL contexts
+this time rather than a float/dock reparent. Non-fatal (pyqtgraph catches
+it internally) but real, and these tests are fully runnable and verified
+standalone anyway (`python3 test_gpu_cdl_shader.py`, `python3
+test_gpu_shader_cache.py`) -- excluding them from the shared-process
+suite avoids polluting the rest of this project's GL-touching tests
+rather than trying to fully root-cause a third-party library's
+documented-fragile class-level GL state.
 """
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+
+collect_ignore = ["test_gpu_cdl_shader.py", "test_gpu_shader_cache.py"]

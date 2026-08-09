@@ -26,7 +26,8 @@ Run with: python3 gpu_shader_prototype.py
 import sys
 
 import numpy as np
-from PySide6.QtGui import QGuiApplication, QOffscreenSurface, QOpenGLContext, QSurfaceFormat
+from PySide6.QtGui import QOffscreenSurface, QOpenGLContext, QSurfaceFormat
+from PySide6.QtWidgets import QApplication
 from OpenGL import GL as gl
 import PyOpenColorIO as ocio
 
@@ -70,12 +71,20 @@ def _make_offscreen_gl_context():
     """Real (not simulated) OpenGL core-profile context via a Qt
     QOffscreenSurface -- no visible window, but a genuine GPU-backed
     context, same "actual render, not theory" bar as this project's own
-    screenshot-verification discipline elsewhere. QGuiApplication (not
-    the heavier QApplication -- no widgets used here) is the minimum Qt
-    needs before any surface/context can be created. GL 4.1 core is the
+    screenshot-verification discipline elsewhere. Uses QApplication, not
+    the lighter QGuiApplication a widget-less GL script would normally
+    reach for -- Qt allows only ONE application singleton per process,
+    and every other test file in this project constructs a real
+    QApplication (needed for MainWindow's actual widgets). A
+    QGuiApplication constructed first here caused a real, reproduced
+    "Fatal Python error: Aborted" crash when a LATER test in the same
+    pytest run tried to build a QApplication-backed MainWindow (with its
+    own real GLViewWidget, see lut_viewer_3d.py) against a process whose
+    app singleton was only ever a QGuiApplication -- confirmed by
+    switching to QApplication here, which fixed it. GL 4.1 core is the
     highest macOS itself exposes, comfortably covering GLSL_4_0 (needs
     GL 4.0+) which is the language OCIO is asked to emit below."""
-    app = QGuiApplication.instance() or QGuiApplication(sys.argv)
+    app = QApplication.instance() or QApplication(sys.argv)
 
     fmt = QSurfaceFormat()
     fmt.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)
@@ -135,15 +144,37 @@ def _link_program(vertex_src, fragment_src):
     return program
 
 
-def render_ocio_shader_on_gpu(ocio_shader_text, rgb_array):
+def compile_ocio_program(ocio_shader_text):
+    """Link `ocio_shader_text` (an OCIOMain-defining GLSL fragment --
+    either OCIO's own generated text, or gpu_cdl_shader.CDL_SHADER_SOURCE,
+    since both define the same OCIOMain(vec4)->vec4 contract) into a full,
+    ready-to-use program. Split out from render_ocio_shader_on_gpu (below)
+    so gpu_shader_cache.py's caching layer can compile once per distinct
+    stage configuration and reuse the resulting program across many
+    render_program_on_gpu calls -- the whole point of Stage 3."""
+    return _link_program(_VERTEX_SHADER,
+                          _FRAGMENT_SHADER_TEMPLATE.format(ocio_shader_text=ocio_shader_text))
+
+
+def render_program_on_gpu(program, rgb_array, set_uniforms=None):
     """Render `rgb_array` (H,W,3 float32, any range -- NOT assumed [0,1])
-    through `ocio_shader_text`'s OCIOMain function on the actual GPU,
-    returns an (H,W,3) float32 array. Full float32 throughout (input
-    texture, framebuffer attachment, and readback all RGBA32F) so any
-    precision delta measured against the CPU path is coming from the
-    shader MATH itself, not from an incidental 8-bit texture round-trip
-    that would exist in a real app's preview pipeline anyway but would
-    muddy what this specific comparison is trying to isolate."""
+    through an already-compiled/linked `program` (see compile_ocio_program)
+    on the actual GPU, returns an (H,W,3) float32 array. Full float32
+    throughout (input texture, framebuffer attachment, and readback all
+    RGBA32F) so a precision comparison against the CPU path reflects the
+    shader MATH itself, not an incidental 8-bit texture round-trip that
+    would exist in a real app's preview pipeline anyway but would muddy
+    what this specific comparison is trying to isolate.
+
+    `set_uniforms`, if given, is called as `set_uniforms(program)` right
+    after glUseProgram but before the draw call -- e.g.
+    gpu_cdl_shader.set_cdl_uniforms bound via functools.partial -- the
+    hook a uniform-driven shader (unlike OCIO's own constants-baked
+    codegen) needs to actually push its current parameter values before
+    each render. Does NOT compile/delete `program` -- caller (or
+    gpu_shader_cache.py) owns that lifecycle, since the entire reason this
+    is split from render_ocio_shader_on_gpu is to let one compiled program
+    render many times across edits without recompiling."""
     h, w = rgb_array.shape[:2]
     rgba = np.empty((h, w, 4), dtype=np.float32)
     rgba[..., :3] = rgb_array
@@ -154,9 +185,6 @@ def render_ocio_shader_on_gpu(ocio_shader_text, rgb_array):
     # bothering to flip -- flagged only so a future reader doesn't wonder
     # why row 0 here doesn't visually match row 0 of a saved PNG.
     rgba = np.ascontiguousarray(rgba)
-
-    program = _link_program(_VERTEX_SHADER,
-                             _FRAGMENT_SHADER_TEMPLATE.format(ocio_shader_text=ocio_shader_text))
 
     vao = gl.glGenVertexArrays(1)
     gl.glBindVertexArray(vao)
@@ -185,6 +213,8 @@ def render_ocio_shader_on_gpu(ocio_shader_text, rgb_array):
 
     gl.glViewport(0, 0, w, h)
     gl.glUseProgram(program)
+    if set_uniforms is not None:
+        set_uniforms(program)
     gl.glActiveTexture(gl.GL_TEXTURE0)
     gl.glBindTexture(gl.GL_TEXTURE_2D, tex_in)
     gl.glUniform1i(gl.glGetUniformLocation(program, "uInput"), 0)
@@ -196,10 +226,24 @@ def render_ocio_shader_on_gpu(ocio_shader_text, rgb_array):
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
     gl.glDeleteFramebuffers(1, [fbo])
     gl.glDeleteTextures([tex_in, tex_out])
-    gl.glDeleteProgram(program)
     gl.glDeleteVertexArrays(1, [vao])
 
     return result[..., :3].copy()
+
+
+def render_ocio_shader_on_gpu(ocio_shader_text, rgb_array):
+    """One-shot convenience: compile `ocio_shader_text` into a fresh
+    program, render `rgb_array` through it once, delete the program.
+    Used by this script's own CDL/ACES DRT validation below, where each
+    stage configuration is only ever rendered once -- gpu_shader_cache.py
+    uses compile_ocio_program/render_program_on_gpu directly instead,
+    since ITS whole point is reusing one compiled program across many
+    renders."""
+    program = compile_ocio_program(ocio_shader_text)
+    try:
+        return render_program_on_gpu(program, rgb_array)
+    finally:
+        gl.glDeleteProgram(program)
 
 
 def _report_delta(label, cpu_result, gpu_result):

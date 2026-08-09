@@ -252,6 +252,65 @@ folder").
 Deliverable: a benchmark showing shader-generation cost is paid once per
 distinct stage configuration, not once per frame/edit.
 
+**DONE (2026-08-08).** Per the CDL uniform question Stage 2 raised, Tom's
+decision: hand-write CDL's shader (bit-accuracy required), and separately
+backlog `ocio.GradingPrimaryTransform` as a possible FUTURE, ADDITIONAL
+stage kind of its own -- not a CDL replacement, since CDL's job in this
+app is specifically standard/interchange ASC CDL support, not the
+primary grading tool (added to Backlog below).
+
+- **`gpu_cdl_shader.py`** -- `CDL_SHADER_SOURCE`, a hand-transcribed copy
+  of OCIO's own generated GLSL for both CDL styles (`no_clip`/`asc`),
+  parameterized via real uniforms (`uCdlSlope`/`uCdlOffset`/`uCdlPower`/
+  `uCdlSaturation`/`uCdlClamped`) instead of baked constants.
+  `test_gpu_cdl_shader.py` confirms it matches OCIO's own generated
+  shader to within 1.4e-7 (float32 noise) across 16 random (style,
+  params) combinations, and matches `cdl.apply_cdl` (CPU) to within
+  2.9e-5 -- not a one-time eyeball check, a repeatable test.
+- **`gpu_shader_cache.py`** -- `OcioGpuStageCache` (fingerprint ->
+  compiled program, for ACES DRT/colorspace-shaped stage kinds whose
+  shader depends on a small, rarely-changing config rather than
+  continuously-dragged values) plus a disk-persisted GLSL SOURCE cache
+  under `~/Library/Application Support/LUTier/gpu_shader_cache/`
+  (Tom's "system library folder," per Resolve) keyed by a hashed
+  fingerprint. `CdlGpuProgram` is the trivial CDL-specific equivalent:
+  compiles `CDL_SHADER_SOURCE` once, lazily, forever after. **Deliberately
+  NOT caching compiled GL binaries to disk** -- `glGetProgramBinary`'s
+  format is opaque/driver-specific and macOS's OpenGL (deprecated, Metal-
+  backed) is a real portability risk that hasn't been validated; disk
+  caching covers the OCIO-codegen step only, the GL compile itself still
+  happens at least once per process. Flagged as a real follow-up, not
+  silently scoped out.
+- **`gpu_shader_prototype.py` refactored**: `render_ocio_shader_on_gpu`
+  split into `compile_ocio_program` + `render_program_on_gpu`, so a
+  compiled program can be rendered many times across edits without
+  recompiling -- the actual mechanism this caching layer depends on.
+- **`gpu_shader_cache_benchmark.py`** -- the actual deliverable. Real
+  numbers, both against the naive "regenerate + recompile every edit"
+  baseline, both at 256x256:
+
+  | Scenario | naive | cached | speedup |
+  |---|---|---|---|
+  | CDL, 30 simulated slider edits | 19.981 ms/edit | 1.789 ms/edit | 11.2x |
+  | ACES DRT, 20 simulated display/view switches among 3 | 11.448 ms/switch | 2.770 ms/switch | 4.1x |
+
+  **A real, useful surprise worth flagging**: Stage 2's own isolated
+  compile-time measurement (`_link_program` in a tight loop, no draw
+  calls) said ~0.95ms/compile -- this benchmark's naive-vs-cached delta
+  is far larger (~18ms for CDL, ~8.7ms for ACES DRT). The likely
+  explanation: Apple's OpenGL-over-Metal driver appears to defer real
+  shader compilation (to a Metal pipeline state object) until the
+  program's FIRST ACTUAL DRAW CALL, not `glLinkProgram` time -- Stage 2's
+  isolated measurement never issued a draw call, so it measured only the
+  cheap part. This benchmark's numbers, which do include a real
+  `glDrawArrays`, are the trustworthy ones; Stage 2's ~0.95ms figure
+  undersold the true cost and should not be relied on. The qualitative
+  conclusion is solid either way (caching is a real, large win, not a
+  micro-optimization) but the exact ms figures above should be treated as
+  indicative for this GPU/driver, not a portable constant -- consistent
+  with this whole project's "measure the real thing, don't extrapolate
+  from a synthetic microbenchmark" discipline.
+
 ### Stage 4 -- The non-OCIO `lut` stage kind
 
 Plain `lut` stages (`colour.LUT3D`, numpy-based) have no OCIO GPU path.
@@ -304,6 +363,32 @@ single-chain case from shipping first.
 - Whether the precision delta measured in Stage 2 is actually small
   enough in practice to be a non-issue, or whether Stage 0's "surface it
   in the UI" branch needs to actually be built.
+- Whether real cross-restart compiled-BINARY caching (not just the
+  source caching Stage 3 shipped) is worth building -- depends on
+  `glGetProgramBinary`/`glProgramBinary` actually round-tripping reliably
+  under this app's GL context on macOS, which hasn't been checked. Only
+  worth doing if the per-process GL compile cost (Stage 3's benchmark:
+  order of several-to-twenty ms per distinct shader, apparently much of
+  it deferred to first draw call under Apple's OpenGL-over-Metal driver)
+  is shown to actually matter once Stage 5 measures real interactive use,
+  not assumed upfront.
+
+## Follow-ups discovered along the way (not blocking, not forgotten)
+
+- **Add `ocio.GradingPrimaryTransform` as its own, separate, ADDITIONAL
+  stage kind** (not a CDL replacement) -- per Tom, while deciding Stage
+  3's CDL uniform question: CDL's role in this app is specifically to
+  support standard/interchange ASC CDL adjustments, not to be the
+  primary/preferred grading tool. `GradingPrimaryTransform` is OCIO's
+  own newer, real-time-editing-oriented grading transform (supports
+  `makeDynamic()` for genuine GPU uniform-driven editing, unlike
+  `CDLTransform`) with a different parameterization (pivot/contrast/
+  gamma rather than slope/offset/power) -- a real candidate as a new
+  `STAGE_KINDS` entry in `stack.py` alongside `cdl`, giving users a
+  second, more modern grading tool without touching CDL's own exact,
+  well-known formula. Out of scope for the GPU project itself (this is
+  an app feature addition, not an acceleration technique) -- worth its
+  own task whenever there's room for it.
 
 ## What does NOT change
 
