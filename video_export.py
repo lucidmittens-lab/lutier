@@ -124,7 +124,15 @@ class VideoEncoder:
                 f"bit_depth={bit_depth} exceeds {codec_preset['label']}'s own "
                 f"max_bit_depth={codec_preset['max_bit_depth']}")
         self._container = av.open(str(output_path), mode="w")
-        self._stream = self._container.add_stream(codec_preset["codec_name"], rate=frame_rate)
+        # av.add_stream's own `rate` wants something with .numerator/
+        # .denominator (a Fraction, or a plain int -- ints satisfy that
+        # protocol too) -- a genuine Python float (e.g. VideoSource.
+        # frame_rate, which IS a real float) raises AttributeError deep
+        # inside PyAV's own to_avrational, confirmed directly (a real bug
+        # caught by an end-to-end smoke test, not by this module's own
+        # unit tests, which only ever passed plain int frame rates).
+        self._stream = self._container.add_stream(
+            codec_preset["codec_name"], rate=_fraction_from_float(frame_rate))
         self._stream.width = width
         self._stream.height = height
         self._stream.pix_fmt = codec_preset["pix_fmt"]

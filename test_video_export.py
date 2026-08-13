@@ -80,6 +80,27 @@ def test_video_encoder_rejects_bit_depth_beyond_the_codec_preset_max():
           "chosen codec preset's own max_bit_depth -- OK")
 
 
+def test_video_encoder_accepts_a_real_float_frame_rate():
+    """Regression test for a real bug caught by an end-to-end smoke test
+    (not by this file's own earlier tests, which only ever passed plain
+    int frame rates like 24): av.add_stream's own `rate` argument raises
+    AttributeError deep inside PyAV for a genuine Python float (floats
+    have no .numerator/.denominator, unlike int or Fraction) -- and
+    VideoSource.frame_rate (the value this class is actually constructed
+    with in real use, see main_window.py's own Export Video flow) IS a
+    real float, not an int."""
+    preset = video_export.get_codec_preset("H.264 (.mp4)")
+    path = _tmp("float_rate.mp4")
+    encoder = video_export.VideoEncoder(path, 16, 12, 23.976, preset, bit_depth=8)
+    encoder.write_frame(np.full((12, 16, 3), 0.5, dtype=np.float32))
+    encoder.close()
+    result = video_source.VideoSource(path)
+    assert abs(result.frame_rate - 23.976) < 0.01
+    result.close()
+    print("video_export.VideoEncoder: accepts a real float frame_rate "
+          "(e.g. 23.976), matching VideoSource.frame_rate's own type -- OK")
+
+
 def test_video_encoder_h264_round_trips_a_solid_color_frame():
     preset = video_export.get_codec_preset("H.264 (.mp4)")
     path = _tmp("h264_roundtrip.mp4")
@@ -272,6 +293,7 @@ if __name__ == "__main__":
     test_available_codec_presets_only_lists_installed_codecs()
     test_get_codec_preset_raises_for_an_unknown_label()
     test_video_encoder_rejects_bit_depth_beyond_the_codec_preset_max()
+    test_video_encoder_accepts_a_real_float_frame_rate()
     test_video_encoder_h264_round_trips_a_solid_color_frame()
     test_video_encoder_prores_preserves_higher_precision_than_h264()
     test_export_video_cpu_grades_every_frame_and_matches_frame_count()
