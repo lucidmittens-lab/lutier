@@ -166,6 +166,7 @@ OPTIONS = {
         'lut_library_panel',
         'lut_viewer_3d',
         'main_window',
+        'ocio_processor_cache',
         'panel_frame',
         'printer_lights',
         'retarget',

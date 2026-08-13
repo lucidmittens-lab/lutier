@@ -46,6 +46,8 @@ from functools import lru_cache
 
 import numpy as np
 
+import ocio_processor_cache
+
 try:
     import PyOpenColorIO as ocio
     OCIO_AVAILABLE = True
@@ -126,7 +128,7 @@ def build_cdl_transform(slope=IDENTITY_SLOPE, offset=IDENTITY_OFFSET,
     return transform
 
 
-def _apply_ocio_transform(transform, image_array):
+def _apply_ocio_transform(cache_key, build_transform, image_array):
     """Apply a bare (non-color-space) OCIO transform to an arbitrary-shaped
     (...,3) float array -- same flatten/PackedImageDesc/reshape dance as
     aces_drt._apply_ocio_processor, duplicated locally rather than imported
@@ -134,11 +136,16 @@ def _apply_ocio_transform(transform, image_array):
     aces_drt.py at zero (both are independently self-contained OCIO
     consumers, matching printer_lights.py's own "OCIO_AVAILABLE" pattern of
     checking its own import rather than reaching into a sibling module for
-    it)."""
+    it).
+
+    `build_transform` is a zero-arg callable (only invoked on a cache
+    miss); `cache_key` is a hashable tuple of every scalar parameter that
+    transform depends on -- see ocio_processor_cache.get_cpu_processor's
+    own docstring on why the transform object itself can't be the cache
+    key directly (a fresh, non-reusable instance every call)."""
     _require_ocio()
     cfg = _get_raw_config()
-    processor = cfg.getProcessor(transform)
-    cpu = processor.getDefaultCPUProcessor()
+    cpu = ocio_processor_cache.get_cpu_processor(cfg, cache_key, build_transform)
 
     array = np.ascontiguousarray(np.asarray(image_array, dtype=np.float32))
     original_shape = array.shape
@@ -165,8 +172,13 @@ def apply_cdl(image_array, slope=IDENTITY_SLOPE, offset=IDENTITY_OFFSET,
     style="asc" will still silently clip any input already outside
     [0,1] (see module docstring).
     """
-    transform = build_cdl_transform(
-        slope=slope, offset=offset, power=power, sat=sat, style=style,
-        sop_enabled=sop_enabled, sat_enabled=sat_enabled,
-    )
-    return _apply_ocio_transform(transform, image_array)
+    cache_key = (tuple(slope), tuple(offset), tuple(power), float(sat), style,
+                 bool(sop_enabled), bool(sat_enabled))
+
+    def build_transform():
+        return build_cdl_transform(
+            slope=slope, offset=offset, power=power, sat=sat, style=style,
+            sop_enabled=sop_enabled, sat_enabled=sat_enabled,
+        )
+
+    return _apply_ocio_transform(cache_key, build_transform, image_array)

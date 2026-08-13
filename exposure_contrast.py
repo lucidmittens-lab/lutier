@@ -52,6 +52,7 @@ except ImportError as e:  # pragma: no cover -- exercised by environments withou
     OCIO_IMPORT_ERROR = str(e)
 
 import cdl
+import ocio_processor_cache
 
 IDENTITY_EXPOSURE = 0.0
 IDENTITY_CONTRAST = 1.0
@@ -108,15 +109,15 @@ def build_exposure_contrast_transform(style=DEFAULT_STYLE, exposure=IDENTITY_EXP
     return transform
 
 
-def _apply_ocio_transform(transform, image_array):
+def _apply_ocio_transform(cache_key, build_transform, image_array):
     """Same flatten/PackedImageDesc/reshape dance as
     cdl._apply_ocio_transform -- duplicated locally rather than imported,
     matching this app's existing "independently self-contained OCIO
-    consumer" convention (see cdl.py's own docstring)."""
+    consumer" convention (see cdl.py's own docstring). `build_transform`/
+    `cache_key`: see cdl._apply_ocio_transform's own docstring."""
     _require_ocio()
     cfg = cdl._get_raw_config()
-    processor = cfg.getProcessor(transform)
-    cpu = processor.getDefaultCPUProcessor()
+    cpu = ocio_processor_cache.get_cpu_processor(cfg, cache_key, build_transform)
 
     array = np.ascontiguousarray(np.asarray(image_array, dtype=np.float32))
     original_shape = array.shape
@@ -139,6 +140,10 @@ def apply_exposure_contrast(image_array, style=DEFAULT_STYLE, exposure=IDENTITY_
     multiply, contrast=1 and gamma=1 -> contrast*gamma=1.0 -> the
     contrast branch is skipped entirely (confirmed directly against
     OCIO's own generated shader, see the plan doc's GLSL dump)."""
-    transform = build_exposure_contrast_transform(
-        style=style, exposure=exposure, contrast=contrast, gamma=gamma)
-    return _apply_ocio_transform(transform, image_array)
+    cache_key = (style, float(exposure), float(contrast), float(gamma))
+
+    def build_transform():
+        return build_exposure_contrast_transform(
+            style=style, exposure=exposure, contrast=contrast, gamma=gamma)
+
+    return _apply_ocio_transform(cache_key, build_transform, image_array)

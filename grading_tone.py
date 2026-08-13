@@ -44,6 +44,7 @@ except ImportError as e:  # pragma: no cover -- exercised by environments withou
     OCIO_IMPORT_ERROR = str(e)
 
 import cdl
+import ocio_processor_cache
 
 RANGE_KEYS = ("blacks", "shadows", "midtones", "highlights", "whites")
 
@@ -184,15 +185,15 @@ def build_grading_tone_transform(style=DEFAULT_STYLE, **kwargs):
     return transform
 
 
-def _apply_ocio_transform(transform, image_array):
+def _apply_ocio_transform(cache_key, build_transform, image_array):
     """Same flatten/PackedImageDesc/reshape dance as
     cdl._apply_ocio_transform -- duplicated locally rather than imported,
     matching this app's existing "independently self-contained OCIO
-    consumer" convention (see cdl.py's own docstring)."""
+    consumer" convention (see cdl.py's own docstring). `build_transform`/
+    `cache_key`: see cdl._apply_ocio_transform's own docstring."""
     _require_ocio()
     cfg = cdl._get_raw_config()
-    processor = cfg.getProcessor(transform)
-    cpu = processor.getDefaultCPUProcessor()
+    cpu = ocio_processor_cache.get_cpu_processor(cfg, cache_key, build_transform)
 
     array = np.ascontiguousarray(np.asarray(image_array, dtype=np.float32))
     original_shape = array.shape
@@ -213,8 +214,20 @@ def apply_grading_tone(image_array, style=DEFAULT_STYLE, blacks=None, shadows=No
     Identity kwargs (every range at None -> its own OCIO default,
     scontrast=1.0) are an exact no-op regardless of style -- confirmed
     directly, same as every other Tier 1 kind."""
-    transform = build_grading_tone_transform(
-        style=style, blacks=blacks, shadows=shadows, midtones=midtones,
-        highlights=highlights, whites=whites, scontrast=scontrast,
+    cache_key = (
+        style,
+        tuple(blacks) if blacks is not None else None,
+        tuple(shadows) if shadows is not None else None,
+        tuple(midtones) if midtones is not None else None,
+        tuple(highlights) if highlights is not None else None,
+        tuple(whites) if whites is not None else None,
+        float(scontrast),
     )
-    return _apply_ocio_transform(transform, image_array)
+
+    def build_transform():
+        return build_grading_tone_transform(
+            style=style, blacks=blacks, shadows=shadows, midtones=midtones,
+            highlights=highlights, whites=whites, scontrast=scontrast,
+        )
+
+    return _apply_ocio_transform(cache_key, build_transform, image_array)

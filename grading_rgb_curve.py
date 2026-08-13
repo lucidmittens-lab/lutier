@@ -52,6 +52,7 @@ except ImportError as e:  # pragma: no cover -- exercised by environments withou
     OCIO_IMPORT_ERROR = str(e)
 
 import cdl
+import ocio_processor_cache
 
 RGB_CHANNELS = ("red", "green", "blue", "master")
 
@@ -141,15 +142,15 @@ def build_grading_rgb_curve_transform(style=DEFAULT_STYLE, **kwargs):
     return transform
 
 
-def _apply_ocio_transform(transform, image_array):
+def _apply_ocio_transform(cache_key, build_transform, image_array):
     """Same flatten/PackedImageDesc/reshape dance as
     cdl._apply_ocio_transform -- duplicated locally rather than imported,
     matching this app's existing "independently self-contained OCIO
-    consumer" convention (see cdl.py's own docstring)."""
+    consumer" convention (see cdl.py's own docstring). `build_transform`/
+    `cache_key`: see cdl._apply_ocio_transform's own docstring."""
     _require_ocio()
     cfg = cdl._get_raw_config()
-    processor = cfg.getProcessor(transform)
-    cpu = processor.getDefaultCPUProcessor()
+    cpu = ocio_processor_cache.get_cpu_processor(cfg, cache_key, build_transform)
 
     array = np.ascontiguousarray(np.asarray(image_array, dtype=np.float32))
     original_shape = array.shape
@@ -158,6 +159,18 @@ def _apply_ocio_transform(transform, image_array):
     desc = ocio.PackedImageDesc(flat, n_pixels, 1, 3)
     cpu.apply(desc)
     return flat.reshape(original_shape)
+
+
+def _points_cache_key(points):
+    """`points` (None, or a list of (x,y) pairs -- red/green/blue/master's
+    own accepted shape) -> a hashable cache-key fragment. Unlike every
+    other Tier 1 kind's scalar/fixed-tuple params, control points are a
+    variable-length list of pairs -- not hashable as given (a plain
+    Python list), so this always converts to a tuple of (float, float)
+    tuples before it can be used as (part of) a dict key."""
+    if points is None:
+        return None
+    return tuple((float(x), float(y)) for x, y in points)
 
 
 def apply_grading_rgb_curve(image_array, style=DEFAULT_STYLE, red=None, green=None, blue=None, master=None):
@@ -169,5 +182,12 @@ def apply_grading_rgb_curve(image_array, style=DEFAULT_STYLE, red=None, green=No
     Identity kwargs (every channel at None -> the identity curve) are an
     exact no-op regardless of style -- confirmed directly, same as every
     other Tier 1 kind."""
-    transform = build_grading_rgb_curve_transform(style=style, red=red, green=green, blue=blue, master=master)
-    return _apply_ocio_transform(transform, image_array)
+    cache_key = (
+        style, _points_cache_key(red), _points_cache_key(green),
+        _points_cache_key(blue), _points_cache_key(master),
+    )
+
+    def build_transform():
+        return build_grading_rgb_curve_transform(style=style, red=red, green=green, blue=blue, master=master)
+
+    return _apply_ocio_transform(cache_key, build_transform, image_array)

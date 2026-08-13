@@ -53,6 +53,7 @@ except ImportError as e:  # pragma: no cover -- exercised by environments withou
     OCIO_IMPORT_ERROR = str(e)
 
 import cdl
+import ocio_processor_cache
 
 IDENTITY_ADD = (0.0, 0.0, 0.0, 0.0)  # brightness/offset/lift additive identity (r, g, b, master)
 IDENTITY_MULT = (1.0, 1.0, 1.0, 1.0)  # contrast/gamma/gain multiplicative identity (r, g, b, master)
@@ -149,15 +150,15 @@ def build_grading_primary_transform(style=DEFAULT_STYLE, **kwargs):
     return transform
 
 
-def _apply_ocio_transform(transform, image_array):
+def _apply_ocio_transform(cache_key, build_transform, image_array):
     """Same flatten/PackedImageDesc/reshape dance as
     cdl._apply_ocio_transform -- duplicated locally rather than imported,
     matching this app's existing "independently self-contained OCIO
-    consumer" convention (see cdl.py's own docstring)."""
+    consumer" convention (see cdl.py's own docstring). `build_transform`/
+    `cache_key`: see cdl._apply_ocio_transform's own docstring."""
     _require_ocio()
     cfg = cdl._get_raw_config()
-    processor = cfg.getProcessor(transform)
-    cpu = processor.getDefaultCPUProcessor()
+    cpu = ocio_processor_cache.get_cpu_processor(cfg, cache_key, build_transform)
 
     array = np.ascontiguousarray(np.asarray(image_array, dtype=np.float32))
     original_shape = array.shape
@@ -181,8 +182,13 @@ def apply_grading_primary(image_array, style=DEFAULT_STYLE, brightness=IDENTITY_
     -- unlike CDL's "asc" style, GradingPrimary has no intermediate clamp
     that applies unconditionally (clampBlack/clampWhite default to
     +/-inf, i.e. no clamp at all, confirmed directly)."""
-    transform = build_grading_primary_transform(
-        style=style, brightness=brightness, contrast=contrast, gamma=gamma, offset=offset,
-        exposure=exposure, lift=lift, gain=gain, pivot=pivot, saturation=saturation,
-    )
-    return _apply_ocio_transform(transform, image_array)
+    cache_key = (style, tuple(brightness), tuple(contrast), tuple(gamma), tuple(offset),
+                 tuple(exposure), tuple(lift), tuple(gain), float(pivot), float(saturation))
+
+    def build_transform():
+        return build_grading_primary_transform(
+            style=style, brightness=brightness, contrast=contrast, gamma=gamma, offset=offset,
+            exposure=exposure, lift=lift, gain=gain, pivot=pivot, saturation=saturation,
+        )
+
+    return _apply_ocio_transform(cache_key, build_transform, image_array)
