@@ -79,6 +79,12 @@ OPTIONS = {
         # ASWF extension module, same 'packages' (not 'includes')
         # reasoning as PyOpenColorIO immediately above.
         'OpenImageIO',
+        # PyAV -- video_source.py's video decode (Tom, 2026-08-13: "Video
+        # Support (viewing and rendering)"). Another compiled extension
+        # module (bundles its own ffmpeg/libav libraries), same
+        # 'packages' (not 'includes') reasoning as PyOpenColorIO/
+        # OpenImageIO above.
+        'av',
         # PyObjC -- airplay_output_sink.py's AirPlay casting window (see
         # VIEWER_CASTING_PLAN_2026-08-11.md). Same 'packages' (not
         # 'includes') reasoning as PySide6/PyOpenColorIO above: these are
@@ -177,6 +183,8 @@ OPTIONS = {
         'theme_prefs',
         'undo_history',
         'video_output_sink',
+        'video_playback_controller',
+        'video_source',
         'wipe_compare_widget',
         'workspace_io',
         'ycbcr_convert',

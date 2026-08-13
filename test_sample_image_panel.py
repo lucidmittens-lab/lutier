@@ -301,6 +301,223 @@ def test_scopes_array_is_unchanged_for_a_small_source():
           "SCOPES_MAX_DIMENSION is left at its own resolution -- OK")
 
 
+def _make_test_video(frame_count=8, frame_rate=24, size=(64, 48)):
+    """A short real clip, distinct solid color per frame -- same
+    "unambiguous per-frame marker" convention test_video_source.py's own
+    fixture uses, so a test can confirm parked-frame loading landed on
+    the RIGHT frame, not just decoded successfully."""
+    import av
+
+    w, h = size
+    path = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
+    container = av.open(path, mode="w")
+    stream = container.add_stream("libx264", rate=frame_rate)
+    stream.width = w
+    stream.height = h
+    stream.pix_fmt = "yuv420p"
+    for i in range(frame_count):
+        color = (min(255, i * 30), max(0, 255 - i * 30), 128)
+        frame = av.VideoFrame.from_ndarray(
+            np.full((h, w, 3), color, dtype=np.uint8), format="rgb24")
+        frame.pts = i
+        for packet in stream.encode(frame):
+            container.mux(packet)
+    for packet in stream.encode():
+        container.mux(packet)
+    container.close()
+    return path
+
+
+def test_load_video_parks_on_the_first_frame_through_the_still_pipeline():
+    """Parked-frame grading reuses the EXACT SAME downstream pipeline a
+    still image load already uses (Tom's own confirmed scope) -- this
+    confirms _image_array/_current_after_array are populated exactly the
+    way they would be for a still, not through some separate code path."""
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=8, size=(64, 48))
+    ok = panel.load_video(path)
+    assert ok
+    assert panel._video_source is not None
+    assert panel._video_frame_index == 0
+    assert panel._image_array.shape[:2] == (48, 64)
+    print("SampleImagePanel.load_video: parks on frame 0 through the same "
+          "pipeline a still-image load uses -- OK")
+
+
+def test_seek_video_frame_updates_the_working_array():
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=8, size=(64, 48))
+    assert panel.load_video(path)
+    before = panel._image_array.copy()
+
+    ok = panel.seek_video_frame(5)
+    assert ok
+    assert panel._video_frame_index == 5
+    after = panel._image_array
+    assert not np.array_equal(before, after), "frame 5 should look different from frame 0"
+    print("SampleImagePanel.seek_video_frame: re-decodes and updates the "
+          "working array for the new frame -- OK")
+
+
+def test_video_loaded_signal_reports_frame_count_and_rate():
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=12, frame_rate=30, size=(64, 48))
+    received = []
+    panel.video_loaded.connect(lambda count, rate: received.append((count, rate)))
+    assert panel.load_video(path)
+    assert len(received) == 1
+    frame_count, frame_rate = received[0]
+    assert frame_count == 12
+    assert abs(frame_rate - 30.0) < 0.1
+    print("SampleImagePanel.video_loaded: reports the real frame count/rate -- OK")
+
+
+def test_loading_a_still_image_closes_any_open_video_source():
+    _app()
+    panel = SampleImagePanel()
+    video_path = _make_test_video(frame_count=4, size=(64, 48))
+    assert panel.load_video(video_path)
+    assert panel._video_source is not None
+
+    still_path = _make_test_image(size=(50, 40))
+    assert panel.load_image(still_path)
+    assert panel._video_source is None, "loading a still must close/clear any open video source"
+    assert panel._image_array.shape[:2] == (40, 50)
+    print("SampleImagePanel.load_image: closes any previously-open video "
+          "source rather than leaking it -- OK")
+
+
+def test_loading_a_new_video_closes_the_previous_one():
+    _app()
+    panel = SampleImagePanel()
+    first_path = _make_test_video(frame_count=4, size=(64, 48))
+    assert panel.load_video(first_path)
+    first_source = panel._video_source
+
+    second_path = _make_test_video(frame_count=6, size=(80, 60))
+    assert panel.load_video(second_path)
+    assert panel._video_source is not first_source
+    assert panel._image_array.shape[:2] == (60, 80)
+    print("SampleImagePanel.load_video: replaces (and closes) any "
+          "previously-open video source -- OK")
+
+
+def test_seek_video_frame_is_a_noop_with_no_video_loaded():
+    _app()
+    panel = SampleImagePanel()
+    assert panel.seek_video_frame(3) is False
+    print("SampleImagePanel.seek_video_frame: returns False, doesn't crash, "
+          "when no video is loaded -- OK")
+
+
+def test_video_transport_bar_hidden_until_a_video_loads():
+    _app()
+    panel = SampleImagePanel()
+    assert panel._video_transport_widget.isHidden(), (
+        "hidden by default -- SampleImagePanel starts with a still image, not a video")
+    path = _make_test_video(frame_count=6, size=(64, 48))
+    assert panel.load_video(path)
+    assert not panel._video_transport_widget.isHidden()
+    print("SampleImagePanel: video transport bar hidden until a video "
+          "actually loads, then shown -- OK")
+
+
+def test_video_transport_bar_hides_again_when_a_still_replaces_the_video():
+    _app()
+    panel = SampleImagePanel()
+    video_path = _make_test_video(frame_count=6, size=(64, 48))
+    assert panel.load_video(video_path)
+    assert not panel._video_transport_widget.isHidden()
+
+    still_path = _make_test_image(size=(50, 40))
+    assert panel.load_image(still_path)
+    assert panel._video_transport_widget.isHidden()
+    print("SampleImagePanel: video transport bar hides again once a "
+          "still image replaces the loaded video -- OK")
+
+
+def test_video_transport_slider_range_matches_frame_count():
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=15, size=(64, 48))
+    assert panel.load_video(path)
+    assert panel._video_scrub_slider.minimum() == 0
+    assert panel._video_scrub_slider.maximum() == 14
+    assert panel._video_scrub_slider.value() == 0
+    print("SampleImagePanel: scrub slider range matches [0, frame_count-1] -- OK")
+
+
+def test_video_transport_timecode_label_updates_on_seek():
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=10, size=(64, 48))
+    assert panel.load_video(path)
+    assert panel._video_timecode_label.text() == "1 / 10"
+    panel.seek_video_frame(4)
+    assert panel._video_timecode_label.text() == "5 / 10"
+    print("SampleImagePanel: timecode label reflects the current frame "
+          "after a seek -- OK")
+
+
+def test_video_transport_step_buttons_move_one_frame_and_clamp():
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=5, size=(64, 48))
+    assert panel.load_video(path)
+
+    panel._on_video_step_forward_clicked()
+    assert panel._video_frame_index == 1
+    panel._on_video_step_back_clicked()
+    assert panel._video_frame_index == 0
+    panel._on_video_step_back_clicked()  # already at 0 -- must clamp, not go negative
+    assert panel._video_frame_index == 0
+
+    for _ in range(10):
+        panel._on_video_step_forward_clicked()
+    assert panel._video_frame_index == 4, "must clamp at frame_count-1, not overshoot"
+    print("SampleImagePanel: step-back/step-forward move one frame and "
+          "clamp at both ends -- OK")
+
+
+def test_video_transport_scrub_slider_drag_seeks_the_video():
+    """The slider's valueChanged handler must actually re-decode/re-grade
+    -- a real user drag, not a programmatic sync (see
+    _suppress_video_scrub_signal's own guard, which THIS test must NOT
+    be blocked by)."""
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=10, size=(64, 48))
+    assert panel.load_video(path)
+    before = panel._image_array.copy()
+
+    panel._video_scrub_slider.setValue(6)  # simulates a real user drag
+    assert panel._video_frame_index == 6
+    assert not np.array_equal(before, panel._image_array)
+    print("SampleImagePanel: dragging the scrub slider actually seeks "
+          "and re-grades the video -- OK")
+
+
+def test_video_play_pause_button_toggles_playback_and_its_own_label():
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=10, size=(64, 48))
+    assert panel.load_video(path)
+    assert panel._video_play_button.text() == "▶"
+
+    panel._on_video_play_pause_clicked()
+    assert panel._playback_controller.is_playing
+    assert panel._video_play_button.text() == "⏸"
+
+    panel._on_video_play_pause_clicked()
+    assert not panel._playback_controller.is_playing
+    assert panel._video_play_button.text() == "▶"
+    print("SampleImagePanel: Play/Pause button toggles playback and its "
+          "own label -- OK")
+
+
 if __name__ == "__main__":
     test_sample_loads_at_native_resolution_not_a_capped_preview_size()
     test_isolated_single_edit_on_gpu_ineligible_stack_renders_at_full_resolution()
@@ -313,5 +530,18 @@ if __name__ == "__main__":
     test_downres_array_is_a_grow_only_decimation_of_the_working_array()
     test_scopes_array_is_capped_at_the_target_dimension()
     test_scopes_array_is_unchanged_for_a_small_source()
+    test_load_video_parks_on_the_first_frame_through_the_still_pipeline()
+    test_seek_video_frame_updates_the_working_array()
+    test_video_loaded_signal_reports_frame_count_and_rate()
+    test_loading_a_still_image_closes_any_open_video_source()
+    test_loading_a_new_video_closes_the_previous_one()
+    test_seek_video_frame_is_a_noop_with_no_video_loaded()
+    test_video_transport_bar_hidden_until_a_video_loads()
+    test_video_transport_bar_hides_again_when_a_still_replaces_the_video()
+    test_video_transport_slider_range_matches_frame_count()
+    test_video_transport_timecode_label_updates_on_seek()
+    test_video_transport_step_buttons_move_one_frame_and_clamp()
+    test_video_transport_scrub_slider_drag_seeks_the_video()
+    test_video_play_pause_button_toggles_playback_and_its_own_label()
     print()
     print("All sample_image_panel tests passed.")

@@ -120,12 +120,12 @@ import math
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Signal, QTimer
+from PySide6.QtCore import Signal, QTimer, Qt
 from PySide6.QtGui import QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
     QMessageBox, QDialog, QComboBox, QCheckBox,
-    QToolButton, QMenu,
+    QToolButton, QMenu, QSlider,
 )
 
 from wipe_compare_widget import WipeCompareWidget
@@ -137,6 +137,8 @@ from colorspace import convert as convert_colourspace, list_colourspace_choices
 from stack import apply_stack_to_image_array, StageCache
 from floating_dialog import make_floating_tool_window, show_floating
 import gpu_stack_renderer
+import video_source
+import video_playback_controller
 from casting_controller import CastingController
 from airplay_output_sink import AirPlayOutputSink
 
@@ -217,14 +219,35 @@ class SampleImagePanel(QWidget):
     Emits image_loaded(width, height) once per successful SAMPLE (not
     Reference) load -- MainWindow uses this to seed Canvas Settings from
     the first thing loaded in a session, see canvas.py's docstring and
-    MainWindow._on_sample_image_loaded."""
+    MainWindow._on_sample_image_loaded. Also fires for a VIDEO load's
+    first frame (see load_video) -- Canvas Settings seeding doesn't care
+    which kind of media triggered it.
+
+    Emits video_loaded(frame_count, frame_rate) once per successful video
+    open -- the transport UI (see video_playback_controller.py) uses this
+    to size its own scrub range."""
 
     after_image_changed = Signal(object)
     image_loaded = Signal(int, int)
+    video_loaded = Signal(int, float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._current_path = None
+        # None when Sample is a plain still image -- a real, open
+        # VideoSource when it's parked on one frame of a loaded video
+        # (see load_video/_load_video_frame_core). Grading review reuses
+        # the EXACT SAME downstream pipeline either way (Tom's own
+        # confirmed scope: parked-frame review only, no separate video
+        # grading path) -- this only affects HOW _original_array gets
+        # populated, never what happens to it afterward.
+        self._video_source = None
+        self._video_frame_index = 0
+        # Guards _on_video_scrub_slider_changed against re-firing a seek
+        # when THIS panel programmatically moves the slider (e.g. every
+        # playback tick, or after a step-button click) -- only a REAL
+        # user drag on the slider should ever trigger a new seek.
+        self._suppress_video_scrub_signal = False
         self._original_array = None  # (H,W,3) float32, exactly as decoded -- never mutated after load
         self._image_array = None  # (H,W,3) float32, DERIVED working array -- see this module's docstring
         # Bumped only in _recompute_working_array, i.e. only when
@@ -382,6 +405,53 @@ class SampleImagePanel(QWidget):
         self.compare = WipeCompareWidget()
         layout.addWidget(self.compare, stretch=1)
 
+        self._build_video_transport_bar(layout)
+        self._playback_controller = video_playback_controller.VideoPlaybackController(self, parent=self)
+        self._playback_controller.frame_changed.connect(self._on_video_frame_changed)
+        self._playback_controller.playback_stopped.connect(self._on_video_playback_stopped)
+
+    def _build_video_transport_bar(self, layout):
+        """Play/Pause, step-back/step-forward, and a scrub slider -- a
+        thin bar below the Viewer, visible only while a video is loaded
+        (see load_video/_close_video_source). Deliberately colocated
+        here in sample_image_panel.py rather than a new panel file --
+        this bar drives the exact array-state (self._video_source/
+        self._video_frame_index) that already lives here, same "own the
+        state, own the UI that changes it" shape every other control in
+        this panel already follows."""
+        self._video_transport_widget = QWidget()
+        transport_layout = QHBoxLayout(self._video_transport_widget)
+        transport_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._video_play_button = QToolButton()
+        self._video_play_button.setText("▶")
+        self._video_play_button.setToolTip("Play/Pause")
+        self._video_play_button.clicked.connect(self._on_video_play_pause_clicked)
+        transport_layout.addWidget(self._video_play_button)
+
+        self._video_step_back_button = QToolButton()
+        self._video_step_back_button.setText("◀│")
+        self._video_step_back_button.setToolTip("Step back one frame")
+        self._video_step_back_button.clicked.connect(self._on_video_step_back_clicked)
+        transport_layout.addWidget(self._video_step_back_button)
+
+        self._video_step_forward_button = QToolButton()
+        self._video_step_forward_button.setText("│▶")
+        self._video_step_forward_button.setToolTip("Step forward one frame")
+        self._video_step_forward_button.clicked.connect(self._on_video_step_forward_clicked)
+        transport_layout.addWidget(self._video_step_forward_button)
+
+        self._video_scrub_slider = QSlider(Qt.Orientation.Horizontal)
+        self._video_scrub_slider.setMinimum(0)
+        self._video_scrub_slider.valueChanged.connect(self._on_video_scrub_slider_changed)
+        transport_layout.addWidget(self._video_scrub_slider, stretch=1)
+
+        self._video_timecode_label = QLabel("")
+        transport_layout.addWidget(self._video_timecode_label)
+
+        self._video_transport_widget.setVisible(False)  # shown only once a video is actually loaded
+        layout.addWidget(self._video_transport_widget)
+
     def populate_menu(self, menu):
         """Add this panel's actions to `menu` -- shared by the "..." corner
         button above and MainWindow's top-level "Viewer" menu-bar menu
@@ -395,6 +465,7 @@ class SampleImagePanel(QWidget):
         _on_wipe_left_selected/_on_wipe_right_selected for how a change
         made from either menu's copy gets mirrored into the other's."""
         menu.addAction("Load Sample Image...", self.import_image)
+        menu.addAction("Load Video...", self.import_video)
         menu.addAction("Adapt Sample Image...", self.show_adapt_dialog)
         menu.addAction("Export Still...", self.export_still)
         menu.addSeparator()
@@ -791,6 +862,7 @@ class SampleImagePanel(QWidget):
         self.compare.set_canvas_aspect_ratio(ratio)
 
     def _load_image_core(self, path):
+        self._close_video_source()  # a still-image load always replaces any open video, see that method
         try:
             array = load_image_as_array(path, max_dimension=None)  # native res -- see this module's "PREVIEW RESOLUTION" comment
         except Exception as e:  # noqa: BLE001 -- surface any decode failure to the user
@@ -814,6 +886,138 @@ class SampleImagePanel(QWidget):
         self._casting_controller.on_stack_or_image_changed()
         self.image_loaded.emit(array.shape[1], array.shape[0])
         return True
+
+    def _close_video_source(self):
+        if self._video_source is not None:
+            # stop(), not pause() -- no point re-parking through a full
+            # seek+decode just to immediately discard it (see
+            # VideoPlaybackController.stop's own docstring); also avoids
+            # pause() trying to decode from a source we're about to close.
+            self._playback_controller.stop()
+            self._video_source.close()
+            self._video_source = None
+            self._video_frame_index = 0
+        self._video_transport_widget.setVisible(False)
+
+    def import_video(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose a video", "",
+            "Video (*.mp4 *.mov *.mkv *.avi *.m4v);;All files (*)",
+        )
+        if path:
+            self.load_video(path)
+
+    def load_video(self, path):
+        """Opens `path` as a video source and loads its FIRST frame into
+        the exact same grading pipeline every still-image Sample load
+        already uses (see _load_video_frame_core) -- this is PARKED-FRAME
+        review only, not realtime playback (see video_playback_
+        controller.py for that, a fully separate, decoupled path per
+        Tom's own confirmed scope: "realtime playback but no simultaneous
+        grading/playback"). Returns True on success."""
+        try:
+            source = video_source.VideoSource(path)
+        except Exception as e:  # noqa: BLE001 -- surface any open/decode failure to the user
+            QMessageBox.critical(self, "Failed to open video", f"{path}\n\n{e}")
+            return False
+        self._close_video_source()
+        self._video_source = source
+        ok = self._load_video_frame_core(0)
+        if ok:
+            self._suppress_video_scrub_signal = True
+            self._video_scrub_slider.setMaximum(max(0, source.frame_count - 1))
+            self._video_scrub_slider.setValue(0)
+            self._suppress_video_scrub_signal = False
+            self._video_transport_widget.setVisible(True)
+            self.video_loaded.emit(source.frame_count, source.frame_rate)
+        return ok
+
+    def seek_video_frame(self, frame_index):
+        """Scrub/step to a specific frame of the currently-open video --
+        the public entry point the transport UI (video_playback_
+        controller.py / the scrub bar) calls. No-op (returns False) if no
+        video is currently open."""
+        if self._video_source is None:
+            return False
+        return self._load_video_frame_core(frame_index)
+
+    def _load_video_frame_core(self, frame_index):
+        """The video equivalent of _load_image_core -- decodes ONE frame
+        from self._video_source and feeds it through the EXACT SAME
+        downstream pipeline (_recompute_working_array/
+        _recompute_sample_after/_render_wipe) a still image load already
+        uses, so grading a parked video frame works identically to
+        grading a still -- no separate grading code path exists or is
+        needed."""
+        try:
+            array = self._video_source.seek_to_frame(frame_index)
+        except Exception as e:  # noqa: BLE001 -- surface any decode failure to the user
+            QMessageBox.critical(self, "Failed to decode video frame", str(e))
+            return False
+        if array is None:
+            return False
+
+        self._video_frame_index = frame_index
+        self._current_path = self._video_source.path
+        self._original_array = array
+        self._source_colourspace = None
+        self._adapt_enabled = False
+        self._adapt_target_colourspace = None
+        self.status_label.setText("")
+        self._recompute_working_array()
+        self._recompute_sample_after()
+        self._render_wipe()
+        self._casting_controller.on_stack_or_image_changed()
+        self.image_loaded.emit(array.shape[1], array.shape[0])
+        self._set_video_transport_position(frame_index)
+        return True
+
+    def _set_video_transport_position(self, frame_index):
+        """Updates the scrub slider + timecode label to reflect
+        `frame_index` WITHOUT re-triggering a seek -- called after every
+        successful parked-frame load (_load_video_frame_core) and on
+        every realtime-playback tick (_on_video_frame_changed)."""
+        self._suppress_video_scrub_signal = True
+        self._video_scrub_slider.setValue(frame_index)
+        self._suppress_video_scrub_signal = False
+        total = self._video_source.frame_count if self._video_source is not None else 0
+        self._video_timecode_label.setText(f"{frame_index + 1} / {total}")
+
+    def _on_video_play_pause_clicked(self):
+        self._playback_controller.toggle()
+        self._update_video_play_button_text()
+
+    def _update_video_play_button_text(self):
+        self._video_play_button.setText("⏸" if self._playback_controller.is_playing else "▶")
+
+    def _on_video_step_back_clicked(self):
+        self._playback_controller.pause()
+        self.seek_video_frame(max(0, self._video_frame_index - 1))
+
+    def _on_video_step_forward_clicked(self):
+        self._playback_controller.pause()
+        if self._video_source is not None:
+            self.seek_video_frame(min(self._video_source.frame_count - 1, self._video_frame_index + 1))
+
+    def _on_video_scrub_slider_changed(self, value):
+        if self._suppress_video_scrub_signal:
+            return
+        self._playback_controller.pause()
+        self.seek_video_frame(value)
+
+    def _on_video_frame_changed(self, frame_index):
+        # Realtime playback ticking -- update the slider/timecode WITHOUT
+        # touching self._video_frame_index (that stays at the last
+        # PARKED position until pause re-syncs it -- see
+        # VideoPlaybackController.pause's own docstring).
+        self._suppress_video_scrub_signal = True
+        self._video_scrub_slider.setValue(frame_index)
+        self._suppress_video_scrub_signal = False
+        total = self._video_source.frame_count if self._video_source is not None else 0
+        self._video_timecode_label.setText(f"{frame_index + 1} / {total}")
+
+    def _on_video_playback_stopped(self):
+        self._update_video_play_button_text()
 
     def import_reference_image(self):
         """"Load Reference Image..." menu action -- see this module's
