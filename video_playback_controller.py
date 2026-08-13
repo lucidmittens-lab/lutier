@@ -1,23 +1,25 @@
 """
-video_playback_controller.py -- VideoPlaybackController: realtime,
-UNGRADED playback of a SampleImagePanel's currently-open VideoSource,
-pushed directly into the Viewer -- deliberately DECOUPLED from grading
-(Tom, 2026-08-13: "realtime playback but no simultaneous grading/
-playback"). Parked-frame stepping/scrubbing (see
-sample_image_panel.seek_video_frame) owns color review; this
-controller's only job is motion.
+video_playback_controller.py -- VideoPlaybackController: realtime
+playback of a SampleImagePanel's currently-open VideoSource, pushed
+directly into the Viewer WITH the current grade applied -- but the grade
+itself is LOCKED (not editable) for the duration of playback (Tom,
+2026-08-13, clarifying the original scope: "i meant realtime playback
+without the ability to modify the grade as playback is going. playback
+should still show the grade"). MainWindow locks the Stack panel via
+playback_started/playback_stopped (see those signals below); this
+controller's own job is just showing the right, already-fixed grade on
+each frame as it plays, and unlocking cleanly on stop.
 
-WHY UNGRADED, NOT A CACHED GRADE -- applying a static Stack snapshot to a
-stream of DIFFERENT frame content on every tick would look plausible on
-screen but be neither accurate (the grade might not even apply cleanly
-to every frame, e.g. an exposure-dependent curve) nor honestly labeled --
-worse than showing nothing graded at all. self._panel.status_label shows
-PLAYBACK_STATUS_TEXT for the whole time playback is active, so this is
-never mistaken for a graded preview; pausing/stepping re-parks on the
-current frame through the NORMAL grading pipeline
-(sample_image_panel.seek_video_frame), which already clears
-status_label back to "" as a side effect of that normal load path -- no
-special cleanup needed here.
+GRADING PER TICK mirrors sample_image_panel.py's OWN live-preview split
+exactly (see that module's _render_wipe/_array_and_gpu_stack_for_source):
+a GPU-eligible, non-empty stack pushes the RAW decoded frame with
+gpu_stack=stack, so WipeCompareWidget grades it live on the GPU inside
+its own paintGL -- the same fast path stills already use, so realtime
+playback stays realtime. A GPU-INELIGIBLE stack instead grades the frame
+on the CPU (stack.apply_stack_to_image_array) before pushing it with
+gpu_stack=None -- slower, a real, inherent limitation of a CPU-bound
+per-frame grade at playback frame rates, not something this module
+tries to hide or work around.
 
 PERF: pushes DECODE_PROXY_MAX_DIMENSION-capped frames (see
 VideoSource.decode_next_frame's own max_dimension parameter) while
@@ -42,31 +44,38 @@ already-produced one).
 """
 from PySide6.QtCore import QObject, QTimer, Signal
 
+import gpu_stack_renderer
+import stack as st
+
 # Long-side cap for the decoded proxy pushed to the Viewer WHILE playing
 # -- see module docstring's PERF section. Not user-configurable (yet);
 # generous enough to still look sharp on typical displays, small enough
 # to keep the per-tick texture upload cheap.
 DECODE_PROXY_MAX_DIMENSION = 1280
 
-PLAYBACK_STATUS_TEXT = "UNGRADED — PLAYBACK"
+PLAYBACK_STATUS_TEXT = "PLAYBACK — grade locked"
 
 
 class VideoPlaybackController(QObject):
     """`panel`: the SampleImagePanel this controller plays into -- reads
-    panel._video_source/.compare/.status_label directly (an internal
-    collaborator, not a public API surface of that panel) and calls
-    panel.seek_video_frame on pause to re-park at full resolution,
-    matching the "own module, tight collaboration with one specific
-    panel" shape casting_controller.py already uses for the SAME panel.
+    panel._video_source/.compare/.status_label/._stack_getter directly
+    (an internal collaborator, not a public API surface of that panel)
+    and calls panel.seek_video_frame on pause to re-park at full
+    resolution, matching the "own module, tight collaboration with one
+    specific panel" shape casting_controller.py already uses for the
+    SAME panel.
 
     Emits frame_changed(frame_index) on every ticked frame (the
     transport UI's own scrub position while playing -- panel's own
     _video_frame_index is deliberately NOT updated during playback, only
-    on pause/step/scrub, see pause()'s own docstring) and
-    playback_stopped() whenever playback stops for ANY reason (explicit
-    pause, end of stream, or no video source)."""
+    on pause/step/scrub, see pause()'s own docstring), playback_started()
+    when playback actually begins, and playback_stopped() whenever
+    playback stops for ANY reason (explicit pause, end of stream, or no
+    video source) -- MainWindow connects these two to lock/unlock the
+    Stack panel for the duration of playback."""
 
     frame_changed = Signal(int)
+    playback_started = Signal()
     playback_stopped = Signal()
 
     def __init__(self, panel, parent=None):
@@ -100,14 +109,14 @@ class VideoPlaybackController(QObject):
         self._panel.status_label.setText(PLAYBACK_STATUS_TEXT)
         interval_ms = max(1, round(1000.0 / source.frame_rate))
         self._timer.start(interval_ms)
+        self.playback_started.emit()
 
     def pause(self):
         """No-op if not currently playing. Re-parks the Viewer on the
         CURRENT frame at full native resolution through the normal
         grading pipeline (sample_image_panel.seek_video_frame) -- so
-        anything left on screen after pausing is full quality and
-        graded, not the low-res raw playback proxy (see module
-        docstring)."""
+        anything left on screen after pausing is full quality, not the
+        low-res playback proxy (see module docstring)."""
         if not self._playing:
             return
         self._timer.stop()
@@ -144,5 +153,17 @@ class VideoPlaybackController(QObject):
             self.pause()
             return
         self._frame_index += 1
-        self._panel.compare.set_after(proxy, gpu_stack=None)
+
+        # Same GPU-eligible/CPU-fallback split sample_image_panel.py's
+        # own live-preview path already uses -- see module docstring.
+        stack_getter = self._panel._stack_getter
+        stack = stack_getter() if stack_getter else None
+        if stack is not None and stack.stages and gpu_stack_renderer.is_stack_gpu_eligible(stack):
+            self._panel.compare.set_after(proxy, gpu_stack=stack)
+        elif stack is not None and stack.stages:
+            graded = st.apply_stack_to_image_array(stack, proxy)
+            self._panel.compare.set_after(graded, gpu_stack=None)
+        else:
+            self._panel.compare.set_after(proxy, gpu_stack=None)
+
         self.frame_changed.emit(self._frame_index)

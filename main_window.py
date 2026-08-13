@@ -928,6 +928,16 @@ class MainWindow(QMainWindow):
         # ConcatenatePanel's chain_changed.
         self.sample_image.set_stack_getter(self.stack_panel.get_stack)
         self.stack_panel.stack_changed.connect(self.sample_image.refresh_preview)
+        # Locks the Stack panel for the duration of realtime video
+        # playback (Tom, 2026-08-13: playback shows the grade, but the
+        # grade itself must not be editable WHILE it's playing) -- the
+        # panel re-enables the instant playback stops for any reason
+        # (explicit pause, end of stream, or the video source going
+        # away), see video_playback_controller.py's own docstring.
+        self.sample_image._playback_controller.playback_started.connect(
+            lambda: self.stack_panel.setEnabled(False))
+        self.sample_image._playback_controller.playback_stopped.connect(
+            lambda: self.stack_panel.setEnabled(True))
         # Bundled default reference still, loaded Unmanaged (per Tom, same
         # default every image gets) but with its declared source color
         # space pre-filled in the Adapt dialog -- see

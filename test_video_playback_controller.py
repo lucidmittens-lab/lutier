@@ -16,6 +16,7 @@ import av
 import numpy as np
 from PySide6.QtWidgets import QApplication
 
+import stack as st
 from sample_image_panel import SampleImagePanel
 from video_playback_controller import VideoPlaybackController, PLAYBACK_STATUS_TEXT
 
@@ -70,7 +71,7 @@ def test_play_starts_the_timer_and_sets_playback_status_text():
     assert panel.status_label.text() == PLAYBACK_STATUS_TEXT
     controller.pause()
     print("VideoPlaybackController.play: starts the timer and shows the "
-          "ungraded-playback status text -- OK")
+          "grade-locked status text -- OK")
 
 
 def test_play_is_a_noop_with_no_video_loaded():
@@ -97,6 +98,91 @@ def test_tick_decodes_frames_in_order_and_pushes_to_the_viewer():
     controller.pause()
     print("VideoPlaybackController._tick: decodes frames in order and "
           "pushes each one straight to the Viewer -- OK")
+
+
+def test_tick_pushes_the_raw_frame_with_gpu_stack_for_a_gpu_eligible_stack():
+    """Regression test for the corrected scope (Tom, 2026-08-13:
+    "playback should still show the grade", clarifying the earlier
+    "no simultaneous grading" language did NOT mean ungraded playback) --
+    mirrors sample_image_panel.py's OWN live-preview split exactly: a
+    GPU-eligible, non-empty stack must push the RAW decoded proxy with
+    gpu_stack=stack (WipeCompareWidget grades it live on the GPU itself),
+    NOT a pre-graded array."""
+    panel = _panel_with_video()
+    cdl_stack = st.Stack(stages=[st.make_cdl_stage(slope=(1.2, 0.9, 1.0))])
+    panel.set_stack_getter(lambda: cdl_stack)
+    controller = VideoPlaybackController(panel)
+    controller.play()
+    controller._tick()
+    assert panel.compare._after_state.gpu_stack is cdl_stack
+    # The pushed array itself must be the RAW proxy (ungraded on the CPU
+    # side) -- grading happens inside WipeCompareWidget's own paintGL,
+    # not before push.
+    pushed = panel.compare._after_state.array
+    assert pushed.shape == (HEIGHT, WIDTH, 3)
+    controller.pause()
+    print("VideoPlaybackController._tick: a GPU-eligible stack pushes the "
+          "raw frame with gpu_stack set, grading live on the GPU -- OK")
+
+
+def test_tick_cpu_grades_the_frame_for_a_gpu_ineligible_stack():
+    """A GPU-INeligible (but non-empty) stack must CPU-grade each frame
+    BEFORE pushing it -- gpu_stack=None, and the pushed array must
+    actually reflect the grade, not the raw decoded pixels."""
+    panel = _panel_with_video()
+    # A retarget-wrapped LUT stage is GPU-ineligible by design -- see
+    # test_sample_image_panel.py's own _panel_with_image_and_stack for
+    # the same "stable, permanently GPU-ineligible" convention.
+    import app_logic
+    identity_lut = app_logic.create_identity_lut(size=5)
+    lut_stage = st.make_lut_stage(identity_lut)
+    lut_stage.params["retarget_from"] = "ACEScct"
+    lut_stage.params["retarget_to"] = "ACES2065-1"
+    ineligible_stack = st.Stack(stages=[lut_stage])
+    panel.set_stack_getter(lambda: ineligible_stack)
+
+    controller = VideoPlaybackController(panel)
+    controller.play()
+    controller._tick()
+    assert panel.compare._after_state.gpu_stack is None
+    graded = panel.compare._after_state.array
+
+    # Compare against what the SAME raw frame looks like un-graded, via
+    # an independent decode of the identical source frame.
+    import video_source
+    raw_check = video_source.VideoSource(panel._video_source.path)
+    raw_check.seek_to_frame(0)
+    raw_frame = raw_check.decode_next_frame()
+    raw_check.close()
+
+    assert not np.array_equal(graded, raw_frame), (
+        "a GPU-ineligible stack's retarget should visibly change the pixels")
+    controller.pause()
+    print("VideoPlaybackController._tick: a GPU-ineligible stack CPU-grades "
+          "each frame before pushing it -- OK")
+
+
+def test_tick_pushes_raw_frame_when_no_stack_or_empty_stack():
+    panel = _panel_with_video()
+    panel.set_stack_getter(lambda: st.Stack())  # empty stack
+    controller = VideoPlaybackController(panel)
+    controller.play()
+    controller._tick()
+    assert panel.compare._after_state.gpu_stack is None
+    controller.pause()
+    print("VideoPlaybackController._tick: an empty stack pushes the raw "
+          "frame unchanged, no grading attempted -- OK")
+
+
+def test_play_emits_playback_started():
+    panel = _panel_with_video()
+    controller = VideoPlaybackController(panel)
+    received = []
+    controller.playback_started.connect(lambda: received.append(True))
+    controller.play()
+    assert received == [True]
+    controller.pause()
+    print("VideoPlaybackController.play: emits playback_started -- OK")
 
 
 def test_tick_pushes_a_resolution_capped_proxy_not_full_resolution():
@@ -234,6 +320,10 @@ if __name__ == "__main__":
     test_play_starts_the_timer_and_sets_playback_status_text()
     test_play_is_a_noop_with_no_video_loaded()
     test_tick_decodes_frames_in_order_and_pushes_to_the_viewer()
+    test_tick_pushes_the_raw_frame_with_gpu_stack_for_a_gpu_eligible_stack()
+    test_tick_cpu_grades_the_frame_for_a_gpu_ineligible_stack()
+    test_tick_pushes_raw_frame_when_no_stack_or_empty_stack()
+    test_play_emits_playback_started()
     test_tick_pushes_a_resolution_capped_proxy_not_full_resolution()
     test_pause_reparks_at_full_resolution_through_the_grading_pipeline()
     test_playback_stopped_signal_fires_on_pause()
