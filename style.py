@@ -922,6 +922,45 @@ QToolButton::menu-indicator {{
     width: 0px;
 }}
 
+/* Video transport bar buttons (sample_image_panel.py's Play/Pause, step,
+   in/out, loop -- Phase 4 transport upgrade follow-up, per Tom: the raw
+   Fusion default raised/bordered chrome these were left in read as
+   visibly rougher than the rest of this panel's flat styling, the same
+   gap panelMenuButton's own comment above already called out and fixed
+   once). Same flat-at-rest, accent-highlight-on-hover shape as
+   dockCloseButton/panelMenuButton, just a slightly wider min-width to
+   fit two-glyph labels ("◀│"/"│▶") without clipping. The Loop button
+   ALSO gets a persistent highlighted state while checked (native
+   QToolButton :checked pseudo-state, no dynamic property needed,
+   unlike stageEnabledToggle's true/false property below) -- it's a
+   toggle, not a momentary action, so its state needs to stay visible
+   without a cursor sitting on it. */
+QToolButton#videoTransportButton {{
+    border: none;
+    background: transparent;
+    padding: 2px;
+    min-width: 22px;
+    min-height: 20px;
+}}
+
+QToolButton#videoTransportButton:hover {{
+    background-color: palette(highlight);
+    border-radius: 3px;
+}}
+
+QToolButton#videoTransportButton:checked {{
+    background-color: palette(highlight);
+    border-radius: 3px;
+}}
+
+/* Real SMPTE timecode readout (Phase 4, timecode.py) -- monospace so
+   digits don't jitter the label's own width as they change every tick
+   during playback, same reason any numeric readout that updates in
+   place wants a fixed-width face. */
+QLabel#videoTimecodeLabel {{
+    font-family: Menlo, Consolas, monospace;
+}}
+
 /* -- Buttons, all of them ------------------------------------------- */
 /* Border + background live on the base QPushButton rule, not just
    :checkable -- an earlier version only styled :checkable buttons, which

@@ -121,14 +121,15 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Signal, QTimer, Qt
-from PySide6.QtGui import QActionGroup, QKeySequence
+from PySide6.QtGui import QActionGroup, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
     QMessageBox, QDialog, QComboBox, QCheckBox,
-    QToolButton, QMenu, QSlider,
+    QToolButton, QMenu, QFrame,
 )
 
 from wipe_compare_widget import WipeCompareWidget
+from video_scrub_slider import VideoScrubSlider
 from app_logic import (
     load_image_as_array, export_image_array_to_file,
     default_sample_image_path, DEFAULT_SAMPLE_IMAGE_SOURCE_COLOURSPACE,
@@ -139,6 +140,7 @@ from floating_dialog import make_floating_tool_window, show_floating
 import gpu_stack_renderer
 import video_source
 import video_playback_controller
+import timecode
 from casting_controller import CastingController
 from airplay_output_sink import AirPlayOutputSink
 
@@ -409,48 +411,142 @@ class SampleImagePanel(QWidget):
         self._playback_controller = video_playback_controller.VideoPlaybackController(self, parent=self)
         self._playback_controller.frame_changed.connect(self._on_video_frame_changed)
         self._playback_controller.playback_stopped.connect(self._on_video_playback_stopped)
+        self._build_video_keyboard_shortcuts()
 
     def _build_video_transport_bar(self, layout):
-        """Play/Pause, step-back/step-forward, and a scrub slider -- a
-        thin bar below the Viewer, visible only while a video is loaded
-        (see load_video/_close_video_source). Deliberately colocated
-        here in sample_image_panel.py rather than a new panel file --
-        this bar drives the exact array-state (self._video_source/
-        self._video_frame_index) that already lives here, same "own the
-        state, own the UI that changes it" shape every other control in
-        this panel already follows."""
+        """Play/Pause, step-back/step-forward, in/out points + loop,
+        speed, and a scrub slider -- a thin bar below the Viewer, visible
+        only while a video is loaded (see load_video/_close_video_source).
+        Deliberately colocated here in sample_image_panel.py rather than
+        a new panel file -- this bar drives the exact array-state
+        (self._video_source/self._video_frame_index) that already lives
+        here, same "own the state, own the UI that changes it" shape
+        every other control in this panel already follows.
+
+        IN/OUT + LOOP + SPEED (Phase 4 transport upgrade, per Tom) --
+        this widget only ever reflects VideoPlaybackController's own
+        state (in_point/out_point/loop_enabled/speed); it owns none of
+        it directly, same "this panel drives, the controller decides"
+        split _on_video_play_pause_clicked already has for play/pause.
+        Keyboard shortcuts (Space/Left/Right/I/O/Home/End) are wired
+        separately in _build_video_keyboard_shortcuts, called once from
+        __init__ (not per-transport-bar-build, since shortcuts attach to
+        `self`, not this bar's own widgets)."""
         self._video_transport_widget = QWidget()
         transport_layout = QHBoxLayout(self._video_transport_widget)
         transport_layout.setContentsMargins(0, 0, 0, 0)
+        transport_layout.setSpacing(2)  # within a group -- see addSpacing(8) BETWEEN groups below
 
         self._video_play_button = QToolButton()
+        self._video_play_button.setObjectName("videoTransportButton")
         self._video_play_button.setText("▶")
-        self._video_play_button.setToolTip("Play/Pause")
+        self._video_play_button.setToolTip("Play/Pause (Space)")
         self._video_play_button.clicked.connect(self._on_video_play_pause_clicked)
         transport_layout.addWidget(self._video_play_button)
 
         self._video_step_back_button = QToolButton()
+        self._video_step_back_button.setObjectName("videoTransportButton")
         self._video_step_back_button.setText("◀│")
-        self._video_step_back_button.setToolTip("Step back one frame")
+        self._video_step_back_button.setToolTip("Step back one frame (Left)")
         self._video_step_back_button.clicked.connect(self._on_video_step_back_clicked)
         transport_layout.addWidget(self._video_step_back_button)
 
         self._video_step_forward_button = QToolButton()
+        self._video_step_forward_button.setObjectName("videoTransportButton")
         self._video_step_forward_button.setText("│▶")
-        self._video_step_forward_button.setToolTip("Step forward one frame")
+        self._video_step_forward_button.setToolTip("Step forward one frame (Right)")
         self._video_step_forward_button.clicked.connect(self._on_video_step_forward_clicked)
         transport_layout.addWidget(self._video_step_forward_button)
 
-        self._video_scrub_slider = QSlider(Qt.Orientation.Horizontal)
+        transport_layout.addWidget(self._build_video_transport_separator())
+        transport_layout.addSpacing(4)
+
+        self._video_set_in_button = QToolButton()
+        self._video_set_in_button.setObjectName("videoTransportButton")
+        self._video_set_in_button.setText("[")
+        self._video_set_in_button.setToolTip("Set In Point to the current frame (I)")
+        self._video_set_in_button.clicked.connect(self._on_video_set_in_clicked)
+        transport_layout.addWidget(self._video_set_in_button)
+
+        self._video_set_out_button = QToolButton()
+        self._video_set_out_button.setObjectName("videoTransportButton")
+        self._video_set_out_button.setText("]")
+        self._video_set_out_button.setToolTip("Set Out Point to the current frame (O)")
+        self._video_set_out_button.clicked.connect(self._on_video_set_out_clicked)
+        transport_layout.addWidget(self._video_set_out_button)
+
+        self._video_clear_in_out_button = QToolButton()
+        self._video_clear_in_out_button.setObjectName("videoTransportButton")
+        self._video_clear_in_out_button.setText("⊘")
+        self._video_clear_in_out_button.setToolTip("Clear In/Out Points (back to the full clip)")
+        self._video_clear_in_out_button.clicked.connect(self._on_video_clear_in_out_clicked)
+        transport_layout.addWidget(self._video_clear_in_out_button)
+
+        self._video_loop_button = QToolButton()
+        self._video_loop_button.setObjectName("videoTransportButton")
+        self._video_loop_button.setText("⟲")
+        self._video_loop_button.setToolTip("Loop between In and Out")
+        self._video_loop_button.setCheckable(True)
+        self._video_loop_button.toggled.connect(self._on_video_loop_toggled)
+        transport_layout.addWidget(self._video_loop_button)
+
+        transport_layout.addWidget(self._build_video_transport_separator())
+        transport_layout.addSpacing(4)
+
+        self._video_scrub_slider = VideoScrubSlider(Qt.Orientation.Horizontal)
         self._video_scrub_slider.setMinimum(0)
         self._video_scrub_slider.valueChanged.connect(self._on_video_scrub_slider_changed)
         transport_layout.addWidget(self._video_scrub_slider, stretch=1)
 
+        transport_layout.addSpacing(4)
+        transport_layout.addWidget(self._build_video_transport_separator())
+        transport_layout.addSpacing(4)
+
+        self._video_speed_combo = QComboBox()
+        for preset in video_playback_controller.SPEED_PRESETS:
+            self._video_speed_combo.addItem(f"{preset:g}x", preset)
+        self._video_speed_combo.setCurrentIndex(
+            video_playback_controller.SPEED_PRESETS.index(video_playback_controller.DEFAULT_SPEED))
+        self._video_speed_combo.currentIndexChanged.connect(self._on_video_speed_changed)
+        transport_layout.addWidget(self._video_speed_combo)
+
         self._video_timecode_label = QLabel("")
+        self._video_timecode_label.setObjectName("videoTimecodeLabel")
+        transport_layout.addSpacing(4)
         transport_layout.addWidget(self._video_timecode_label)
 
         self._video_transport_widget.setVisible(False)  # shown only once a video is actually loaded
         layout.addWidget(self._video_transport_widget)
+
+    @staticmethod
+    def _build_video_transport_separator():
+        """A thin vertical divider between logical control groups (Phase
+        4 follow-up, per Tom: transport bar felt like "one long row" --
+        groups it into play/step, in/out/loop, scrub, and speed/timecode
+        clusters instead)."""
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        return separator
+
+    def _build_video_keyboard_shortcuts(self):
+        """Space/Left/Right/I/O/Home/End (Phase 4 transport upgrade, per
+        Tom's own confirmed scope) -- attached to `self` (this whole
+        panel) with the default WidgetWithChildrenShortcut context, so
+        they fire whenever focus is anywhere inside this panel (the
+        Viewer/transport bar), not globally across the app and not only
+        when one specific sub-widget has focus. All are permanently
+        active (not conditionally enabled only while a video is loaded)
+        -- each handler already routes through methods that are no-ops
+        with no video open (_playback_controller.toggle/pause,
+        seek_video_frame), so there's nothing to gate here."""
+        QShortcut(QKeySequence(Qt.Key.Key_Space), self, self._on_video_play_pause_clicked)
+        QShortcut(QKeySequence(Qt.Key.Key_Left), self, self._on_video_step_back_clicked)
+        QShortcut(QKeySequence(Qt.Key.Key_Right), self, self._on_video_step_forward_clicked)
+        QShortcut(QKeySequence(Qt.Key.Key_I), self, self._on_video_set_in_clicked)
+        QShortcut(QKeySequence(Qt.Key.Key_O), self, self._on_video_set_out_clicked)
+        QShortcut(QKeySequence(Qt.Key.Key_Home), self, self._on_video_jump_to_in_clicked)
+        QShortcut(QKeySequence(Qt.Key.Key_End), self, self._on_video_jump_to_out_clicked)
 
     def populate_menu(self, menu):
         """Add this panel's actions to `menu` -- shared by the "..." corner
@@ -922,12 +1018,19 @@ class SampleImagePanel(QWidget):
             return False
         self._close_video_source()
         self._video_source = source
+        # Fresh clip -- any in/out points or loop state left over from a
+        # PREVIOUSLY loaded video are stale (Phase 4 transport upgrade),
+        # not something a newly opened clip should inherit.
+        self._playback_controller.clear_in_out()
+        self._playback_controller.set_loop_enabled(False)
+        self._video_loop_button.setChecked(False)  # keep the button in sync with the controller reset above
         ok = self._load_video_frame_core(0)
         if ok:
             self._suppress_video_scrub_signal = True
             self._video_scrub_slider.setMaximum(max(0, source.frame_count - 1))
             self._video_scrub_slider.setValue(0)
             self._suppress_video_scrub_signal = False
+            self._sync_video_in_out_markers()  # after setMaximum -- marker positions depend on the slider's own range
             self._video_transport_widget.setVisible(True)
             self.video_loaded.emit(source.frame_count, source.frame_rate)
         return ok
@@ -980,8 +1083,21 @@ class SampleImagePanel(QWidget):
         self._suppress_video_scrub_signal = True
         self._video_scrub_slider.setValue(frame_index)
         self._suppress_video_scrub_signal = False
-        total = self._video_source.frame_count if self._video_source is not None else 0
-        self._video_timecode_label.setText(f"{frame_index + 1} / {total}")
+        self._update_video_timecode_label(frame_index)
+
+    def _update_video_timecode_label(self, frame_index):
+        """Real SMPTE timecode (Phase 4, replacing the old "N / total"
+        label -- see timecode.py) -- frame count is kept as a secondary
+        detail in the tooltip, not the primary display, per the plan's
+        own scope note."""
+        if self._video_source is None:
+            self._video_timecode_label.setText("")
+            self._video_timecode_label.setToolTip("")
+            return
+        tc = timecode.frames_to_timecode(frame_index, self._video_source.frame_rate)
+        self._video_timecode_label.setText(tc)
+        self._video_timecode_label.setToolTip(
+            f"Frame {frame_index + 1} / {self._video_source.frame_count}")
 
     def _on_video_play_pause_clicked(self):
         self._playback_controller.toggle()
@@ -1013,11 +1129,56 @@ class SampleImagePanel(QWidget):
         self._suppress_video_scrub_signal = True
         self._video_scrub_slider.setValue(frame_index)
         self._suppress_video_scrub_signal = False
-        total = self._video_source.frame_count if self._video_source is not None else 0
-        self._video_timecode_label.setText(f"{frame_index + 1} / {total}")
+        self._update_video_timecode_label(frame_index)
 
     def _on_video_playback_stopped(self):
         self._update_video_play_button_text()
+
+    def _sync_video_in_out_markers(self):
+        """Pushes the controller's own in_point/out_point onto the scrub
+        slider's visual markers (Phase 4 follow-up, per Tom: "hard to
+        tell where the marks are") -- called after every action that can
+        change either bound, so the slider never shows stale marks."""
+        self._video_scrub_slider.set_in_out(
+            self._playback_controller.in_point, self._playback_controller.out_point)
+
+    def _on_video_set_in_clicked(self):
+        self._playback_controller.set_in_point()
+        self._sync_video_in_out_markers()
+
+    def _on_video_set_out_clicked(self):
+        self._playback_controller.set_out_point()
+        self._sync_video_in_out_markers()
+
+    def _on_video_clear_in_out_clicked(self):
+        self._playback_controller.clear_in_out()
+        self._sync_video_in_out_markers()
+
+    def _on_video_loop_toggled(self, checked):
+        self._playback_controller.set_loop_enabled(checked)
+
+    def _on_video_speed_changed(self, index):
+        speed = self._video_speed_combo.itemData(index)
+        if speed is not None:
+            self._playback_controller.set_speed(speed)
+
+    def _on_video_jump_to_in_clicked(self):
+        """Home shortcut -- jumps straight to in_point (0 if never set),
+        pausing playback first (same "stop, then seek" pattern every
+        other parked-frame navigation in this panel already follows)."""
+        self._playback_controller.pause()
+        self.seek_video_frame(self._playback_controller.in_point)
+
+    def _on_video_jump_to_out_clicked(self):
+        """End shortcut -- jumps straight to out_point (the clip's last
+        frame if never set)."""
+        self._playback_controller.pause()
+        if self._video_source is None:
+            return
+        out_point = self._playback_controller.out_point
+        if out_point is None:
+            out_point = self._video_source.frame_count - 1
+        self.seek_video_frame(out_point)
 
     def import_reference_image(self):
         """"Load Reference Image..." menu action -- see this module's

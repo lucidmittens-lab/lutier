@@ -166,6 +166,23 @@ def test_seek_to_frame_clamps_out_of_range_indices():
           "the valid [0, frame_count-1] range -- OK")
 
 
+def test_seek_to_frame_with_max_dimension_produces_a_capped_proxy():
+    """Phase 4 addition (video_playback_controller.py's loop-back/speed-
+    skip use this so a seek doesn't jump back to full-res just because
+    it isn't a sequential decode_next_frame call)."""
+    path = _tmp_clip_path()
+    _make_test_clip(path, width=64, height=48)
+    src = VideoSource(path)
+    arr = src.seek_to_frame(3, max_dimension=16)
+    assert arr is not None
+    assert arr.shape[:2] == (12, 16), arr.shape
+    np.testing.assert_allclose(arr.mean(axis=(0, 1)), _expected_color_normalized(3), atol=0.05)
+    src.close()
+    print("VideoSource.seek_to_frame(max_dimension=...): produces an "
+          "aspect-preserving capped proxy, same as decode_next_frame's "
+          "own parameter -- OK")
+
+
 def test_context_manager_closes_the_container():
     path = _tmp_clip_path()
     _make_test_clip(path)
@@ -185,6 +202,7 @@ if __name__ == "__main__":
     test_seek_to_frame_lands_on_the_exact_target()
     test_seek_to_frame_matches_sequential_decode_to_the_same_frame()
     test_seek_to_frame_clamps_out_of_range_indices()
+    test_seek_to_frame_with_max_dimension_produces_a_capped_proxy()
     test_context_manager_closes_the_container()
     print()
     print("All video_source tests passed.")

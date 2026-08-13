@@ -316,6 +316,183 @@ def test_play_resumes_from_wherever_parked_frame_stepping_last_left_off():
           "frame scrubbing last left the panel -- OK")
 
 
+# ---- Phase 4: in/out points + loop --------------------------------------
+
+def test_set_in_point_sets_to_current_parked_frame():
+    panel = _panel_with_video(frame_count=10)
+    panel.seek_video_frame(3)
+    controller = VideoPlaybackController(panel)
+    controller.set_in_point()
+    assert controller.in_point == 3
+    print("VideoPlaybackController.set_in_point: sets in_point to the "
+          "current parked frame -- OK")
+
+
+def test_set_out_point_sets_to_current_parked_frame():
+    panel = _panel_with_video(frame_count=10)
+    panel.seek_video_frame(6)
+    controller = VideoPlaybackController(panel)
+    controller.set_out_point()
+    assert controller.out_point == 6
+    print("VideoPlaybackController.set_out_point: sets out_point to the "
+          "current parked frame -- OK")
+
+
+def test_set_in_point_past_out_point_pushes_out_point_up():
+    panel = _panel_with_video(frame_count=10)
+    controller = VideoPlaybackController(panel)
+    controller.out_point = 3
+    panel.seek_video_frame(7)
+    controller.set_in_point()
+    assert controller.in_point == 7
+    assert controller.out_point == 7
+    print("VideoPlaybackController.set_in_point: pushes out_point up to "
+          "match rather than creating an inverted range -- OK")
+
+
+def test_set_out_point_before_in_point_pulls_in_point_down():
+    panel = _panel_with_video(frame_count=10)
+    controller = VideoPlaybackController(panel)
+    controller.in_point = 5
+    panel.seek_video_frame(2)
+    controller.set_out_point()
+    assert controller.out_point == 2
+    assert controller.in_point == 2
+    print("VideoPlaybackController.set_out_point: pulls in_point down to "
+          "match rather than creating an inverted range -- OK")
+
+
+def test_clear_in_out_resets_to_full_range():
+    panel = _panel_with_video(frame_count=10)
+    controller = VideoPlaybackController(panel)
+    controller.in_point = 3
+    controller.out_point = 6
+    controller.clear_in_out()
+    assert controller.in_point == 0
+    assert controller.out_point is None
+    print("VideoPlaybackController.clear_in_out: resets to the full clip "
+          "range (0, None) -- OK")
+
+
+def test_tick_pauses_at_out_point_when_loop_disabled():
+    panel = _panel_with_video(frame_count=10)
+    controller = VideoPlaybackController(panel)
+    controller.out_point = 2
+    controller.play()
+    controller._tick()
+    controller._tick()
+    assert controller.is_playing
+    controller._tick()  # would step past out_point=2
+    assert not controller.is_playing
+    assert controller._frame_index == 2
+    print("VideoPlaybackController._tick: pauses and re-parks at "
+          "out_point rather than playing past it -- OK")
+
+
+def test_tick_loops_back_to_in_point_when_loop_enabled():
+    panel = _panel_with_video(frame_count=10)
+    controller = VideoPlaybackController(panel)
+    controller.in_point = 1
+    controller.out_point = 2
+    controller.set_loop_enabled(True)
+    controller.play()  # clamps into range -- lands on in_point=1
+    assert controller._frame_index == 1
+    controller._tick()
+    assert controller._frame_index == 2
+    controller._tick()  # would step past out_point=2 -- loops to in_point
+    assert controller.is_playing
+    assert controller._frame_index == 1
+    controller.pause()
+    print("VideoPlaybackController._tick: loops back to in_point instead "
+          "of pausing when loop_enabled -- OK")
+
+
+def test_play_clamps_start_index_into_in_out_range():
+    panel = _panel_with_video(frame_count=10)
+    controller = VideoPlaybackController(panel)
+    controller.in_point = 1
+    controller.out_point = 4
+    panel.seek_video_frame(8)  # parked OUTSIDE the active range
+    controller.play()
+    assert controller._frame_index == 4
+    controller.pause()
+    print("VideoPlaybackController.play: clamps the starting frame into "
+          "[in_point, out_point] when parked outside the active range "
+          "-- OK")
+
+
+def test_loading_a_new_video_resets_in_out_and_loop():
+    panel = _panel_with_video(frame_count=10)
+    panel._playback_controller.in_point = 3
+    panel._playback_controller.out_point = 6
+    panel._playback_controller.set_loop_enabled(True)
+
+    second_path = _make_test_video(frame_count=6, size=(WIDTH, HEIGHT))
+    assert panel.load_video(second_path)
+
+    assert panel._playback_controller.in_point == 0
+    assert panel._playback_controller.out_point is None
+    assert panel._playback_controller.loop_enabled is False
+    print("SampleImagePanel.load_video: resets a fresh clip's in/out "
+          "points and loop state, doesn't inherit stale marks from the "
+          "previous clip -- OK")
+
+
+# ---- Phase 4: speed control ----------------------------------------------
+
+def test_set_speed_below_one_slows_the_timer_interval():
+    panel = _panel_with_video(frame_rate=24)
+    controller = VideoPlaybackController(panel)
+    controller.play()
+    base_interval = controller._timer.interval()
+    controller.set_speed(0.5)
+    assert controller._timer.interval() == round(base_interval / 0.5)
+    controller.pause()
+    print("VideoPlaybackController.set_speed: speed 0.5 doubles the "
+          "timer interval (real slow motion, same frame sequence) -- OK")
+
+
+def test_set_speed_above_one_keeps_the_base_interval():
+    panel = _panel_with_video(frame_rate=24)
+    controller = VideoPlaybackController(panel)
+    controller.play()
+    base_interval = controller._timer.interval()
+    controller.set_speed(4.0)
+    assert controller._timer.interval() == base_interval
+    controller.pause()
+    print("VideoPlaybackController.set_speed: speed > 1 keeps the base "
+          "(realtime) timer interval -- frame-skipping handles the "
+          "speedup instead -- OK")
+
+
+def test_tick_advances_multiple_frames_at_speed_above_one():
+    panel = _panel_with_video(frame_count=10)
+    controller = VideoPlaybackController(panel)
+    controller.set_speed(4.0)
+    controller.play()
+    assert controller._frame_index == 0
+    controller._tick()
+    assert controller._frame_index == 4
+    controller.pause()
+    print("VideoPlaybackController._tick: speed 4.0 advances 4 source "
+          "frames per tick -- OK")
+
+
+def test_set_speed_rearms_the_running_timer_immediately():
+    panel = _panel_with_video(frame_rate=24)
+    controller = VideoPlaybackController(panel)
+    controller.play()
+    controller.set_speed(2.0)
+    interval_at_2x = controller._timer.interval()
+    controller.set_speed(0.5)
+    assert controller._timer.interval() != interval_at_2x
+    assert controller._timer.interval() == round(controller._base_interval_ms / 0.5)
+    controller.pause()
+    print("VideoPlaybackController.set_speed: changes the running "
+          "QTimer's interval immediately, not just on the next play() "
+          "-- OK")
+
+
 if __name__ == "__main__":
     test_play_starts_the_timer_and_sets_playback_status_text()
     test_play_is_a_noop_with_no_video_loaded()
@@ -332,5 +509,18 @@ if __name__ == "__main__":
     test_toggle_flips_between_play_and_pause()
     test_frame_changed_signal_reports_each_ticked_frame_index()
     test_play_resumes_from_wherever_parked_frame_stepping_last_left_off()
+    test_set_in_point_sets_to_current_parked_frame()
+    test_set_out_point_sets_to_current_parked_frame()
+    test_set_in_point_past_out_point_pushes_out_point_up()
+    test_set_out_point_before_in_point_pulls_in_point_down()
+    test_clear_in_out_resets_to_full_range()
+    test_tick_pauses_at_out_point_when_loop_disabled()
+    test_tick_loops_back_to_in_point_when_loop_enabled()
+    test_play_clamps_start_index_into_in_out_range()
+    test_loading_a_new_video_resets_in_out_and_loop()
+    test_set_speed_below_one_slows_the_timer_interval()
+    test_set_speed_above_one_keeps_the_base_interval()
+    test_tick_advances_multiple_frames_at_speed_above_one()
+    test_set_speed_rearms_the_running_timer_immediately()
     print()
     print("All video_playback_controller tests passed.")

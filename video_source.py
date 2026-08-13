@@ -84,25 +84,30 @@ class VideoSource:
             frame = next(self._decoder)
         except StopIteration:
             return None
-        if max_dimension is not None and max(frame.width, frame.height) > max_dimension:
-            scale = max_dimension / max(frame.width, frame.height)
-            new_w = max(1, round(frame.width * scale))
-            new_h = max(1, round(frame.height * scale))
-            frame = frame.reformat(width=new_w, height=new_h)
+        frame = self._downscale_frame(frame, max_dimension)
         return self._frame_to_array(frame)
 
-    def seek_to_frame(self, index):
+    def seek_to_frame(self, index, max_dimension=None):
         """Repositions decoding so THIS call returns frame `index`
         directly (unlike decode_next_frame, which only ever advances).
         Seeks to the nearest keyframe at or before `index` (PyAV/ffmpeg's
         own seek granularity) and decodes forward, discarding frames
         until landing exactly on the target -- real cost varies with
         keyframe distance, fine for user-driven scrubbing (one seek per
-        drag tick), not meant for a tight per-frame loop (use sequential
-        decode_next_frame for that, e.g. realtime playback). Returns the
-        landed-on frame's array, or None if `index` is past the end of
-        the stream. Clamped to [0, frame_count-1] when frame_count is
-        known (nonzero), otherwise clamped to >= 0 only."""
+        drag tick) or an occasional loop-back (video_playback_controller.
+        py's in/out+loop transport, Phase 4), not meant for a tight
+        per-frame loop (use sequential decode_next_frame for that, e.g.
+        realtime playback). Returns the landed-on frame's array, or None
+        if `index` is past the end of the stream. Clamped to [0,
+        frame_count-1] when frame_count is known (nonzero), otherwise
+        clamped to >= 0 only.
+
+        `max_dimension` (None by default -- full native resolution): same
+        aspect-preserving downscale-before-array-conversion decode_next_
+        frame's own parameter does -- used by the playback controller's
+        loop-back so a looped realtime-playback tick stays at proxy
+        resolution instead of jumping back to full-res just because it
+        went through a seek instead of a sequential decode."""
         if self.frame_count:
             index = max(0, min(index, self.frame_count - 1))
         else:
@@ -114,8 +119,21 @@ class VideoSource:
         self._decoder = self._container.decode(video=0)
         for frame in self._decoder:
             if frame.pts is not None and frame.pts >= target_pts:
+                frame = self._downscale_frame(frame, max_dimension)
                 return self._frame_to_array(frame)
         return None
+
+    @staticmethod
+    def _downscale_frame(frame, max_dimension):
+        """Shared by decode_next_frame/seek_to_frame -- aspect-preserving
+        reformat down to at most `max_dimension` on the longer side, or a
+        no-op if `max_dimension` is None or the frame's already smaller."""
+        if max_dimension is not None and max(frame.width, frame.height) > max_dimension:
+            scale = max_dimension / max(frame.width, frame.height)
+            new_w = max(1, round(frame.width * scale))
+            new_h = max(1, round(frame.height * scale))
+            frame = frame.reformat(width=new_w, height=new_h)
+        return frame
 
     def _frame_to_array(self, frame):
         rgb = frame.to_ndarray(format="rgb24")

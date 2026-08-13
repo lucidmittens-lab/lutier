@@ -451,15 +451,20 @@ def test_video_transport_slider_range_matches_frame_count():
 
 
 def test_video_transport_timecode_label_updates_on_seek():
+    """Phase 4: the transport bar shows real SMPTE timecode (see
+    timecode.py), not a plain "N / total" count -- frame count moved to
+    the label's tooltip instead (see _update_video_timecode_label)."""
     _app()
     panel = SampleImagePanel()
-    path = _make_test_video(frame_count=10, size=(64, 48))
+    path = _make_test_video(frame_count=10, frame_rate=24, size=(64, 48))
     assert panel.load_video(path)
-    assert panel._video_timecode_label.text() == "1 / 10"
+    assert panel._video_timecode_label.text() == "00:00:00:00"
+    assert panel._video_timecode_label.toolTip() == "Frame 1 / 10"
     panel.seek_video_frame(4)
-    assert panel._video_timecode_label.text() == "5 / 10"
-    print("SampleImagePanel: timecode label reflects the current frame "
-          "after a seek -- OK")
+    assert panel._video_timecode_label.text() == "00:00:00:04"
+    assert panel._video_timecode_label.toolTip() == "Frame 5 / 10"
+    print("SampleImagePanel: timecode label shows real SMPTE timecode "
+          "and updates on seek, frame count moved to the tooltip -- OK")
 
 
 def test_video_transport_step_buttons_move_one_frame_and_clamp():
@@ -516,6 +521,82 @@ def test_video_play_pause_button_toggles_playback_and_its_own_label():
     assert panel._video_play_button.text() == "▶"
     print("SampleImagePanel: Play/Pause button toggles playback and its "
           "own label -- OK")
+
+
+def test_video_set_in_out_and_clear_buttons_drive_the_controller():
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=10, size=(64, 48))
+    assert panel.load_video(path)
+    panel.seek_video_frame(3)
+    panel._on_video_set_in_clicked()
+    assert panel._playback_controller.in_point == 3
+    panel.seek_video_frame(7)
+    panel._on_video_set_out_clicked()
+    assert panel._playback_controller.out_point == 7
+    panel._on_video_clear_in_out_clicked()
+    assert panel._playback_controller.in_point == 0
+    assert panel._playback_controller.out_point is None
+    print("SampleImagePanel: Set In/Set Out/Clear buttons drive the "
+          "playback controller's in/out points -- OK")
+
+
+def test_video_loop_button_toggles_controller_loop_state():
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=10, size=(64, 48))
+    assert panel.load_video(path)
+    assert not panel._playback_controller.loop_enabled
+    panel._video_loop_button.setChecked(True)
+    assert panel._playback_controller.loop_enabled
+    panel._video_loop_button.setChecked(False)
+    assert not panel._playback_controller.loop_enabled
+    print("SampleImagePanel: the Loop toolbutton drives the playback "
+          "controller's loop_enabled -- OK")
+
+
+def test_video_speed_combo_drives_the_controller_speed():
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=10, frame_rate=24, size=(64, 48))
+    assert panel.load_video(path)
+    assert panel._playback_controller.speed == 1.0
+
+    index_of_2x = panel._video_speed_combo.findText("2x")
+    assert index_of_2x >= 0
+    panel._video_speed_combo.setCurrentIndex(index_of_2x)
+    assert panel._playback_controller.speed == 2.0
+    print("SampleImagePanel: the speed combo drives the playback "
+          "controller's speed -- OK")
+
+
+def test_video_home_end_shortcuts_jump_to_in_out_points():
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=10, size=(64, 48))
+    assert panel.load_video(path)
+    panel._playback_controller.in_point = 2
+    panel._playback_controller.out_point = 6
+    panel.seek_video_frame(4)
+
+    panel._on_video_jump_to_in_clicked()
+    assert panel._video_frame_index == 2
+
+    panel._on_video_jump_to_out_clicked()
+    assert panel._video_frame_index == 6
+    print("SampleImagePanel: Home/End shortcut handlers jump to in_point/"
+          "out_point -- OK")
+
+
+def test_video_jump_to_out_uses_last_frame_when_out_point_unset():
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=10, size=(64, 48))
+    assert panel.load_video(path)
+    panel._on_video_jump_to_out_clicked()
+    assert panel._video_frame_index == 9
+    print("SampleImagePanel: End jumps to the clip's last frame when no "
+          "explicit out_point is set -- OK")
 
 
 def test_load_reference_from_array_loads_directly_into_reference_slot():
@@ -663,6 +744,11 @@ if __name__ == "__main__":
     test_video_transport_step_buttons_move_one_frame_and_clamp()
     test_video_transport_scrub_slider_drag_seeks_the_video()
     test_video_play_pause_button_toggles_playback_and_its_own_label()
+    test_video_set_in_out_and_clear_buttons_drive_the_controller()
+    test_video_loop_button_toggles_controller_loop_state()
+    test_video_speed_combo_drives_the_controller_speed()
+    test_video_home_end_shortcuts_jump_to_in_out_points()
+    test_video_jump_to_out_uses_last_frame_when_out_point_unset()
     test_load_reference_from_array_loads_directly_into_reference_slot()
     test_render_full_resolution_after_for_capture_delegates_for_a_still()
     test_render_full_resolution_after_for_capture_redecodes_the_parked_video_frame()
