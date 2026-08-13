@@ -183,6 +183,7 @@ OPTIONS = {
         'style',
         'theme_prefs',
         'undo_history',
+        'video_export',
         'video_output_sink',
         'video_playback_controller',
         'video_source',

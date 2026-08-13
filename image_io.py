@@ -155,38 +155,50 @@ def resize_array(array, target_w, target_h):
     return np.ascontiguousarray(resized.get_pixels(oiio.FLOAT), dtype=np.float32)
 
 
-def write_image(array, path, bit_depth):
-    """Writes `array` ((H,W,3) float32) to `path`, format inferred from
-    its extension (same convention app_logic.export_image_array_to_file
-    already had). `bit_depth` (one of canvas.BIT_DEPTHS) comes from
-    Canvas Settings, NOT the source's own -- see module docstring.
+def quantize_to_bit_depth(array, bit_depth):
+    """Returns (pixels, oiio_type) -- `pixels` is `array` ((...,3)
+    float32) quantized to `bit_depth` (one of canvas.BIT_DEPTHS) as a
+    real numpy array, `oiio_type` is the matching OIIO TypeDesc. Shared
+    by write_image (below) and video_export.py's own per-frame encode
+    quantization, so both stay byte-for-byte consistent rather than two
+    independently-maintained copies of this logic drifting apart.
+
     Integer depths clip to [0,1] and quantize (round-to-nearest, matching
     the existing +0.5-then-truncate convention _float_array_to_pil_image
     already used) -- 10/12-bit quantize to THAT depth's own level count
     first, THEN re-express the result across the full UINT16 container
     range (see module docstring on why: OIIO's DPX plugin -- confirmed
     directly -- expects 10/12-bit samples pre-scaled to the full 16-bit
-    range, not packed into the low N bits). "32f" writes the array
+    range, not packed into the low N bits). "32f" passes the array
     through unclamped, preserving any HDR/negative range, matching this
     app's existing "don't silently discard legitimate HDR range" rule
     (see gpu_stack_renderer.py/casting_controller.py's own precedent)."""
     if bit_depth not in cv.BIT_DEPTHS:
         raise ValueError(f"Unknown bit_depth {bit_depth!r} (expected one of {cv.BIT_DEPTHS})")
-    h, w = array.shape[:2]
 
     if bit_depth == "32f":
-        oiio_type = oiio.FLOAT
-        pixels = np.ascontiguousarray(array, dtype=np.float32)
-    elif bit_depth == 8:
-        oiio_type = oiio.UINT8
+        return np.ascontiguousarray(array, dtype=np.float32), oiio.FLOAT
+    if bit_depth == 8:
         pixels = np.ascontiguousarray(
             (np.clip(array, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
-    else:  # 10, 12, 16 -- always a UINT16 container, see module docstring
-        oiio_type = oiio.UINT16
-        depth_max = 2 ** bit_depth - 1
-        quantized_level = np.round(np.clip(array, 0.0, 1.0) * depth_max)
-        full_range = quantized_level / depth_max * 65535.0
-        pixels = np.ascontiguousarray((full_range + 0.5).astype(np.uint16))
+        return pixels, oiio.UINT8
+    # 10, 12, 16 -- always a UINT16 container, see this function's own docstring
+    depth_max = 2 ** bit_depth - 1
+    quantized_level = np.round(np.clip(array, 0.0, 1.0) * depth_max)
+    full_range = quantized_level / depth_max * 65535.0
+    pixels = np.ascontiguousarray((full_range + 0.5).astype(np.uint16))
+    return pixels, oiio.UINT16
+
+
+def write_image(array, path, bit_depth):
+    """Writes `array` ((H,W,3) float32) to `path`, format inferred from
+    its extension (same convention app_logic.export_image_array_to_file
+    already had). `bit_depth` (one of canvas.BIT_DEPTHS) comes from
+    Canvas Settings, NOT the source's own -- see module and
+    quantize_to_bit_depth's own docstrings for the actual quantization
+    rules."""
+    h, w = array.shape[:2]
+    pixels, oiio_type = quantize_to_bit_depth(array, bit_depth)
 
     spec = oiio.ImageSpec(w, h, 3, oiio_type)
     if bit_depth in (10, 12):
