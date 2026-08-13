@@ -16,6 +16,7 @@ import colour_clf_io as clf
 from PIL import Image
 
 from clf_adapter import bake_process_list_to_lut3d
+import image_io
 from retarget import retarget_io
 from scopes import LUMA_COEFFICIENTS_REC709
 
@@ -432,25 +433,28 @@ def default_sample_image_path():
 
 def get_image_native_size(path):
     """(width, height) of the source file without decoding its raster data
-    -- Image.open() is lazy, it only reads the header until you touch
-    .load()/np.asarray(), so this is cheap to call just to find out how
-    much real detail is available. Used by sample_image_panel's resize
-    handling to know when the preview is already at full native resolution
-    (no point requesting a bigger max_dimension than the source actually
-    has)."""
-    with Image.open(path) as img:
-        return img.size
+    -- delegates to image_io.get_native_size (header-only read, no pixel
+    decode -- see that module's own docstring). Used by
+    sample_image_panel's resize handling to know when the preview is
+    already at full native resolution (no point requesting a bigger
+    max_dimension than the source actually has)."""
+    return image_io.get_native_size(path)
 
 
 def load_image_as_array(path, max_dimension=480):
-    """Load an image file into a numpy float32 (H,W,3) array in domain
-    [0,1], RGB channel order.
+    """Load an image file into a numpy float32 (H,W,3) array, RGB channel
+    order -- delegates the actual decode to image_io.read_image_as_array
+    (Tom, 2026-08-13: real 10/12/16-bit and float/EXR support, not just
+    8-bit -- see that module's own docstring for the bit-depth/scale
+    conventions). Integer sources land in [0,1]; float (EXR/HDR) sources
+    pass through unscaled, unbounded.
 
     This is a PREVIEW helper, not an export-quality pipeline: downsamples
-    (aspect-preserving, Lanczos) so the longer side is at most
-    max_dimension, and does NO color management -- 8-bit source values are
-    divided straight through by 255. That's the same "raw numeric domain"
-    convention the rest of this app uses (see
+    (aspect-preserving, Lanczos, via image_io.resize_array -- operates
+    directly on the float array, so no precision is lost through an
+    intermediate 8-bit round trip) so the longer side is at most
+    max_dimension, and does NO color management. That's the same "raw
+    numeric domain" convention the rest of this app uses (see
     extract_3d_points_for_visualization above): if your sample image isn't
     already in whatever working space the LUT expects, the before/after
     preview won't look photographically "correct" -- it'll show exactly
@@ -458,14 +462,29 @@ def load_image_as_array(path, max_dimension=480):
     for a tool whose job is inspecting LUTs, not color-managing images.
     max_dimension=None disables downsampling.
     """
-    img = Image.open(path).convert("RGB")
+    array, bit_depth = image_io.read_image_as_array(path)
     if max_dimension is not None:
-        w, h = img.size
+        h, w = array.shape[:2]
         scale = max_dimension / max(w, h)
         if scale < 1.0:
-            new_size = (max(1, round(w * scale)), max(1, round(h * scale)))
-            img = img.resize(new_size, Image.LANCZOS)
-    return np.asarray(img, dtype=np.float32) / 255.0
+            new_w, new_h = max(1, round(w * scale)), max(1, round(h * scale))
+            array = image_io.resize_array(array, new_w, new_h)
+            if bit_depth != "32f":
+                # Lanczos has negative lobes -- a resize can legitimately
+                # ring a few 1e-4 outside [0,1] near a hard edge, even for
+                # already-in-range source data (confirmed directly: PIL's
+                # old 8-bit-container resize silently clipped this via
+                # its uint8 round trip, so it was never visible before
+                # image_io.resize_array started operating on the full
+                # float domain). An integer-sourced image can never
+                # LEGITIMATELY have data outside [0,1] to begin with, so
+                # clipping here only removes filter artifacts, never real
+                # signal -- unlike a true "32f" source, where values
+                # outside [0,1] are the actual HDR content and must
+                # survive (see image_io.write_image's own "don't silently
+                # discard legitimate HDR range" rule).
+                array = np.clip(array, 0.0, 1.0)
+    return array
 
 
 def resample_image_array(image_array, max_dimension):
@@ -649,15 +668,18 @@ def array_to_png_bytes(image_array):
     return buf.getvalue()
 
 
-def export_image_array_to_file(image_array, path):
-    """Save an (H,W,3) float array in [0,1] to a still image file on
-    disk -- format inferred from path's extension (.png/.tif/.jpg/etc,
-    whatever PIL's writer supports). Used by Export Still; kept separate
-    from array_to_png_bytes since that one is PNG-only and in-memory by
-    design (for preview pixmaps), not meant to double as a general file
-    writer."""
-    img = _float_array_to_pil_image(image_array)
-    img.save(str(path))
+def export_image_array_to_file(image_array, path, bit_depth=8):
+    """Save an (H,W,3) float array to a still image file on disk --
+    format inferred from path's extension (.png/.tif/.exr/.dpx/etc,
+    whatever image_io/OIIO's plugin set supports), quantized to
+    `bit_depth` (one of canvas.BIT_DEPTHS -- see image_io.write_image's
+    own docstring). Defaults to 8-bit, matching every existing caller's
+    prior behavior exactly -- callers that want Canvas Settings' own bit
+    depth pass it explicitly. Used by Export Still; kept separate from
+    array_to_png_bytes since that one is PNG-only, always-8-bit, and
+    in-memory by design (for preview pixmaps), not meant to double as a
+    general file writer."""
+    image_io.write_image(image_array, str(path), bit_depth)
 
 
 def render_full_resolution_still(source_path, lut=None, lut_chain=None, lut_chain_stages=None):

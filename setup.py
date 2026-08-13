@@ -73,6 +73,12 @@ OPTIONS = {
         # will fail to import at runtime even though it worked in `python3
         # main_window.py` during testing.
         'PyOpenColorIO',
+        # OpenImageIO -- image_io.py's real 8/10/12/16-bit + float image
+        # read/write (Tom, 2026-08-13: Canvas Settings' Bit Depth needs
+        # real teeth, not just an export-time label). Another compiled
+        # ASWF extension module, same 'packages' (not 'includes')
+        # reasoning as PyOpenColorIO immediately above.
+        'OpenImageIO',
         # PyObjC -- airplay_output_sink.py's AirPlay casting window (see
         # VIEWER_CASTING_PLAN_2026-08-11.md). Same 'packages' (not
         # 'includes') reasoning as PySide6/PyOpenColorIO above: these are
@@ -127,6 +133,7 @@ OPTIONS = {
         'app_logic',
         'atomic_write',
         'browser_panel',
+        'canvas',
         'casting_controller',
         'cdl',
         'cdl_file_io',
@@ -146,6 +153,7 @@ OPTIONS = {
         'grading_tone',
         'help_text',
         'hover_inspector',
+        'image_io',
         'image_library',
         'image_library_panel',
         'lut_library',

@@ -7,3 +7,4 @@ colour-clf-io
 numpy
 Pillow
 opencolorio
+OpenImageIO
