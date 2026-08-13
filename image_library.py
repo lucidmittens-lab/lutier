@@ -38,10 +38,31 @@ source_path are always populated for a library-imported entry -- but kept
 optional on the class itself, same defensive convention lut_library.py/
 cdl_library.py already use, in case that ever changes.
 
+VIDEO ENTRIES (Media Library Phase 2, per Tom's "comprehensive media
+library" request) -- media_kind distinguishes "still" (the original,
+default behavior -- array is the full decoded image) from "video" (array
+holds only the FIRST decoded frame, for thumbnail generation/preview
+only, never the whole clip -- embedding every frame the way a still's
+array embeds its one frame would be unbounded memory for a multi-second
+clip). A video entry additionally carries frame_count/frame_rate/
+duration (from video_source.VideoSource at import time) and is never
+eligible for "Load as Reference" (see image_library_panel.py) -- Sample/
+Reference have never supported video, that asymmetry is out of scope
+here.
+
+thumbnail is a media_cache.py storage descriptor (dict, see that
+module), generated at import time via thumbnail.make_thumbnail_png_bytes
+-- None for an entry created before this field existed (old session
+load, see session_io.py), same "old file loads fine, just without the
+new bit" tolerance every prior additive field in this app's session
+formats already has.
+
 Qt-free, fully testable without a display -- same convention as
 lut_library.py/cdl_library.py/stack_memory.py.
 """
 import itertools
+
+MEDIA_KINDS = ("still", "video")
 
 _id_counter = itertools.count(1)
 
@@ -66,26 +87,40 @@ class ImageLibraryEntry:
     unlike LUT Library's identical-looking but purely-cosmetic fields)."""
 
     def __init__(self, name, array, source_colourspace=None,
-                 source_filename=None, source_path=None, entry_id=None):
+                 source_filename=None, source_path=None, entry_id=None,
+                 media_kind="still", frame_count=None, frame_rate=None,
+                 duration=None, thumbnail=None):
         self.id = entry_id if entry_id is not None else next_entry_id()
         self.name = name
         self.array = array
         self.source_colourspace = source_colourspace
         self.source_filename = source_filename
         self.source_path = source_path
+        self.media_kind = media_kind
+        self.frame_count = frame_count
+        self.frame_rate = frame_rate
+        self.duration = duration
+        self.thumbnail = thumbnail
+
+    @property
+    def is_video(self):
+        return self.media_kind == "video"
 
     def copy(self):
         return ImageLibraryEntry(
             self.name, self.array, source_colourspace=self.source_colourspace,
             source_filename=self.source_filename, source_path=self.source_path,
-            entry_id=self.id,
+            entry_id=self.id, media_kind=self.media_kind,
+            frame_count=self.frame_count, frame_rate=self.frame_rate,
+            duration=self.duration, thumbnail=self.thumbnail,
         )
 
     def __repr__(self):
         shape = tuple(self.array.shape) if self.array is not None else None
         return (
             f"ImageLibraryEntry(id={self.id}, name={self.name!r}, "
-            f"shape={shape}, source_colourspace={self.source_colourspace!r})"
+            f"shape={shape}, media_kind={self.media_kind!r}, "
+            f"source_colourspace={self.source_colourspace!r})"
         )
 
 

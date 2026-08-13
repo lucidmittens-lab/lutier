@@ -109,6 +109,47 @@ def test_default_source_colourspace_is_none_meaning_unmanaged():
           "(Unmanaged) when not supplied -- OK")
 
 
+def test_default_media_kind_is_still():
+    entry = ImageLibraryEntry("Plain", _make_array())
+    assert entry.media_kind == "still"
+    assert entry.is_video is False
+    assert entry.frame_count is None
+    assert entry.frame_rate is None
+    assert entry.duration is None
+    assert entry.thumbnail is None
+    print("ImageLibraryEntry: media_kind defaults to 'still' with no "
+          "video metadata/thumbnail -- OK")
+
+
+def test_video_entry_carries_metadata_and_thumbnail():
+    thumb = {"mode": "embedded", "data_b64": "Zm9v"}
+    entry = ImageLibraryEntry(
+        "Clip", _make_array(), media_kind="video", frame_count=120,
+        frame_rate=24.0, duration=5.0, thumbnail=thumb)
+    assert entry.is_video is True
+    assert entry.frame_count == 120
+    assert entry.frame_rate == 24.0
+    assert entry.duration == 5.0
+    assert entry.thumbnail == thumb
+    print("ImageLibraryEntry: a video entry carries frame_count/"
+          "frame_rate/duration/thumbnail and reports is_video -- OK")
+
+
+def test_copy_preserves_media_kind_and_video_metadata():
+    thumb = {"mode": "cached", "filename": "abc.png"}
+    entry = ImageLibraryEntry(
+        "Clip", _make_array(), media_kind="video", frame_count=10,
+        frame_rate=30.0, duration=0.33, thumbnail=thumb)
+    copy = entry.copy()
+    assert copy.media_kind == "video"
+    assert copy.frame_count == 10
+    assert copy.frame_rate == 30.0
+    assert copy.duration == 0.33
+    assert copy.thumbnail == thumb
+    print("ImageLibraryEntry.copy: preserves media_kind and video "
+          "metadata/thumbnail -- OK")
+
+
 if __name__ == "__main__":
     test_add_entry_stores_the_array_directly()
     test_entry_survives_source_file_going_away()
@@ -118,5 +159,8 @@ if __name__ == "__main__":
     test_find_raises_for_unknown_id()
     test_entries_get_unique_ids()
     test_default_source_colourspace_is_none_meaning_unmanaged()
+    test_default_media_kind_is_still()
+    test_video_entry_carries_metadata_and_thumbnail()
+    test_copy_preserves_media_kind_and_video_metadata()
     print()
     print("All image_library tests passed.")

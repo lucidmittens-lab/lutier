@@ -30,7 +30,7 @@ pass-through instead of a file.
 reading is `app_logic.load_lut_any_format` (dispatches to
 `colour-science`'s own per-format readers).
 
-## Image Library
+## Media Library
 
 A shelf of reference images imported into the session. Import a file,
 then double-click an entry (or use its "☰" menu) to load it as the
@@ -57,7 +57,7 @@ the Stack or imported from a file.
 same `cdl.py` structures a CDL stage in the Stack uses (see **ASC CDL**
 under **Stack → Operators** below).
 
-## Stack Memories
+## Gallery
 
 Named snapshots of the whole Stack, so you can save a look, keep working,
 and get back to it later. Can also be exported to/imported from their own
@@ -72,7 +72,7 @@ The sample image preview, before/after wipe compare. Two roles:
 **Sample**, which shows the Stack's live result, and **Reference**, a
 second image the Stack never touches — useful for comparing your grade
 against a separate plate, still, or approved frame. Load each from the
-Image Library or via the Viewer's "☰" menu ("Load Sample Image..." /
+Media Library or via the Viewer's "☰" menu ("Load Sample Image..." /
 "Load Reference Image..."). That same menu's "Left Image"/"Right Image"
 submenus each pick independently from three sources — Sample Before,
 Sample After, or Reference — and "Enable Wipe" switches between a plain
@@ -386,8 +386,8 @@ specifically, though it can still be covered by (or cover) other floating
 panels/dialogs and other applications entirely. Closing a floated panel's
 window, or floating it again, puts it right back into the main window.
 
-Hold **Alt** while hovering over an entry in Stack Memories, LUT Library,
-CDL Library, Image Library, or a stage in the Stack itself to see a
+Hold **Alt** while hovering over an entry in Gallery, LUT Library,
+CDL Library, Media Library, or a stage in the Stack itself to see a
 floating info card with that entry's full details near the cursor —
 handy for a saved Stack Memory's full stage-by-stage breakdown, or a
 Library entry's full source file path, without selecting it first. Move
@@ -414,7 +414,7 @@ panel arrangement.
 ## Sessions
 
 File > New/Open/Save/Save As saves everything — the Stack, the Sample
-and Reference images, and all four libraries (LUT, CDL, Stack Memories,
+and Reference images, and all four libraries (LUT, CDL, Gallery,
 Image) — to a single `.ltr` file, so a saved session reopens with the
 same grade and libraries. Unlike LUT/CDL Library entries, an Image
 Library entry is stored by reference to its source file, not embedded —
@@ -440,9 +440,9 @@ filename:
 - **Export Still** — also saves a full-resolution graded still (same
   name as the LUT, `.png`) using whatever's loaded in the Viewer.
   Skipped with a note in the confirmation if no sample image is loaded.
-  Its own indented sub-checkbox, **Import Still to Image Library**, is
+  Its own indented sub-checkbox, **Import Still to Media Library**, is
   only enabled when Export Still is checked, and additionally ingests
-  that still into the Image Library.
+  that still into the Media Library.
 - **Import to LUT Library** — also ingests the exported LUT into the LUT
   Library (the full-precision baked table, not a re-read of the exported
   file — see `lut_library_panel.py`'s docstring on why that distinction
@@ -477,22 +477,22 @@ sample image.
 | Save Session As... | ⌘⇧S |
 | Export... | ⌘E |
 | Show/Hide Browser | ⇧1 |
-| Show/Hide Image Library | ⇧2 |
+| Show/Hide Media Library | ⇧2 |
 | Show/Hide LUT Library | ⇧3 |
 | Show/Hide CDL Library | ⇧4 |
-| Show/Hide Stack Memories | ⇧5 |
+| Show/Hide Gallery | ⇧5 |
 | Show/Hide Viewer | ⇧6 |
 | Show/Hide Stack | ⇧7 |
 | Show/Hide Parameters | ⇧8 |
 | Show/Hide Scopes | ⇧9 |
 | Show/Hide Graph | ⇧0 |
-| Image Library: Import... | ⌘I |
-| Image Library: Load as Sample | ⌘L |
-| Image Library: Load as Reference | ⌘R |
-| Stack Memories: Save Current Stack... | ⌘G |
-| Stack Memories: Load | ⌘⇧G |
-| Stack Memories: Update | ⌘U |
-| Stack Memories: Export... | ⌘⇧E |
+| Media Library: Import... | ⌘I |
+| Media Library: Load as Sample | ⌘L |
+| Media Library: Load as Reference | ⌘R |
+| Gallery: Save Current Stack... | ⌘G |
+| Gallery: Recall | ⌘⇧G |
+| Gallery: Update | ⌘U |
+| Gallery: Export... | ⌘⇧E |
 | Viewer: Enable Wipe | ⌘W |
 | Scopes: Histogram | ⌘1 |
 | Scopes: Waveform | ⌘2 |

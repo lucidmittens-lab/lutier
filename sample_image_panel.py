@@ -1056,14 +1056,24 @@ class SampleImagePanel(QWidget):
         return True
 
     def load_sample_from_library_entry(self, entry):
-        """Wired to ImageLibraryPanel.load_as_sample_requested. Unlike a
-        normal file-dialog Import, the array is already decoded at native
+        """Wired to ImageLibraryPanel.load_as_sample_requested. A VIDEO
+        entry (Media Library Phase 2) routes to load_video instead --
+        entry.array only ever holds that entry's first decoded frame
+        (see image_library.py's docstring), not something a Sample slot
+        should be parked on when the real video file is right there via
+        entry.source_path; this gets the full transport bar back, not a
+        frozen still.
+
+        For a STILL entry: the array is already decoded at native
         resolution (see image_library.py/image_library_panel.py's own
         load_image_as_array(..., max_dimension=None) call) -- used
         directly, no resampling needed. Pre-fills the declared source
         color space from the entry if it had one (same "save a step"
         convenience load_default_image gives Sample's bundled default),
         but Adapt itself still starts off, same as any other fresh load."""
+        if entry.is_video:
+            self.load_video(entry.source_path)
+            return
         self._current_path = entry.source_path
         self._original_array = entry.array
         self._source_colourspace = entry.source_colourspace
@@ -1081,6 +1091,35 @@ class SampleImagePanel(QWidget):
         self._reference_current_path = entry.source_path
         self._reference_original_array = entry.array
         self._reference_source_colourspace = entry.source_colourspace
+        self._reference_adapt_enabled = False
+        self._reference_adapt_target_colourspace = None
+        self._recompute_reference_working_array()
+        self._render_wipe()
+
+    def load_reference_from_path(self, path):
+        """Decodes `path` fresh and loads it into the Reference slot --
+        same underlying work as load_reference_from_library_entry, but a
+        stable public entry point for callers that only have a PATH, not
+        an ImageLibraryEntry with an already-decoded array. Used by
+        stack_memories_panel.py's Stills Gallery (Phase 3, per Tom):
+        a GalleryStill is disk-referenced only, unlike an ImageLibraryEntry
+        which keeps its decoded pixels in memory for the session (see
+        stack_memory.py's GalleryStill docstring on why), so this always
+        re-decodes rather than reusing a cached array."""
+        return self._load_reference_image_core(path)
+
+    def load_reference_from_array(self, array):
+        """Loads an ALREADY-DECODED array directly into the Reference
+        slot, always Unmanaged (no source_colourspace/path to carry over)
+        -- used for a StackMemory's captured full_still (Stills Gallery,
+        Phase 3 follow-up, per Tom: "load the stack memory as reference"),
+        which has no source file to reload from at all (it's a graded
+        snapshot, decoded from PNG bytes by the caller -- see
+        app_logic.png_bytes_to_array), unlike load_reference_from_path's
+        GalleryStill case."""
+        self._reference_current_path = None
+        self._reference_original_array = array
+        self._reference_source_colourspace = None
         self._reference_adapt_enabled = False
         self._reference_adapt_target_colourspace = None
         self._recompute_reference_working_array()
@@ -1415,6 +1454,31 @@ class SampleImagePanel(QWidget):
         full_res = self._apply_adaptation_to_array(full_res)
         return apply_stack_to_image_array(stack, full_res)
 
+    def render_full_resolution_after_for_capture(self, stack):
+        """Same idea as render_full_resolution_after, but works for
+        whichever kind of Sample is actually loaded -- a still (delegates
+        straight to render_full_resolution_after, the OIIO reload path)
+        or a parked VIDEO frame, which has no "reload from path" OIIO
+        could take (a video container isn't a still-image format) --
+        re-decodes the CURRENT frame at full native resolution via the
+        already-open VideoSource instead (seek_to_frame with no
+        max_dimension cap, same call scrubbing/stepping already use).
+        Used by stack_memories_panel.py's Stills Gallery capture-at-save
+        (Phase 3 follow-up, per Tom: "also capture full canvas-res
+        still") -- NOT used by Export Still/the Export dialog's "Export
+        Still" checkbox, which only ever expect a still-backed Sample and
+        keep using render_full_resolution_after directly. Raises
+        RuntimeError if the video frame can't be re-decoded (source
+        closed/end of stream) -- same "let the caller decide how to
+        surface it" convention render_full_resolution_after itself
+        follows for its own failures."""
+        if self._video_source is not None:
+            full_res = self._video_source.seek_to_frame(self._video_frame_index)
+            if full_res is None:
+                raise RuntimeError("Failed to re-decode the current video frame")
+            return apply_stack_to_image_array(stack, full_res)
+        return self.render_full_resolution_after(stack)
+
     def export_still(self):
         """Save the currently previewed "after" result as a real still
         image file, at the ORIGINAL image's full resolution -- not the
@@ -1505,6 +1569,16 @@ class SampleImagePanel(QWidget):
             "adapt_enabled": self._adapt_enabled,
             "adapt_target_colourspace": self._adapt_target_colourspace,
         }
+        if self._video_source is not None:
+            # Sample is currently a parked VIDEO frame, not a still (Video
+            # Support, Tom 2026-08-13) -- "path" above is the video file's
+            # own path (see _load_video_frame_core), which load_session_
+            # state must route through load_video, not the still-image
+            # decoder (OIIO can't read a video container -- that's a real
+            # bug this flag fixes, caught by round-trip testing a saved
+            # video Sample). video_frame_index restores parked position.
+            state["is_video"] = True
+            state["video_frame_index"] = self._video_frame_index
         if self._reference_current_path is not None:
             state["reference"] = {
                 "path": self._reference_current_path,
@@ -1536,12 +1610,23 @@ class SampleImagePanel(QWidget):
                 "Falling back to the default reference image.")
             self.restore_default_image()
             return
-        if not self._load_image_core(path):
-            return
-        self._source_colourspace = state.get("source_colourspace")
-        self._adapt_enabled = bool(state.get("adapt_enabled", False))
-        self._adapt_target_colourspace = state.get("adapt_target_colourspace")
-        self._recompute_working_array()
+        if state.get("is_video"):
+            # See get_session_state's own note -- a video Sample must
+            # reopen through load_video (real decode), never
+            # _load_image_core (OIIO, can't read a video container).
+            # Adapt/source colourspace are never meaningful for video
+            # (see _load_video_frame_core, always Unmanaged) -- nothing
+            # to restore there, unlike the still-image branch below.
+            if not self.load_video(path):
+                return
+            self.seek_video_frame(state.get("video_frame_index", 0))
+        else:
+            if not self._load_image_core(path):
+                return
+            self._source_colourspace = state.get("source_colourspace")
+            self._adapt_enabled = bool(state.get("adapt_enabled", False))
+            self._adapt_target_colourspace = state.get("adapt_target_colourspace")
+            self._recompute_working_array()
 
         reference_state = state.get("reference")
         if reference_state and reference_state.get("path"):

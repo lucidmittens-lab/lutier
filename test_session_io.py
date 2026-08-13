@@ -12,6 +12,7 @@ import json
 import os
 import tempfile
 
+import av
 import numpy as np
 import colour
 from PIL import Image
@@ -24,9 +25,34 @@ import grading_rgb_curve
 import grading_tone
 import session_io
 import stack as st
+import stack_memory as st_mem
+import thumbnail
+import media_cache
 from lut_library import LUTLibraryEntry, LUTLibrary
 from image_library import ImageLibraryEntry, ImageLibrary
 from undo_history import UndoHistory
+
+
+def _make_test_clip(path, frame_count=6, frame_rate=24, width=16, height=12):
+    """Same tiny-real-encoded-clip fixture convention as
+    test_video_source.py's own _make_test_clip -- a genuinely decodable
+    file, not a mock, so image_library_from_session_list's video branch
+    is exercised for real."""
+    container = av.open(path, mode="w")
+    stream = container.add_stream("libx264", rate=frame_rate)
+    stream.width = width
+    stream.height = height
+    stream.pix_fmt = "yuv420p"
+    for i in range(frame_count):
+        color = (min(255, i * 20), max(0, 255 - i * 20), 128)
+        frame = av.VideoFrame.from_ndarray(
+            np.full((height, width, 3), color, dtype=np.uint8), format="rgb24")
+        frame.pts = i
+        for packet in stream.encode(frame):
+            container.mux(packet)
+    for packet in stream.encode():
+        container.mux(packet)
+    container.close()
 
 
 def _make_lut3d(gain=2.0, size=3, name="test_lut"):
@@ -386,8 +412,8 @@ def test_load_session_with_unknown_future_stage_kind_still_loads_others():
         with open(path, "w") as f:
             json.dump(data, f)
 
-        (loaded_stack, _sample_image_state, _memory_library, _cdl_library,
-         _lut_library, _image_library, _undo_history_state, _canvas,
+        (loaded_stack, _sample_image_state, _memory_library, _gallery_still_library,
+         _cdl_library, _lut_library, _image_library, _undo_history_state, _canvas,
          warnings) = session_io.load_session(path)
 
         assert len(loaded_stack.stages) == 1
@@ -445,8 +471,8 @@ def test_save_and_load_session_round_trips_lut_library_and_embedded_stage():
         path = os.path.join(tmp_dir, "test_session.ltr")
         session_io.save_session(path, stack, None, lut_library=lut_library)
 
-        (loaded_stack, sample_image_state, memory_library, cdl_library,
-         loaded_lut_library, loaded_image_library, undo_history_state,
+        (loaded_stack, sample_image_state, memory_library, gallery_still_library,
+         cdl_library, loaded_lut_library, loaded_image_library, undo_history_state,
          canvas, warnings) = session_io.load_session(path)
 
         assert warnings == []
@@ -500,7 +526,7 @@ def test_load_session_ignores_a_leftover_workspace_key_from_version_6():
             json.dump(data, f)
 
         result = session_io.load_session(path)
-        assert len(result) == 9  # no workspace element in the returned tuple
+        assert len(result) == 10  # no workspace element in the returned tuple
         warnings = result[-1]
         assert warnings == []
     print("load_session: a VERSION 6 file's leftover 'workspace' key is "
@@ -541,6 +567,63 @@ def test_image_library_session_round_trip_via_real_file():
           "fresh, not embedded) -- OK")
 
 
+def test_image_library_video_entry_session_round_trip():
+    """Media Library Phase 2: a video entry (media_kind="video") persists
+    its frame_count/frame_rate/duration/thumbnail and reconstructs its
+    first-frame array by reopening the real clip via video_source, not
+    load_image_as_array."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "clip.mp4")
+        _make_test_clip(path)
+
+        media_cache.set_cache_dir(None)  # embed-in-session mode for this test
+        array = np.zeros((12, 16, 3), dtype=np.float32)
+        thumb = media_cache.store_thumbnail(
+            "test-clip", thumbnail.make_thumbnail_png_bytes(array))
+
+        library = ImageLibrary()
+        library.add_entry(ImageLibraryEntry(
+            "Clip", array, source_filename="clip.mp4", source_path=path,
+            media_kind="video", frame_count=6, frame_rate=24.0,
+            duration=0.25, thumbnail=thumb))
+
+        serialized = json.loads(json.dumps(session_io.image_library_to_session_list(library)))
+        rebuilt_library, warnings = session_io.image_library_from_session_list(serialized)
+
+        assert warnings == []
+        assert len(rebuilt_library.entries) == 1
+        rebuilt_entry = rebuilt_library.entries[0]
+        assert rebuilt_entry.is_video is True
+        assert rebuilt_entry.frame_count == 6
+        assert rebuilt_entry.frame_rate == 24.0
+        assert rebuilt_entry.duration == 0.25
+        assert rebuilt_entry.thumbnail == thumb
+        assert rebuilt_entry.array.shape[:2] == (12, 16)
+    print("image_library_to_session_list/image_library_from_session_list: "
+          "a video entry round-trips its media_kind/metadata/thumbnail, "
+          "reconstructing its first frame via video_source -- OK")
+
+
+def test_image_library_from_session_list_defaults_media_kind_for_old_files():
+    """A pre-VERSION-10 file has no media_kind key at all -- must default
+    to 'still' (see session_io.py's own VERSION 10 docstring), not
+    crash or misclassify as video."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "old_swatch.png")
+        Image.fromarray(np.full((4, 6, 3), 128, dtype=np.uint8)).save(path)
+        old_data = [{
+            "name": "Old Swatch", "source_path": path,
+            "source_filename": "old_swatch.png", "source_colourspace": None,
+        }]
+        library, warnings = session_io.image_library_from_session_list(old_data)
+        assert warnings == []
+        assert len(library.entries) == 1
+        assert library.entries[0].media_kind == "still"
+        assert library.entries[0].is_video is False
+    print("image_library_from_session_list: a pre-VERSION-10 file with no "
+          "media_kind key defaults to 'still' -- OK")
+
+
 def load_image_array_for_test(path):
     """Local stand-in for app_logic.load_image_as_array -- avoids pulling
     in the full app_logic import chain just to build a fixture array for
@@ -565,6 +648,120 @@ def test_image_library_from_session_list_skips_missing_file_with_warning():
           "doesn't raise -- OK")
 
 
+# ---- memory_library_to_session_list / from_session_list (thumbnail) ------
+# and gallery_stills_to_session_list / from_session_list (Phase 3) --------
+
+def test_memory_library_session_round_trip_with_thumbnail():
+    thumb = {"mode": "embedded", "data_b64": "Zm9v"}
+    full_still = {"mode": "embedded", "data_b64": "ZnVsbA=="}
+    stage = st.make_cdl_stage(slope=(1.1, 1.0, 0.9))
+    stack = st.Stack(stages=[stage])
+    library = st_mem.StackMemoryLibrary()
+    library.save("My Grade", stack, thumbnail=thumb, full_still=full_still)
+
+    serialized = json.loads(json.dumps(session_io.memory_library_to_session_list(library)))
+    rebuilt_library, warnings = session_io.memory_library_from_session_list(serialized)
+
+    assert warnings == []
+    assert len(rebuilt_library.memories) == 1
+    assert rebuilt_library.memories[0].name == "My Grade"
+    assert rebuilt_library.memories[0].thumbnail == thumb
+    assert rebuilt_library.memories[0].full_still == full_still
+    assert len(rebuilt_library.memories[0].stack.stages) == 1
+    print("memory_library_to_session_list/memory_library_from_session_list: "
+          "a memory's thumbnail AND full_still both round-trip through "
+          "plain JSON -- OK")
+
+
+def test_memory_library_from_session_list_defaults_thumbnail_for_old_files():
+    """A pre-VERSION-10 file has no thumbnail/full_still keys at all."""
+    old_data = [{"name": "Old Memory", "stack": session_io.stack_to_session_dict(st.Stack())}]
+    library, warnings = session_io.memory_library_from_session_list(old_data)
+    assert warnings == []
+    assert library.memories[0].thumbnail is None
+    assert library.memories[0].full_still is None
+    print("memory_library_from_session_list: a pre-VERSION-10 file with no "
+          "thumbnail/full_still keys defaults both to None -- OK")
+
+
+def test_gallery_stills_session_round_trip():
+    thumb = {"mode": "embedded", "data_b64": "Zm9v"}
+    library = st_mem.GalleryStillLibrary()
+    library.add_still(st_mem.GalleryStill(
+        "Ref Shot", thumb, "/tmp/ref.png", source_filename="ref.png"))
+
+    serialized = json.loads(json.dumps(session_io.gallery_stills_to_session_list(library)))
+    rebuilt_library, warnings = session_io.gallery_stills_from_session_list(serialized)
+
+    assert warnings == []
+    assert len(rebuilt_library.stills) == 1
+    rebuilt_still = rebuilt_library.stills[0]
+    assert rebuilt_still.name == "Ref Shot"
+    assert rebuilt_still.source_path == "/tmp/ref.png"
+    assert rebuilt_still.source_filename == "ref.png"
+    assert rebuilt_still.thumbnail == thumb
+    print("gallery_stills_to_session_list/gallery_stills_from_session_list: "
+          "a gallery still round-trips through plain JSON -- OK")
+
+
+def test_gallery_stills_from_session_list_skips_entry_with_no_source_path():
+    bad_data = [{"name": "No Path", "thumbnail": None}]
+    library, warnings = session_io.gallery_stills_from_session_list(bad_data)
+    assert len(library.stills) == 0
+    assert len(warnings) == 1
+    assert "No Path" in warnings[0]
+    print("gallery_stills_from_session_list: an entry with no source_path "
+          "is skipped with a warning -- OK")
+
+
+def test_save_and_load_session_round_trips_memories_and_gallery_stills():
+    thumb_a = {"mode": "embedded", "data_b64": "bWVtb3J5"}
+    thumb_b = {"mode": "embedded", "data_b64": "c3RpbGw="}
+    memory_library = st_mem.StackMemoryLibrary()
+    memory_library.save("Grade A", st.Stack(), thumbnail=thumb_a)
+    gallery_library = st_mem.GalleryStillLibrary()
+    gallery_library.add_still(st_mem.GalleryStill(
+        "Ref A", thumb_b, "/tmp/ref_a.png", source_filename="ref_a.png"))
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "test_session.ltr")
+        session_io.save_session(
+            path, st.Stack(), None, stack_memory_library=memory_library,
+            gallery_still_library=gallery_library)
+
+        (_stack, _sample_image_state, loaded_memory_library, loaded_gallery_library,
+         _cdl_library, _lut_library, _image_library, _undo_history_state, _canvas,
+         warnings) = session_io.load_session(path)
+
+        assert warnings == []
+        assert loaded_memory_library.memories[0].thumbnail == thumb_a
+        assert loaded_gallery_library.stills[0].thumbnail == thumb_b
+        assert loaded_gallery_library.stills[0].source_path == "/tmp/ref_a.png"
+    print("save_session/load_session: memory thumbnails and gallery "
+          "stills both survive a real file round trip, as SEPARATE "
+          "libraries -- OK")
+
+
+def test_load_session_without_gallery_stills_key_defaults_to_empty():
+    """Pre-VERSION-10 files have no 'gallery_stills' key at all."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "old_session.ltr")
+        session_io.save_session(path, st.Stack(), None)
+        with open(path) as f:
+            data = json.load(f)
+        del data["gallery_stills"]
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+        result = session_io.load_session(path)
+        gallery_still_library = result[3]
+        warnings = result[-1]
+        assert warnings == []
+        assert gallery_still_library.stills == []
+    print("load_session: a session file with no 'gallery_stills' key at "
+          "all (pre-version-10) loads fine with an empty gallery -- OK")
+
+
 def test_load_session_without_lut_library_key_defaults_to_empty():
     """Version 1-3 files (saved before the LUT Library existed) have no
     "lut_library" key at all -- must still load fine, per this module's
@@ -579,8 +776,8 @@ def test_load_session_without_lut_library_key_defaults_to_empty():
         with open(path, "w") as f:
             json.dump(data, f)
 
-        (_stack, _sample_image_state, _memory_library, _cdl_library,
-         lut_library, image_library, _undo_history_state, _canvas,
+        (_stack, _sample_image_state, _memory_library, _gallery_still_library,
+         _cdl_library, lut_library, image_library, _undo_history_state, _canvas,
          warnings) = session_io.load_session(path)
         assert warnings == []
         assert lut_library.entries == []
@@ -605,8 +802,8 @@ def test_save_and_load_session_round_trips_undo_history():
         path = os.path.join(tmp_dir, "test_session.ltr")
         session_io.save_session(path, stack_b, None, undo_history=history)
 
-        (_stack, _sample_image_state, _memory_library, _cdl_library,
-         _lut_library, _image_library, undo_history_state, _canvas,
+        (_stack, _sample_image_state, _memory_library, _gallery_still_library,
+         _cdl_library, _lut_library, _image_library, undo_history_state, _canvas,
          warnings) = session_io.load_session(path)
 
         assert warnings == []
@@ -735,7 +932,15 @@ if __name__ == "__main__":
     test_save_session_never_writes_a_workspace_key()
     test_load_session_ignores_a_leftover_workspace_key_from_version_6()
     test_image_library_session_round_trip_via_real_file()
+    test_image_library_video_entry_session_round_trip()
+    test_image_library_from_session_list_defaults_media_kind_for_old_files()
     test_image_library_from_session_list_skips_missing_file_with_warning()
+    test_memory_library_session_round_trip_with_thumbnail()
+    test_memory_library_from_session_list_defaults_thumbnail_for_old_files()
+    test_gallery_stills_session_round_trip()
+    test_gallery_stills_from_session_list_skips_entry_with_no_source_path()
+    test_save_and_load_session_round_trips_memories_and_gallery_stills()
+    test_load_session_without_gallery_stills_key_defaults_to_empty()
     test_save_and_load_session_round_trips_lut_library_and_embedded_stage()
     test_load_session_without_lut_library_key_defaults_to_empty()
     test_save_and_load_session_round_trips_undo_history()

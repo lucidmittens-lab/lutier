@@ -17,6 +17,20 @@ No drag-and-drop from the Browser (unlike LUT Library/CDL Library) --
 BrowserPanel only ever lists LUT/CDL files, it has no notion of images, so
 this panel's only ingestion path is its own Import... file dialog.
 
+VIDEO ENTRIES (Media Library Phase 2, per Tom's "comprehensive media
+library" request) -- Import... now also accepts video files (same
+extension set sample_image_panel.import_video already supports), opened
+via video_source.VideoSource just long enough to read its metadata and
+decode its first frame (for the thumbnail/row preview -- see
+image_library.py's docstring on why only that one frame is kept, not the
+whole clip), then closed immediately; the real file is reopened fresh by
+whatever later consumes it (see load_video's own already-existing
+open/close lifecycle). "Load as Sample" on a video entry hands off to
+sample_image_panel.load_sample_from_library_entry's own video branch
+(opens the full video with transport, not a frozen frame) -- "Load as
+Reference" stays disabled for a selected video entry, since Reference
+has never supported video and adding that is out of scope here.
+
 NOT TESTED IN THIS ENVIRONMENT -- same PySide6/libEGL wall as the rest of
 the GUI layer. Please run main_window.py and confirm: (1) Import... on a
 real image file adds an entry showing its pixel dimensions, (2) "Load as
@@ -30,7 +44,7 @@ the "can't ever go missing" one LUT/CDL Library entries have).
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtGui import QKeySequence
+from PySide6.QtGui import QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QListWidget, QListWidgetItem,
     QMessageBox, QInputDialog, QFileDialog, QToolButton, QMenu,
@@ -39,11 +53,28 @@ from PySide6.QtWidgets import (
 from app_logic import load_image_as_array
 from image_library import ImageLibrary, ImageLibraryEntry
 import hover_inspector
+import media_cache
+import thumbnail
+import video_source
+
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".exr")
+# Same set sample_image_panel.import_video already supports -- see that
+# module's own file filter.
+VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".avi", ".m4v")
 
 IMAGE_FILE_FILTER = (
-    "Image files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.exr)"
+    "Media files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.exr "
+    "*.mp4 *.mov *.mkv *.avi *.m4v)"
+    ";;Image files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.exr)"
+    ";;Video files (*.mp4 *.mov *.mkv *.avi *.m4v)"
     ";;All files (*)"
 )
+
+
+def _format_duration(seconds):
+    seconds = max(0, round(seconds))
+    minutes, secs = divmod(seconds, 60)
+    return f"{minutes}:{secs:02d}"
 
 
 class ImageLibraryPanel(QWidget):
@@ -117,6 +148,9 @@ class ImageLibraryPanel(QWidget):
     def _entry_summary_text(entry):
         h, w = entry.array.shape[:2] if entry.array is not None else (None, None)
         provenance = f"  [{entry.source_filename}]" if entry.source_filename else ""
+        if entry.is_video:
+            duration_badge = f", {_format_duration(entry.duration)}" if entry.duration else ""
+            return f"{entry.name}{provenance}\n  {w}x{h}{duration_badge}, video"
         space = entry.source_colourspace or "Unmanaged"
         return f"{entry.name}{provenance}\n  {w}x{h}, {space}"
 
@@ -134,7 +168,10 @@ class ImageLibraryPanel(QWidget):
         if entry.array is not None:
             h, w = entry.array.shape[:2]
             lines.append(f"{w}x{h}")
-        lines.append(f"Color space: {entry.source_colourspace or 'Unmanaged'}")
+        if entry.is_video:
+            lines.append(f"Duration: {_format_duration(entry.duration)}")
+        else:
+            lines.append(f"Color space: {entry.source_colourspace or 'Unmanaged'}")
         return "\n".join(lines)
 
     def _refresh_list(self, keep_selection=None):
@@ -142,6 +179,11 @@ class ImageLibraryPanel(QWidget):
         self.list_widget.clear()
         for entry in self.library.entries:
             item = QListWidgetItem(self._entry_summary_text(entry))
+            png_bytes = media_cache.load_thumbnail(entry.thumbnail) if entry.thumbnail else None
+            if png_bytes:
+                pixmap = QPixmap()
+                if pixmap.loadFromData(png_bytes, "PNG"):
+                    item.setIcon(pixmap)
             self.list_widget.addItem(item)
         if keep_selection is not None and 0 <= keep_selection < len(self.library.entries):
             self.list_widget.setCurrentRow(keep_selection)
@@ -161,15 +203,49 @@ class ImageLibraryPanel(QWidget):
         downsamples FROM as needed, see sample_image_panel.py's
         load_sample_from_library_entry/load_reference_from_library_entry,
         the same "ingest at full quality, downsample per-consumer" split
-        Export Still already uses for the Sample image itself)."""
+        Export Still already uses for the Sample image itself). Dispatches
+        to a still or video import based on `path`'s extension (see
+        VIDEO_EXTENSIONS/module docstring)."""
+        if Path(path).suffix.lower() in VIDEO_EXTENSIONS:
+            self._import_video_from_path(path)
+            return
         try:
             array = load_image_as_array(path, max_dimension=None)
         except Exception as e:  # noqa: BLE001 -- surface any decode failure to the user
             QMessageBox.critical(self, "Failed to import image", str(e))
             return
         name = Path(path).stem
+        thumb_descriptor = media_cache.store_thumbnail(
+            f"image-library-{name}", thumbnail.make_thumbnail_png_bytes(array))
         entry = ImageLibraryEntry(
-            name, array, source_filename=Path(path).name, source_path=str(path))
+            name, array, source_filename=Path(path).name, source_path=str(path),
+            media_kind="still", thumbnail=thumb_descriptor)
+        self.library.add_entry(entry)
+        self._refresh_list(keep_selection=len(self.library.entries) - 1)
+
+    def _import_video_from_path(self, path):
+        """Opens `path` just long enough to read its metadata and decode
+        its first frame (module docstring) -- always closed again before
+        returning, whether or not the import succeeds."""
+        try:
+            source = video_source.VideoSource(path)
+        except Exception as e:  # noqa: BLE001 -- surface any open/decode failure to the user
+            QMessageBox.critical(self, "Failed to import video", str(e))
+            return
+        try:
+            first_frame = source.decode_next_frame()
+            frame_count, frame_rate, duration = source.frame_count, source.frame_rate, source.duration
+        finally:
+            source.close()
+        name = Path(path).stem
+        thumb_descriptor = None
+        if first_frame is not None:
+            thumb_descriptor = media_cache.store_thumbnail(
+                f"image-library-{name}", thumbnail.make_thumbnail_png_bytes(first_frame))
+        entry = ImageLibraryEntry(
+            name, first_frame, source_filename=Path(path).name, source_path=str(path),
+            media_kind="video", frame_count=frame_count, frame_rate=frame_rate,
+            duration=duration, thumbnail=thumb_descriptor)
         self.library.add_entry(entry)
         self._refresh_list(keep_selection=len(self.library.entries) - 1)
 
@@ -184,6 +260,12 @@ class ImageLibraryPanel(QWidget):
     def _on_load_as_reference_clicked(self):
         entry = self._selected_entry()
         if entry is None:
+            return
+        if entry.is_video:
+            QMessageBox.information(
+                self, "Load as Reference",
+                "The Reference slot doesn't support video -- use \"Load as "
+                "Sample\" instead.")
             return
         self.load_as_reference_requested.emit(entry)
 

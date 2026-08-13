@@ -518,6 +518,126 @@ def test_video_play_pause_button_toggles_playback_and_its_own_label():
           "own label -- OK")
 
 
+def test_load_reference_from_array_loads_directly_into_reference_slot():
+    """Stills Gallery, Phase 3 follow-up: a StackMemory's captured
+    full_still has no source path to reload from -- load_reference_from_
+    array must accept an already-decoded array directly."""
+    _app()
+    panel = _panel_with_image_and_stack()
+    array = np.full((20, 30, 3), 0.5, dtype=np.float32)
+    panel.load_reference_from_array(array)
+    assert panel._reference_original_array is array
+    assert panel._reference_current_path is None
+    assert panel._reference_source_colourspace is None
+    assert panel._reference_adapt_enabled is False
+    print("SampleImagePanel.load_reference_from_array: loads an "
+          "already-decoded array directly into the Reference slot, "
+          "always Unmanaged -- OK")
+
+
+def test_render_full_resolution_after_for_capture_delegates_for_a_still():
+    _app()
+    panel = _panel_with_image_and_stack(size=(200, 120))
+    stack = panel._stack_getter()
+    result = panel.render_full_resolution_after_for_capture(stack)
+    expected = panel.render_full_resolution_after(stack)
+    np.testing.assert_array_equal(result, expected)
+    print("SampleImagePanel.render_full_resolution_after_for_capture: "
+          "delegates to render_full_resolution_after for a still-backed "
+          "Sample -- OK")
+
+
+def test_render_full_resolution_after_for_capture_redecodes_the_parked_video_frame():
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=8, size=(64, 48))
+    assert panel.load_video(path)
+    panel.seek_video_frame(3)
+    stack = Stack()
+    stack.add_stage(make_cdl_stage(slope=(1.1, 0.9, 1.0)))
+
+    result = panel.render_full_resolution_after_for_capture(stack)
+    assert result.shape[:2] == (48, 64)
+    # Re-decoding frame 3 must not have moved the panel's own parked
+    # position -- capture is read-only from the panel's perspective.
+    assert panel._video_frame_index == 3
+    print("SampleImagePanel.render_full_resolution_after_for_capture: "
+          "re-decodes the current parked VIDEO frame at full resolution "
+          "and grades it, without disturbing the panel's parked position "
+          "-- OK")
+
+
+def test_get_session_state_flags_a_video_sample_as_is_video():
+    """A real bug this test would have caught before it shipped: without
+    this flag, load_session_state can't tell a video Sample's path from
+    a still's, and routes it through the still-image decoder (OIIO,
+    which can't read a video container) -- reported by Tom via a real
+    save/reload of a video Sample."""
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=8, size=(64, 48))
+    assert panel.load_video(path)
+    panel.seek_video_frame(3)
+
+    state = panel.get_session_state()
+    assert state["is_video"] is True
+    assert state["video_frame_index"] == 3
+    assert state["path"] == path
+    print("SampleImagePanel.get_session_state: flags a video Sample with "
+          "is_video/video_frame_index -- OK")
+
+
+def test_get_session_state_omits_is_video_for_a_still_sample():
+    _app()
+    panel = _panel_with_image_and_stack()
+    state = panel.get_session_state()
+    assert "is_video" not in state
+    print("SampleImagePanel.get_session_state: a still Sample has no "
+          "is_video key -- OK")
+
+
+def test_load_session_state_reopens_a_video_sample_through_load_video():
+    """The actual fix -- load_session_state must route an is_video state
+    through load_video (real decode), not _load_image_core (OIIO), and
+    land back on the exact frame that was parked when the session was
+    saved."""
+    _app()
+    saving_panel = SampleImagePanel()
+    path = _make_test_video(frame_count=8, size=(64, 48))
+    assert saving_panel.load_video(path)
+    saving_panel.seek_video_frame(5)
+    state = saving_panel.get_session_state()
+
+    loading_panel = SampleImagePanel()
+    loading_panel.load_session_state(state)
+    assert loading_panel._video_source is not None
+    assert loading_panel._video_frame_index == 5
+    assert loading_panel._image_array.shape[:2] == (48, 64)
+    print("SampleImagePanel.load_session_state: reopens a video Sample "
+          "via load_video and re-parks on the saved frame -- OK")
+
+
+def test_video_sample_session_state_round_trips_through_json():
+    """The end-to-end shape session_io.save_session/load_session actually
+    exercise -- state must survive a real json.dumps/json.loads round
+    trip (plain JSON-able types only), not just a same-process dict
+    passthrough."""
+    import json
+    _app()
+    saving_panel = SampleImagePanel()
+    path = _make_test_video(frame_count=6, size=(64, 48))
+    assert saving_panel.load_video(path)
+    saving_panel.seek_video_frame(2)
+    state = json.loads(json.dumps(saving_panel.get_session_state()))
+
+    loading_panel = SampleImagePanel()
+    loading_panel.load_session_state(state)
+    assert loading_panel._video_source is not None
+    assert loading_panel._video_frame_index == 2
+    print("SampleImagePanel: a video Sample's session state survives a "
+          "real JSON round trip and reopens correctly -- OK")
+
+
 if __name__ == "__main__":
     test_sample_loads_at_native_resolution_not_a_capped_preview_size()
     test_isolated_single_edit_on_gpu_ineligible_stack_renders_at_full_resolution()
@@ -543,5 +663,12 @@ if __name__ == "__main__":
     test_video_transport_step_buttons_move_one_frame_and_clamp()
     test_video_transport_scrub_slider_drag_seeks_the_video()
     test_video_play_pause_button_toggles_playback_and_its_own_label()
+    test_load_reference_from_array_loads_directly_into_reference_slot()
+    test_render_full_resolution_after_for_capture_delegates_for_a_still()
+    test_render_full_resolution_after_for_capture_redecodes_the_parked_video_frame()
+    test_get_session_state_flags_a_video_sample_as_is_video()
+    test_get_session_state_omits_is_video_for_a_still_sample()
+    test_load_session_state_reopens_a_video_sample_through_load_video()
+    test_video_sample_session_state_round_trips_through_json()
     print()
     print("All sample_image_panel tests passed.")

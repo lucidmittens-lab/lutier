@@ -239,11 +239,13 @@ from format_writers import write_3dl, write_truelight_cub
 from app_logic import export_image_array_to_file
 import session_io
 import workspace_io
+import media_cache
 import stack as st
 import canvas as cv
+import image_io
 import video_export
 import video_source
-from stack_memory import StackMemoryLibrary
+from stack_memory import StackMemoryLibrary, GalleryStillLibrary
 from cdl_library import CDLLibrary
 from lut_library import LUTLibrary
 from image_library import ImageLibrary
@@ -294,10 +296,10 @@ EXPORT_FORMATS = [
 # migration, still matches USER_MANUAL.md/help_text.py's shortcut table.
 PANEL_TOGGLES_LEFT = [
     ("browser_toggle", "Browser", "browser_frame", True),
-    ("image_library_toggle", "Image Library", "image_library_frame", True),
+    ("image_library_toggle", "Media Library", "image_library_frame", True),
     ("lut_library_toggle", "LUT Library", "lut_library_frame", True),
     ("cdl_library_toggle", "CDL Library", "cdl_library_frame", True),
-    ("stack_memories_toggle", "Stack Memories", "stack_memories_frame", True),
+    ("stack_memories_toggle", "Gallery", "stack_memories_frame", True),
 ]
 PANEL_TOGGLES_CENTER = [
     ("sample_image_toggle", "Viewer", "sample_image_frame", True),
@@ -848,7 +850,7 @@ class MainWindow(QMainWindow):
         # doesn't exist yet at this point in the method).
         self.image_library_panel = ImageLibraryPanel()
         self._make_dock(
-            "image_library_frame", "Image Library", self.image_library_panel,
+            "image_library_frame", "Media Library", self.image_library_panel,
             corner_widget=self.image_library_panel.menu_button)
 
         self.lut_library_panel = LUTLibraryPanel()
@@ -901,7 +903,7 @@ class MainWindow(QMainWindow):
         # corner_widget=self.stack_memories_panel.menu_button -- same "..."
         # header-menu treatment as LUT Library/CDL Library above.
         self._make_dock(
-            "stack_memories_frame", "Stack Memories", self.stack_memories_panel,
+            "stack_memories_frame", "Gallery", self.stack_memories_panel,
             corner_widget=self.stack_memories_panel.menu_button)
 
         # ---- center column: Viewer (top) / Stack (main area) -----------
@@ -958,6 +960,28 @@ class MainWindow(QMainWindow):
             self.sample_image.load_sample_from_library_entry)
         self.image_library_panel.load_as_reference_requested.connect(
             self.sample_image.load_reference_from_library_entry)
+
+        # Stills Gallery (Phase 3, Stack Memories panel) -- same "deferred
+        # wiring, this panel has no idea SampleImagePanel exists" reasoning
+        # as Image Library above. set_still_capture_getter feeds
+        # _capture_gallery_still (a full CANVAS-resolution graded render,
+        # per Tom's follow-up: "also capture full canvas-res still") into
+        # Stack Memory's automatic thumbnail+full_still capture at save
+        # time; a GalleryStill's "Load as Reference" routes to
+        # load_reference_from_path (not load_reference_from_library_entry
+        # -- a GalleryStill has no cached decoded array, unlike an
+        # ImageLibraryEntry, see that class's own docstring), via a lambda
+        # since both sides live on the UI thread (no cross-thread signal
+        # concern, same as the video playback lock/unlock wiring above).
+        self.stack_memories_panel.set_still_capture_getter(self._capture_gallery_still)
+        self.stack_memories_panel.load_as_reference_requested.connect(
+            lambda still: self.sample_image.load_reference_from_path(still.source_path))
+        # A StackMemory's captured full_still has no source file to
+        # reload from at all (it's a decoded-from-PNG-bytes graded
+        # snapshot, see stack_memories_panel.py's own docstring) -- a
+        # separate signal/array-based load, not a path-based one.
+        self.stack_memories_panel.load_full_still_as_reference_requested.connect(
+            self.sample_image.load_reference_from_array)
 
         # corner_widget=list_menu_button -- Add Printer Lights / Add ACES
         # DRT / Edit Size-Domain consolidated into one header menu (per
@@ -1215,8 +1239,17 @@ class MainWindow(QMainWindow):
         workspace_menu.addSeparator()
         workspace_menu.addAction("Accent Color...", self._choose_accent_color)
 
+        # Media Cache Folder... (Phase 1 of the Media Library/Stills
+        # Gallery work, per Tom: "thumbnails can go in the session file,
+        # but we should allow configuration of a sidecar gallery folder.
+        # will need this for video cache eventually") -- own action
+        # right alongside Accent Color, same "one app-level setting, no
+        # Preferences dialog to hang it on" precedent (see media_cache.py's
+        # own docstring).
+        workspace_menu.addAction("Media Cache Folder...", self._choose_media_cache_folder)
+
         # ---- category menus -- see docstring above ------------------------
-        image_library_menu = menu_bar.addMenu("Image Library")
+        image_library_menu = menu_bar.addMenu("Media Library")
         self.image_library_panel.populate_menu(image_library_menu)
 
         lut_library_menu = menu_bar.addMenu("LUT Library")
@@ -1225,7 +1258,7 @@ class MainWindow(QMainWindow):
         cdl_library_menu = menu_bar.addMenu("CDL Library")
         self.cdl_library_panel.populate_menu(cdl_library_menu)
 
-        stack_memories_menu = menu_bar.addMenu("Stack Memories")
+        stack_memories_menu = menu_bar.addMenu("Gallery")
         self.stack_memories_panel.populate_menu(stack_memories_menu)
 
         viewer_menu = menu_bar.addMenu("Viewer")
@@ -1299,13 +1332,14 @@ class MainWindow(QMainWindow):
     def _new_session(self):
         if (self.stack_panel.get_stack().stages
                 or self.stack_memories_panel.get_library().memories
+                or self.stack_memories_panel.get_gallery_library().stills
                 or self.cdl_library_panel.get_library().entries
                 or self.lut_library_panel.get_library().entries
                 or self.image_library_panel.get_library().entries):
             reply = QMessageBox.question(
                 self, "New Session",
-                "Discard the current stack, Stack Memories, CDL Library, "
-                "LUT Library, and Image Library and start a new session? "
+                "Discard the current stack, Gallery, CDL Library, "
+                "LUT Library, and Media Library and start a new session? "
                 "Unsaved changes will be lost.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Cancel,
@@ -1333,6 +1367,7 @@ class MainWindow(QMainWindow):
         self._undo_history = UndoHistory(new_stack.copy())
         self._update_undo_redo_actions()
         self.stack_memories_panel.load_library(StackMemoryLibrary())
+        self.stack_memories_panel.load_gallery_library(GalleryStillLibrary())
         self.cdl_library_panel.load_library(CDLLibrary())
         self.lut_library_panel.load_library(LUTLibrary())
         self.image_library_panel.load_library(ImageLibrary())
@@ -1357,9 +1392,9 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            (new_stack, sample_image_state, memory_library, cdl_library,
-             lut_library, image_library, undo_history_state, loaded_canvas,
-             warnings) = session_io.load_session(path)
+            (new_stack, sample_image_state, memory_library, gallery_still_library,
+             cdl_library, lut_library, image_library, undo_history_state,
+             loaded_canvas, warnings) = session_io.load_session(path)
         except Exception as e:  # noqa: BLE001 -- surface any read/parse failure to the user
             QMessageBox.critical(self, "Failed to open session", str(e))
             return
@@ -1387,6 +1422,7 @@ class MainWindow(QMainWindow):
             self._undo_history = UndoHistory(new_stack.copy())
         self._update_undo_redo_actions()
         self.stack_memories_panel.load_library(memory_library)
+        self.stack_memories_panel.load_gallery_library(gallery_still_library)
         self.cdl_library_panel.load_library(cdl_library)
         self.lut_library_panel.load_library(lut_library)
         self.image_library_panel.load_library(image_library)
@@ -1437,6 +1473,7 @@ class MainWindow(QMainWindow):
             session_io.save_session(
                 path, self.stack_panel.get_stack(), self.sample_image.get_session_state(),
                 stack_memory_library=self.stack_memories_panel.get_library(),
+                gallery_still_library=self.stack_memories_panel.get_gallery_library(),
                 cdl_library=self.cdl_library_panel.get_library(),
                 lut_library=self.lut_library_panel.get_library(),
                 image_library=self.image_library_panel.get_library(),
@@ -2001,6 +2038,73 @@ class MainWindow(QMainWindow):
         app.setPalette(build_dark_palette())
         app.setStyleSheet(STYLESHEET)
 
+    def _choose_media_cache_folder(self):
+        """Workspace menu "Media Cache Folder..." (Phase 1 of the Media
+        Library/Stills Gallery work) -- offers a choice between picking a
+        sidecar folder (media_cache.set_cache_dir persists it; future
+        thumbnails/video proxies get written there instead of embedded in
+        the session file) or clearing back to embed-in-session mode (the
+        default), via a small custom-button QMessageBox rather than a new
+        dialog class -- one setting doesn't warrant one, same reasoning
+        as _choose_accent_color popping QColorDialog directly.
+
+        Seeds the QFileDialog at the currently-configured folder (if any)
+        so reopening this shows where it's already pointed, same
+        "reflect current state, not a blank default" precedent as
+        _choose_accent_color seeding QColorDialog from get_accent_color()."""
+        current = media_cache.get_cache_dir()
+        box = QMessageBox(self)
+        box.setWindowTitle("Media Cache Folder")
+        box.setText(
+            f"Current: {current}" if current is not None
+            else "Current: embedded in session file (no cache folder set)")
+        choose_button = box.addButton("Choose Folder...", QMessageBox.ActionRole)
+        clear_button = box.addButton("Clear (Embed in Session)", QMessageBox.ActionRole)
+        box.addButton(QMessageBox.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is choose_button:
+            start_dir = str(current) if current is not None else ""
+            path = QFileDialog.getExistingDirectory(self, "Choose Media Cache Folder", start_dir)
+            if path:
+                media_cache.set_cache_dir(path)
+        elif clicked is clear_button:
+            media_cache.set_cache_dir(None)
+
+    def _capture_gallery_still(self):
+        """Wired to StackMemoriesPanel.set_still_capture_getter -- builds
+        the full CANVAS-resolution graded array a Stack Memory captures
+        alongside its thumbnail at save/update time (Phase 3 follow-up,
+        per Tom: "also capture full canvas-res still"). Returns None (no
+        capture, never a crash) if there's no Sample loaded, the working
+        stack is empty, or the render itself fails -- same tolerance
+        stack_memories_panel.py's own capture path already has for a
+        missing/failed thumbnail.
+
+        Uses render_full_resolution_after_for_capture (handles BOTH a
+        still-backed Sample and a parked VIDEO frame -- see that method's
+        own docstring), then resizes to self._canvas.width/height if the
+        render doesn't already match -- same per-frame resize convention
+        video_export.py's own export_video_cpu already uses, just for one
+        frame instead of a whole clip. pixel_aspect_ratio is NOT baked
+        into the raster here (a PNG has no standard slot for it the way
+        video_export's container-level sample_aspect_ratio does) --
+        display-only, same as everywhere else a canvas aspect ratio is
+        applied to the Viewer rather than the pixels themselves."""
+        if not self.sample_image.has_sample_image():
+            return None
+        stack = self.stack_panel.get_stack()
+        if not stack.stages:
+            return None
+        try:
+            array = self.sample_image.render_full_resolution_after_for_capture(stack)
+        except Exception:  # noqa: BLE001 -- best-effort capture, never blocks the actual save
+            return None
+        c = self._canvas
+        if array.shape[1] != c.width or array.shape[0] != c.height:
+            array = image_io.resize_array(array, c.width, c.height)
+        return array
+
     def _on_stack_changed(self):
         """Single place that re-bakes the Stack and pushes the result to
         every panel that displays it -- fires on every stage add/remove/
@@ -2205,7 +2309,7 @@ class MainWindow(QMainWindow):
             # Export Still itself is off -- see _on_export_still_toggled.
             still_sub_row = QHBoxLayout()
             still_sub_row.addSpacing(20)
-            self.export_still_to_library_checkbox = QCheckBox("Import Still to Image Library")
+            self.export_still_to_library_checkbox = QCheckBox("Import Still to Media Library")
             self.export_still_to_library_checkbox.setEnabled(False)
             still_sub_row.addWidget(self.export_still_to_library_checkbox)
             outer.addLayout(still_sub_row)
@@ -2740,7 +2844,7 @@ class MainWindow(QMainWindow):
         lines = [f"Exported a still to:\n{still_path}"]
         if self.export_still_to_library_checkbox.isChecked():
             self.image_library_panel.import_from_path(still_path)
-            lines.append("Imported the still into the Image Library.")
+            lines.append("Imported the still into the Media Library.")
         return "\n".join(lines)
 
 

@@ -668,6 +668,16 @@ def array_to_png_bytes(image_array):
     return buf.getvalue()
 
 
+def png_bytes_to_array(png_bytes):
+    """Inverse of array_to_png_bytes -- PNG-encoded bytes -> (H,W,3)
+    float32 array in [0,1]. Used to reload a StackMemory's captured
+    full_still (Stills Gallery, Phase 3 follow-up) for "Load as
+    Reference", since that bytes-only capture has no source_path to
+    reload from the way a GalleryStill or ImageLibraryEntry does."""
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    return np.asarray(img, dtype=np.float32) / 255.0
+
+
 def export_image_array_to_file(image_array, path, bit_depth=8):
     """Save an (H,W,3) float array to a still image file on disk --
     format inferred from path's extension (.png/.tif/.exr/.dpx/etc,

@@ -18,6 +18,7 @@ from PIL import Image
 
 from app_logic import (
     load_image_as_array, apply_lut_to_image_array, array_to_png_bytes,
+    png_bytes_to_array,
     apply_lut_chain_to_image_array, concatenate_luts,
     apply_lut_chain_with_opacity, concatenate_luts_with_opacity,
     export_image_array_to_file, render_full_resolution_still,
@@ -99,6 +100,23 @@ def test_array_to_png_bytes_round_trips():
     max_diff = np.max(np.abs(decoded - array))
     assert max_diff < 1.0 / 255 + 1e-6, max_diff
     print(f"array_to_png_bytes round-trip max diff: {max_diff:.6f} -- OK")
+
+
+def test_png_bytes_to_array_round_trips_with_array_to_png_bytes():
+    """png_bytes_to_array is the exact inverse app_logic.array_to_png_
+    bytes needed (Stills Gallery, Phase 3 follow-up) -- a Stack Memory's
+    captured full_still has no source file to reload from, so "Load as
+    Reference" for it depends on this round trip being correct."""
+    path = _make_test_image(size=(32, 24))
+    array = load_image_as_array(path, max_dimension=None)
+    png_bytes = array_to_png_bytes(array)
+    decoded = png_bytes_to_array(png_bytes)
+    assert decoded.shape == array.shape
+    assert decoded.dtype == np.float32
+    max_diff = np.max(np.abs(decoded - array))
+    assert max_diff < 1.0 / 255 + 1e-6, max_diff
+    print(f"png_bytes_to_array round-trips with array_to_png_bytes, max "
+          f"diff: {max_diff:.6f} -- OK")
 
 
 def test_apply_lut_chain_matches_sequential_manual_apply():
@@ -325,6 +343,7 @@ if __name__ == "__main__":
     test_apply_identity_lut_leaves_image_unchanged()
     test_apply_real_lut_actually_changes_image()
     test_array_to_png_bytes_round_trips()
+    test_png_bytes_to_array_round_trips_with_array_to_png_bytes()
     test_apply_lut_chain_matches_sequential_manual_apply()
     test_apply_lut_chain_empty_list_is_passthrough()
     test_chain_preview_is_more_accurate_than_baked_concatenate()
