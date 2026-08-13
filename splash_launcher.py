@@ -140,6 +140,12 @@ def main():
     # THIS is now what constructs the process's one QApplication --
     # main_window's own copy of this line only ever runs when
     # main_window.py is executed directly, skipping this file.
+    #
+    # No QSurfaceFormat override -- see main_window.main()'s own note on
+    # why the platform default (already GLSL 1.20/OpenGL 2.1
+    # Compatibility Profile on this Mac) is exactly what wipe_compare_
+    # widget.py's GPU pipeline targets, and why forcing a newer Core
+    # Profile app-wide broke the Graph panel's pyqtgraph rendering.
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
     app = QApplication(sys.argv)
 

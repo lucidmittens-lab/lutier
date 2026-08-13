@@ -24,6 +24,21 @@ attribute exactly once, at that point -- so it's set here at import
 time: pytest always imports conftest.py before collecting/running any
 test module in this directory, ahead of any test's own _app() call.
 
+GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 5 note: this project's own
+GPU shaders (gpu_shader_prototype.py, gpu_cdl_shader.py,
+gpu_lanczos_compositor.py) deliberately target GLSL 1.20/OpenGL 2.1
+Compatibility Profile, NOT a newer Core Profile -- confirmed on real
+hardware that this Mac's true default QOpenGLWidget context already IS
+2.1/GLSL 1.20 (`GL_VERSION`/`GL_SHADING_LANGUAGE_VERSION`, checked
+directly), and that forcing a newer Core Profile app-wide breaks the
+Graph panel's pyqtgraph rendering outright (its GLScatterPlotItem/
+GLLinePlotItem code never binds its own Vertex Array Object, which Core
+Profile requires but Compatibility Profile doesn't -- confirmed via a
+real `OpenGL.GL.shaders.ShaderValidationError: No vertex array object
+bound`). So: no QSurfaceFormat override needed or wanted here -- the
+platform default is already exactly right, and this comment exists so a
+future reader doesn't "helpfully" add one back.
+
 ALSO excludes the GPU-acceleration project's own test files from normal
 `pytest -q` collection (see collect_ignore below) -- discovered while
 building GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 3: those tests each
@@ -38,14 +53,27 @@ documents, just triggered by a second, unrelated source of GL contexts
 this time rather than a float/dock reparent. Non-fatal (pyqtgraph catches
 it internally) but real, and these tests are fully runnable and verified
 standalone anyway (`python3 test_gpu_cdl_shader.py`, `python3
-test_gpu_shader_cache.py`) -- excluding them from the shared-process
-suite avoids polluting the rest of this project's GL-touching tests
-rather than trying to fully root-cause a third-party library's
-documented-fragile class-level GL state.
+test_gpu_shader_cache.py`, `python3 test_gpu_stack_renderer.py`, `python3
+test_gpu_lanczos_compositor.py`, `python3 test_gpu_wipe_compositor.py`) --
+excluding them from the shared-process suite avoids polluting the rest of
+this project's GL-touching tests rather than trying to fully root-cause a
+third-party library's documented-fragile class-level GL state.
 """
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
 
-collect_ignore = ["test_gpu_cdl_shader.py", "test_gpu_shader_cache.py"]
+collect_ignore = [
+    "test_gpu_cdl_shader.py", "test_gpu_shader_cache.py", "test_gpu_stack_renderer.py",
+    "test_gpu_lanczos_compositor.py", "test_gpu_wipe_compositor.py", "test_gpu_ocio_dynamic.py",
+    "test_gpu_lut_shader.py", "test_wipe_compare_widget_gpu_state.py",
+    "test_gpu_printer_lights_shader.py", "test_gpu_aces_drt_shader.py",
+    "test_gpu_fork_merge_shader.py", "test_gpu_custom_drt_shader.py",
+    # Needs a REAL windowing system, not just a real offscreen GL context
+    # -- QOpenGLWidget.isValid() is always False and paintGL never runs
+    # at all under QT_QPA_PLATFORM=offscreen (confirmed directly). Run
+    # standalone, WITHOUT that env var set: `python3
+    # test_wipe_compare_widget_readback.py`.
+    "test_wipe_compare_widget_readback.py",
+]

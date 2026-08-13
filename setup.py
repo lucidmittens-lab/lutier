@@ -73,6 +73,27 @@ OPTIONS = {
         # will fail to import at runtime even though it worked in `python3
         # main_window.py` during testing.
         'PyOpenColorIO',
+        # PyObjC -- airplay_output_sink.py's AirPlay casting window (see
+        # VIEWER_CASTING_PLAN_2026-08-11.md). Same 'packages' (not
+        # 'includes') reasoning as PySide6/PyOpenColorIO above: these are
+        # compiled extension modules, not plain .py files -- without this,
+        # a frozen build would still LAUNCH fine (airplay_output_sink.py's
+        # own try/except ImportError degrades gracefully), but casting
+        # would silently report unavailable in the shipped app even
+        # though it works from source, since modulegraph's scan can't be
+        # trusted alone for a package only ever imported inside a guarded
+        # try/except (see that module's own docstring). 'objc' is
+        # pyobjc-core's own importable module name; CoreAudio is a real
+        # transitive dependency AVFoundation itself pulls in (confirmed
+        # via `pip3 install pyobjc-framework-AVFoundation`'s own resolved
+        # dependency list).
+        'objc',
+        'Cocoa',
+        'AVFoundation',
+        'AVKit',
+        'CoreMedia',
+        'CoreAudio',
+        'Quartz',
     ],
     # Our own local modules -- plain .py files alongside main_window.py.
     # Regenerated 2026-07-25 by walking main_window.py's actual import
@@ -102,9 +123,11 @@ OPTIONS = {
     # before either existed/was noticed.
     'includes': [
         'aces_drt',
+        'airplay_output_sink',
         'app_logic',
         'atomic_write',
         'browser_panel',
+        'casting_controller',
         'cdl',
         'cdl_file_io',
         'cdl_library',
@@ -114,8 +137,13 @@ OPTIONS = {
         'color_wheel_widget',
         'colorspace',
         'colorspace_convert',
+        'curve_editor_widget',
+        'exposure_contrast',
         'floating_dialog',
         'format_writers',
+        'grading_primary',
+        'grading_rgb_curve',
+        'grading_tone',
         'help_text',
         'hover_inspector',
         'image_library',
@@ -140,8 +168,10 @@ OPTIONS = {
         'style',
         'theme_prefs',
         'undo_history',
+        'video_output_sink',
         'wipe_compare_widget',
         'workspace_io',
+        'ycbcr_convert',
     ],
     # Universal2 ('arch': 'universal2') would make the same .app run on both
     # Intel and Apple Silicon, but needs universal2 wheels for numpy/scipy --

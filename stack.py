@@ -1,8 +1,10 @@
 """
 stack.py -- Qt-free backend for a unified, ordered, non-destructive
 operation stack: a single list of stages (each add a LUT, a Printer Lights
-trim, an ACES DRT output transform, an ASC CDL SOP/SAT grade, or a plain
-non-DRT color space conversion) that can be reordered, toggled, given
+trim, an ACES DRT output transform, an ASC CDL SOP/SAT grade, an OCIO
+Grading Primary grade, an OCIO Exposure/Contrast grade, an OCIO Grading
+Tone grade, an OCIO Grading RGB Curve grade, or a plain non-DRT color
+space conversion) that can be reordered, toggled, given
 per-stage opacity, and re-baked into one flat colour.LUT3D at any time.
 This is the "recontextualize as a stack you can build and reorder"
 architecture -- everything else in this app (3D viewer, sample image
@@ -37,13 +39,20 @@ shape the other three do:
     changing Stack.size and re-baking recomputes the WHOLE chain natively
     at the new resolution -- no double interpolation. So "Resize" is just
     the Stack.size field, not a stage to insert.
-  - Bounds (app_logic.set_lut_domain) was already metadata-only in the
-    original implementation -- it never resampled or recomputed the
-    table, just relabeled what input range the existing table represents
-    (see that function's own docstring). There's nothing for a "Bounds
-    stage" to recompute mid-chain; it's a property of the final baked
-    object. So Stack.domain_min/domain_max are stack-level fields applied
-    once, after baking, exactly like set_lut_domain always did.
+  - Bounds has no per-position meaning mid-chain -- there's nothing for a
+    "Bounds stage" to insert between other stages, so Stack.domain_min/
+    domain_max stay stack-level fields, not a stage kind. UNLIKE
+    app_logic.set_lut_domain (which relabels an already-baked, foreign
+    table without recomputing it -- a legitimate metadata-only relabel,
+    since it has no way to know how that table was produced), bake_stack_
+    to_lut3d DOES own the whole computation, so it folds the stages over a
+    grid that actually SPANS [domain_min, domain_max] before writing that
+    same range onto the result's .domain -- see that function's own
+    docstring for a real bug (Tom, 2026-08-12) this distinction fixed:
+    an earlier version copied set_lut_domain's metadata-only SHAPE without
+    the justification that made it valid there, always baking from a
+    plain [0,1] grid and just relabeling the result, so an extended-domain
+    export's header described a range the table was never computed for.
 Retarget, by contrast, IS folded in as a per-stage option on "lut" stages
 specifically (retarget_from/retarget_to params) rather than its own stage
 kind -- see retarget.py's own docstring: retarget_io wraps a SPECIFIC
@@ -115,9 +124,15 @@ from printer_lights import apply_printer_lights_in_working_space
 import aces_drt
 import cdl
 import colorspace_convert
+import custom_drt
+import exposure_contrast
+import grading_primary
+import grading_rgb_curve
+import grading_tone
 
-STAGE_KINDS = ("lut", "printer_lights", "aces_drt", "cdl", "colorspace",
-               "fork_split", "fork_merge")
+STAGE_KINDS = ("lut", "printer_lights", "aces_drt", "custom_drt", "cdl", "colorspace",
+               "grading_primary", "exposure_contrast", "grading_tone",
+               "grading_rgb_curve", "fork_split", "fork_merge")
 
 _id_counter = itertools.count(1)
 
@@ -286,6 +301,47 @@ def make_aces_drt_stage(working_colourspace, display, view,
     return Stage("aces_drt", label or default_label, params, enabled, opacity)
 
 
+def make_custom_drt_stage(working_colourspace,
+                           contrast=custom_drt.DEFAULT_CONTRAST,
+                           headroom=custom_drt.DEFAULT_HEADROOM,
+                           blend_percentile=custom_drt.DEFAULT_BLEND_PERCENTILE,
+                           tail_width=custom_drt.DEFAULT_TAIL_WIDTH,
+                           desat_start=custom_drt.DEFAULT_DESAT_START,
+                           desat_end=custom_drt.DEFAULT_DESAT_END,
+                           identity_zone=custom_drt.DEFAULT_IDENTITY_ZONE,
+                           transition_softness=custom_drt.DEFAULT_TRANSITION_SOFTNESS,
+                           fullness_r=custom_drt.DEFAULT_FULLNESS_R,
+                           fullness_g=custom_drt.DEFAULT_FULLNESS_G,
+                           fullness_b=custom_drt.DEFAULT_FULLNESS_B,
+                           mastering_display=custom_drt.DEFAULT_MASTERING_DISPLAY,
+                           final_target=None,
+                           mastering_brightness=custom_drt.DEFAULT_MASTERING_BRIGHTNESS,
+                           config_name=None, label=None, enabled=True, opacity=1.0):
+    """A stage that applies LUTier's own DRT (Rec.2020 rendering space,
+    hyperbolic+sigmoid-tail tonescale, highlight desaturation, radial
+    gamut compression to the chosen mastering display's own gamut, then a
+    direct Final Target conversion + EOTF encode), same math as
+    custom_drt.apply_custom_drt -- see that module's docstring for the
+    full pipeline and why every default here is a deliberately validated
+    value, not an arbitrary starting point."""
+    config_name = config_name or custom_drt.DEFAULT_CONFIG_NAME
+    if final_target is None:
+        final_target = custom_drt.DEFAULT_FINAL_TARGET_FOR_DISPLAY[mastering_display]
+    params = {
+        "working_colourspace": working_colourspace, "contrast": float(contrast),
+        "headroom": float(headroom), "blend_percentile": float(blend_percentile),
+        "tail_width": float(tail_width), "desat_start": float(desat_start),
+        "desat_end": float(desat_end), "identity_zone": float(identity_zone),
+        "transition_softness": float(transition_softness),
+        "fullness_r": float(fullness_r), "fullness_g": float(fullness_g),
+        "fullness_b": float(fullness_b), "mastering_display": mastering_display,
+        "final_target": final_target,
+        "mastering_brightness": int(mastering_brightness), "config_name": config_name,
+    }
+    default_label = f"CAMier DRT ({working_colourspace} -> {mastering_display}/{final_target})"
+    return Stage("custom_drt", label or default_label, params, enabled, opacity)
+
+
 def make_cdl_stage(slope=cdl.IDENTITY_SLOPE, offset=cdl.IDENTITY_OFFSET,
                     power=cdl.IDENTITY_POWER, sat=cdl.IDENTITY_SAT,
                     style=cdl.DEFAULT_STYLE, sop_enabled=True, sat_enabled=True,
@@ -300,6 +356,89 @@ def make_cdl_stage(slope=cdl.IDENTITY_SLOPE, offset=cdl.IDENTITY_OFFSET,
         "sop_enabled": sop_enabled, "sat_enabled": sat_enabled,
     }
     return Stage("cdl", label or "ASC CDL", params, enabled, opacity)
+
+
+def make_grading_primary_stage(style=grading_primary.DEFAULT_STYLE,
+                                brightness=grading_primary.IDENTITY_ADD,
+                                contrast=grading_primary.IDENTITY_MULT,
+                                gamma=grading_primary.IDENTITY_MULT,
+                                offset=grading_primary.IDENTITY_ADD,
+                                exposure=grading_primary.IDENTITY_ADD,
+                                lift=grading_primary.IDENTITY_ADD,
+                                gain=grading_primary.IDENTITY_MULT,
+                                pivot=grading_primary.DEFAULT_PIVOT,
+                                saturation=grading_primary.DEFAULT_SATURATION,
+                                label=None, enabled=True, opacity=1.0):
+    """A stage that applies an OCIO GradingPrimary grade, same math as
+    grading_primary.apply_grading_primary -- see that module's docstring
+    for the log/lin/video style choice and why every field is stored
+    regardless of which style is active (switching styles later doesn't
+    lose whatever was already dialed in on the other fields)."""
+    params = {
+        "style": style, "brightness": tuple(brightness), "contrast": tuple(contrast),
+        "gamma": tuple(gamma), "offset": tuple(offset), "exposure": tuple(exposure),
+        "lift": tuple(lift), "gain": tuple(gain), "pivot": float(pivot),
+        "saturation": float(saturation),
+    }
+    return Stage("grading_primary", label or "Grading Primary", params, enabled, opacity)
+
+
+def make_exposure_contrast_stage(style=exposure_contrast.DEFAULT_STYLE,
+                                  exposure=exposure_contrast.IDENTITY_EXPOSURE,
+                                  contrast=exposure_contrast.IDENTITY_CONTRAST,
+                                  gamma=exposure_contrast.IDENTITY_GAMMA,
+                                  label=None, enabled=True, opacity=1.0):
+    """A stage that applies an OCIO Exposure/Contrast grade, same math as
+    exposure_contrast.apply_exposure_contrast -- see that module's
+    docstring for the linear/log/video style choice and why pivot is
+    never a stage param (not a dynamic GPU property, would force a
+    shader recompile on every edit)."""
+    params = {
+        "style": style, "exposure": float(exposure), "contrast": float(contrast),
+        "gamma": float(gamma),
+    }
+    return Stage("exposure_contrast", label or "Exposure/Contrast", params, enabled, opacity)
+
+
+def make_grading_tone_stage(style=grading_tone.DEFAULT_STYLE,
+                             blacks=None, shadows=None, midtones=None,
+                             highlights=None, whites=None,
+                             scontrast=grading_tone.DEFAULT_SCONTRAST,
+                             label=None, enabled=True, opacity=1.0):
+    """A stage that applies an OCIO GradingTone grade, same math as
+    grading_tone.apply_grading_tone -- see that module's docstring for
+    the 5 tone ranges' own defaults (each `None` range argument here
+    becomes that range's own OCIO default, not a shared/generic one)."""
+    def _range_or_default(value, key):
+        return tuple(value) if value is not None else grading_tone.DEFAULT_RANGE_VALUES[key]
+    params = {
+        "style": style,
+        "blacks": _range_or_default(blacks, "blacks"),
+        "shadows": _range_or_default(shadows, "shadows"),
+        "midtones": _range_or_default(midtones, "midtones"),
+        "highlights": _range_or_default(highlights, "highlights"),
+        "whites": _range_or_default(whites, "whites"),
+        "scontrast": float(scontrast),
+    }
+    return Stage("grading_tone", label or "Grading Tone", params, enabled, opacity)
+
+
+def make_grading_rgb_curve_stage(style=grading_rgb_curve.DEFAULT_STYLE,
+                                  red=None, green=None, blue=None, master=None,
+                                  label=None, enabled=True, opacity=1.0):
+    """A stage that applies an OCIO GradingRGBCurve grade, same math as
+    grading_rgb_curve.apply_grading_rgb_curve -- see that module's
+    docstring for the log/lin/video style choice and the control-point
+    shape (each of red/green/blue/master defaults to the identity curve,
+    DEFAULT_CONTROL_POINTS, when None)."""
+    def _points_or_default(points):
+        return tuple(tuple(p) for p in points) if points is not None else grading_rgb_curve.DEFAULT_CONTROL_POINTS
+    params = {
+        "style": style,
+        "red": _points_or_default(red), "green": _points_or_default(green),
+        "blue": _points_or_default(blue), "master": _points_or_default(master),
+    }
+    return Stage("grading_rgb_curve", label or "Grading RGB Curve", params, enabled, opacity)
 
 
 def make_colorspace_stage(src, dst, config_name=None, label=None, enabled=True, opacity=1.0):
@@ -380,6 +519,28 @@ def _apply_stage_to_array(stage, array):
             config_name=p.get("config_name", aces_drt.DEFAULT_CONFIG_NAME),
         )
 
+    if stage.kind == "custom_drt":
+        p = stage.params
+        return custom_drt.apply_custom_drt(
+            array, p["working_colourspace"],
+            contrast=p.get("contrast", custom_drt.DEFAULT_CONTRAST),
+            headroom=p.get("headroom", custom_drt.DEFAULT_HEADROOM),
+            blend_percentile=p.get("blend_percentile", custom_drt.DEFAULT_BLEND_PERCENTILE),
+            tail_width=p.get("tail_width", custom_drt.DEFAULT_TAIL_WIDTH),
+            desat_start=p.get("desat_start", custom_drt.DEFAULT_DESAT_START),
+            desat_end=p.get("desat_end", custom_drt.DEFAULT_DESAT_END),
+            identity_zone=p.get("identity_zone", custom_drt.DEFAULT_IDENTITY_ZONE),
+            transition_softness=p.get("transition_softness", custom_drt.DEFAULT_TRANSITION_SOFTNESS),
+            fullness_r=p.get("fullness_r", custom_drt.DEFAULT_FULLNESS_R),
+            fullness_g=p.get("fullness_g", custom_drt.DEFAULT_FULLNESS_G),
+            fullness_b=p.get("fullness_b", custom_drt.DEFAULT_FULLNESS_B),
+            mastering_display=p.get("mastering_display", custom_drt.DEFAULT_MASTERING_DISPLAY),
+            final_target=p.get("final_target"),
+            mastering_brightness=p.get(
+                "mastering_brightness", custom_drt.DEFAULT_MASTERING_BRIGHTNESS),
+            config_name=p.get("config_name", custom_drt.DEFAULT_CONFIG_NAME),
+        )
+
     if stage.kind == "cdl":
         p = stage.params
         return cdl.apply_cdl(
@@ -398,6 +559,50 @@ def _apply_stage_to_array(stage, array):
         return colorspace_convert.apply_colorspace_conversion(
             array, p["src"], p["dst"],
             config_name=p.get("config_name", colorspace_convert.DEFAULT_CONFIG_NAME),
+        )
+
+    if stage.kind == "grading_primary":
+        p = stage.params
+        return grading_primary.apply_grading_primary(
+            array,
+            style=p.get("style", grading_primary.DEFAULT_STYLE),
+            brightness=p.get("brightness", grading_primary.IDENTITY_ADD),
+            contrast=p.get("contrast", grading_primary.IDENTITY_MULT),
+            gamma=p.get("gamma", grading_primary.IDENTITY_MULT),
+            offset=p.get("offset", grading_primary.IDENTITY_ADD),
+            exposure=p.get("exposure", grading_primary.IDENTITY_ADD),
+            lift=p.get("lift", grading_primary.IDENTITY_ADD),
+            gain=p.get("gain", grading_primary.IDENTITY_MULT),
+            pivot=p.get("pivot", grading_primary.DEFAULT_PIVOT),
+            saturation=p.get("saturation", grading_primary.DEFAULT_SATURATION),
+        )
+
+    if stage.kind == "exposure_contrast":
+        p = stage.params
+        return exposure_contrast.apply_exposure_contrast(
+            array,
+            style=p.get("style", exposure_contrast.DEFAULT_STYLE),
+            exposure=p.get("exposure", exposure_contrast.IDENTITY_EXPOSURE),
+            contrast=p.get("contrast", exposure_contrast.IDENTITY_CONTRAST),
+            gamma=p.get("gamma", exposure_contrast.IDENTITY_GAMMA),
+        )
+
+    if stage.kind == "grading_tone":
+        p = stage.params
+        return grading_tone.apply_grading_tone(
+            array,
+            style=p.get("style", grading_tone.DEFAULT_STYLE),
+            blacks=p.get("blacks"), shadows=p.get("shadows"), midtones=p.get("midtones"),
+            highlights=p.get("highlights"), whites=p.get("whites"),
+            scontrast=p.get("scontrast", grading_tone.DEFAULT_SCONTRAST),
+        )
+
+    if stage.kind == "grading_rgb_curve":
+        p = stage.params
+        return grading_rgb_curve.apply_grading_rgb_curve(
+            array,
+            style=p.get("style", grading_rgb_curve.DEFAULT_STYLE),
+            red=p.get("red"), green=p.get("green"), blue=p.get("blue"), master=p.get("master"),
         )
 
     if stage.kind in ("fork_split", "fork_merge"):  # pragma: no cover -- see docstring above
@@ -646,6 +851,37 @@ def fork_region_branch_counts(stages, split_index, merge_index):
     return counts
 
 
+def find_fork_partner(stages, marker_stage_id):
+    """Given the id of a stage that's a fork_split or fork_merge, finds
+    its matching other half and every stage currently sitting between
+    them. Returns `(split_id, merge_id, interior_ids)`, or None if
+    `marker_stage_id` isn't a fork marker, or has no matching partner (an
+    already-corrupted/hand-edited stack -- same "no nesting, only one
+    open region at a time" assumption find_enclosing_fork_region and
+    _run_stages both already make, so a plain forward/backward scan for
+    the nearest opposite marker is unambiguous).
+
+    Used by StackPanel to delete a fork_split/fork_merge pair together
+    (per Tom: "they should also be linked so they delete together")
+    rather than leaving an unmatched half the way a plain
+    Stack.remove_stage(marker_stage_id) would."""
+    index = next((i for i, s in enumerate(stages) if s.id == marker_stage_id), None)
+    if index is None or stages[index].kind not in ("fork_split", "fork_merge"):
+        return None
+    if stages[index].kind == "fork_split":
+        split_index = index
+        merge_index = next(
+            (i for i in range(index + 1, len(stages)) if stages[i].kind == "fork_merge"), None)
+    else:
+        merge_index = index
+        split_index = next(
+            (i for i in range(index - 1, -1, -1) if stages[i].kind == "fork_split"), None)
+    if split_index is None or merge_index is None:
+        return None
+    interior_ids = [s.id for s in stages[split_index + 1:merge_index]]
+    return (stages[split_index].id, stages[merge_index].id, interior_ids)
+
+
 class StageCache:
     """Bounded memoization for _run_stages. One instance per independent
     evaluation path -- bake_stack_to_lut3d's grid bake and
@@ -671,15 +907,18 @@ class StageCache:
     single edit, including live slider drags.
 
     `input_key` identifies the starting array without hashing its
-    contents: bake_stack_to_lut3d passes `stack.size` (an int -- see
-    _get_identity_grid, which hands back the same cached array object for
-    an unchanged size, so this key alone is enough). apply_stack_to_image_
-    array's caller supplies whatever it wants two calls sharing "the same
-    underlying image" to agree on -- SampleImagePanel uses a generation
-    counter bumped only when it actually decodes/re-derives a new working
-    array, so an unrelated Stack edit never looks like a new image. A
-    changed input_key invalidates everything -- there's nothing left to
-    diff against."""
+    contents: bake_stack_to_lut3d passes `(stack.size, stack.domain_min,
+    stack.domain_max)` -- size alone used to be enough back when the grid
+    was always plain [0,1] (see _get_identity_grid, which still hands back
+    the same cached array object for an unchanged size), but the grid is
+    now domain-scaled, so a domain-only change (same size) has to
+    invalidate the cache too or it'd hand back a checkpoint computed for
+    the OLD domain. apply_stack_to_image_array's caller supplies whatever
+    it wants two calls sharing "the same underlying image" to agree on --
+    SampleImagePanel uses a generation counter bumped only when it
+    actually decodes/re-derives a new working array, so an unrelated Stack
+    edit never looks like a new image. A changed input_key invalidates
+    everything -- there's nothing left to diff against."""
 
     def __init__(self):
         self._input_key = None
@@ -745,25 +984,42 @@ def bake_stack_to_lut3d(stack, name=None, cache=None):
     re-running the whole stack from scratch (see StageCache's own
     docstring). Omit it (default) for a one-shot bake -- e.g. export --
     where there's nothing to reuse next time anyway."""
-    identity_grid = _get_identity_grid(stack.size)
+    lo = np.broadcast_to(np.asarray(stack.domain_min, dtype=float), (3,))
+    hi = np.broadcast_to(np.asarray(stack.domain_max, dtype=float), (3,))
+    # Fold the stages over a grid that actually SPANS [domain_min,
+    # domain_max], not the fixed [0,1] identity grid -- reduces to that
+    # plain grid exactly when domain is the default (0,0,0)-(1,1,1), so
+    # there's no separate code path to keep in sync for the common case.
+    # Getting this wrong is exactly the bug this comment is guarding
+    # against: an extended-domain export (Tom, 2026-08-12) that LABELED
+    # its table with the real domain via lut.domain below but had actually
+    # computed that table from the WRONG [0,1] slice of the stack's
+    # stages, so any domain-aware reader (this app's own re-import,
+    # Lattice) sampled a table that didn't match its own header --
+    # visually a much-too-dark result, since most of the real extended
+    # input range was being pulled from table entries that were never
+    # actually computed for it.
+    identity_grid = lo + _get_identity_grid(stack.size) * (hi - lo)
     if cache is not None:
-        running = cache.run(stack.stages, identity_grid, input_key=stack.size)
+        # input_key must reflect domain too, not just size -- StageCache
+        # trusts a matching input_key to mean "the starting array is
+        # unchanged" and will hand back a stale (wrong-domain) checkpoint
+        # otherwise, even though `identity_grid` above is a brand new
+        # array (see StageCache.run's own docstring on what input_key is
+        # for).
+        running = cache.run(stack.stages, identity_grid, input_key=(stack.size, stack.domain_min, stack.domain_max))
     else:
         running = _run_stages(stack.stages, identity_grid)
 
     # np.array, NOT np.asarray -- this must always copy. `running` may be
-    # a checkpoint array a StageCache is still holding onto (or, for an
-    # empty/fully-disabled stack, even _get_identity_grid's own shared,
-    # memoized array), and colour.LUT3D takes ownership of `table` without
-    # necessarily copying it. Without forcing a copy here, some future
-    # in-place edit to the returned LUT's .table could silently corrupt a
-    # cached checkpoint (or the shared identity grid) that a LATER bake
-    # would then read back out as if it were still correct.
+    # a checkpoint array a StageCache is still holding onto, and
+    # colour.LUT3D takes ownership of `table` without necessarily copying
+    # it. Without forcing a copy here, some future in-place edit to the
+    # returned LUT's .table could silently corrupt a cached checkpoint
+    # that a LATER bake would then read back out as if it were still
+    # correct.
     table = np.array(running, dtype=float)
     lut = colour.LUT3D(table=table, size=stack.size, name=name or stack.name)
-
-    lo = np.broadcast_to(np.asarray(stack.domain_min, dtype=float), (3,))
-    hi = np.broadcast_to(np.asarray(stack.domain_max, dtype=float), (3,))
     lut.domain = np.array([lo, hi], dtype=float)
     return lut
 

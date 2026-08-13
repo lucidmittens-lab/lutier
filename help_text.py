@@ -23,141 +23,142 @@ the extra moving part, but worth reconsidering if that stops being true.)
 Rendered via QTextBrowser.setMarkdown() (see main_window.py's Help menu),
 which is why this is kept as real Markdown (headers, bold, a table) rather
 than plain text.
+
+2026-08-12: resynced after USER_MANUAL.md's Stack Forking section picked
+up the enable-toggle glyph change (checkmark/cross -> filled/hollow dot)
+and the opacity control's relocation (below the list -> built into each
+row), both part of the Stack panel's "snappier and more interactive"
+revamp.
 """
 
-USER_MANUAL_MARKDOWN = r"""# LUTier — Basic User Manual
+USER_MANUAL_MARKDOWN = r"""# LUTier — User Manual
 
 LUTier is a LUT/color-grading tool: build up a grade as an ordered stack
 of operations, preview it live, and export it in the format you need.
-This is a quick feature outline for testers, not a full reference.
-
-## The window, at a glance
-
-- **Browser** (top left) — point it at a folder; it lists LUT files
-  (`.cube`, `.clf`, `.spi1d`, `.spi3d`, `.spimtx`, `.csp`) and ASC CDL
-  files (`.cc`, `.cdl`, `.ccc`) together, CDL ones tagged `[CDL]`.
-  Double-click a LUT to add it to the Stack; double-click a CDL to import
-  it into the CDL Library. Drag either kind onto its matching Library
-  panel, or drag a LUT onto the Stack directly. "New Identity LUT..."
-  starts a stage from a neutral pass-through instead of a file.
-- **Image Library** (between Browser and LUT Library) — a shelf of
-  reference images imported into the session. Import a file, then
-  double-click an entry (or use its "☰" menu) to load it as the
-  Viewer's Sample or Reference image.
-- **LUT Library** — LUTs you've ingested into the session. Once
-  imported, a LUT's full data lives in the session — moving, renaming, or
-  deleting the original file afterward won't break anything.
-- **CDL Library** — saved ASC CDL grades (SOP/SAT values), either saved
-  from a CDL stage in the Stack or imported from a file.
-- **Stack Memories** — named snapshots of the whole Stack, so you can
-  save a look, keep working, and get back to it later. Can also be
-  exported to/imported from their own `.ltm` file, independent of the
-  session.
-- **Viewer** — the sample image preview, before/after wipe compare.
-  Two roles: **Sample**, which shows the Stack's live result, and
-  **Reference**, a second image the Stack never touches — useful for
-  comparing your grade against a separate plate, still, or approved
-  frame. Load each from the Image Library or via the Viewer's "☰"
-  menu ("Load Sample Image..." / "Load Reference Image..."). That same
-  menu's "Left Image"/"Right Image" submenus each pick independently
-  from three sources — Sample Before, Sample After, or Reference — and
-  "Enable Wipe" switches to a plain single-image view (showing whatever
-  "Right Image" is set to) when you don't need the split-screen compare.
-  Reference has its own "Adapt Reference..." entry, unmanaged by default.
-  Scroll to zoom in/out (anchored on the cursor), middle-mouse-drag to
-  pan around, middle-double-click to reset back to fit — independent of
-  the left-click wipe divider drag, so both work at once without
-  conflicting.
-- **Stack** — the main work area: an ordered list of stages (LUT,
-  Printer Lights, ACES DRT, ASC CDL, Color Space Conversion). Reorder by
-  dragging, toggle any stage on/off, give it its own opacity, click a
-  stage to edit its parameters in the Parameters panel.
-- **Parameters** — the inspector for whichever stage is selected in the
-  Stack. Every numeric field throughout the app (CDL Slope/Offset/Power/
-  Sat, Stack opacity, Domain min/max, ...) can be click-dragged left/right
-  to scrub its value up/down, not just typed into or nudged with its
-  up/down arrows — hold **Shift** while dragging for finer control.
-- **Scopes** — Histogram, Waveform, and Vectorscope share one panel (pick
-  which shows from its "☰" menu or the Scopes menu bar entry). Two
-  Waveform-only tree submenus live in that same menu: "Waveform Style"
-  (RGB Parade / Luma / R / G / B) and "Waveform Graticule" (None / PQ /
-  mV / %) — PQ overlays standard SMPTE ST 2084 nit levels
-  (100/203/1000/4000/10000 nits), mV the conventional 0–700mV
-  waveform-monitor scale, and % a plain 0–100% scale in steps of 10;
-  exactly one graticule (or none) shows at a time. "Graticule
-  Intensity..." (same menu) opens a dialog with a single opacity slider,
-  shared across all three graticules, for dimming an overlay that's too
-  bright against a given image.
-- **Graph** (bottom right, below Scopes) — two views of the Stack's baked
-  LUT, picked from its **"☰"** menu (or the **Graph** menu-bar entry):
-  **3D**, or one of **1D Y** / **1D R** / **1D G** / **1D B**. **3D** is
-  the interactive point-cloud visualization of the LUT's deformation
-  lattice, with a wireframe **cage** connecting each point to its lattice
-  neighbors so the deformation reads as a mesh, not just a cloud; rotate/
-  zoom with the mouse; its **"☰"** menu's **3D Settings...** opens a
-  small dialog with "Grid density" (how many points are sampled) and
-  "Cage opacity" (fades the cage in/out, 0–100%, defaults to 30%). Each
-  **1D** choice plots exactly one of the same LUT's Y/R/G/B
-  response curves — output vs. input, the traditional "curves" view —
-  swept across the Stack's own Domain Min/Max (Stack's "☰" menu → Edit
-  Size/Domain...) rather than a fixed 0–1 range, so it stays correct for
-  HDR/scene-linear grades. All views update live and stay in sync with
-  the Stack; switching between them never loses data or resizes the
-  panel.
+This is a feature outline for testers, organized by panel — for each
+panel's operators/functions, a **Source** line names the file(s) that
+actually implement the color math, so a question like "what does the
+Grading Tone slider actually run?" has a direct answer.
 
 Every panel can be **dragged by its title bar** to rearrange the whole
-workspace freely — drop it against any edge of another panel to place it
-there, drop it onto another panel's title bar to tab the two together, or
-drag it out into open space to pop it into its own floating window. There
-is no fixed layout to fight against; the arrangement shown in this manual
-is only where LUTier starts, not a constraint.
+workspace freely, **shown/hidden** from the Workspace menu (or its own
+Shift+1 through Shift+0 shortcut), and **floated** into its own window
+(Cmd+Shift+1 through Cmd+Shift+0, matching digit). There is no fixed
+layout to fight against — see **Workspace & Window Management** near the
+end for the full set of layout/window features shared across every panel.
 
-Every panel can also be shown/hidden from the **Workspace** menu (or its
-own Shift+1 through Shift+0 shortcut), and every panel's "☰" button in
-its top-right corner has the same actions as its matching entry in the
-menu bar — whichever you find faster. Any panel can also be **floated**
-out of the main window into its own window without dragging — Cmd+Shift+1
-through Cmd+Shift+0 (same digit as its show/hide shortcut), or "Float
-[Panel]" in the Workspace menu — which stays above the main window
-specifically, though it can still be covered by (or cover) other
-floating panels/dialogs and other applications entirely. Closing a
-floated panel's window, or floating it again, puts it right back into
-the main window.
+---
 
-Hold **Alt** while hovering over an entry in Stack Memories, LUT
-Library, CDL Library, Image Library, or a stage in the Stack itself to
-see a floating info card with that entry's full details near the
-cursor — handy for a saved Stack Memory's full stage-by-stage
-breakdown, or a Library entry's full source file path, without
-selecting it first. Move the cursor off the entry, or release Alt, to
-dismiss it.
+## Browser
 
-LUTier remembers your panel arrangement (position, size, shown/hidden,
-floating, window size — however you last left it, dragged or not)
-automatically between launches — no separate save step. The Workspace
-menu also has **Reset to Default Workspace** (snaps everything back to
-LUTier's built-in layout) and **Export Workspace Preset...**/**Import
-Workspace Preset...** (saves or loads a specific arrangement, including
-floating state, as its own file — independent of whatever's currently
-open, and separate from a saved session — see Sessions below).
+Point it at a folder; it lists LUT files (`.cube`, `.clf`, `.spi1d`,
+`.spi3d`, `.spimtx`, `.csp`) and ASC CDL files (`.cc`, `.cdl`, `.ccc`)
+together, CDL ones tagged `[CDL]`. Double-click a LUT to add it to the
+Stack; double-click a CDL to import it into the CDL Library. Drag either
+kind onto its matching Library panel, or drag a LUT onto the Stack
+directly. "New Identity LUT..." starts a stage from a neutral
+pass-through instead of a file.
 
-## Stack operators
+**Source:** `browser_panel.py` (file listing/drag-drop); LUT file
+reading is `app_logic.load_lut_any_format` (dispatches to
+`colour-science`'s own per-format readers).
 
-The Viewer previews raw code values, Unmanaged by default — use the
-Viewer's "☰" menu's **Adapt Sample Image...** to declare a source
-space and convert it non-destructively before preview.
+## Image Library
 
-- **Color Space Conversion** — "these code values are actually in space
-  X, re-express them in space Y." A plain reinterpretation with no
-  rendering or creative decision involved: pick a Config (which OCIO
-  ACES config to read spaces from), a Category (Scene-Referred camera/
-  working spaces, or Display-Referred display standards), then From and
-  To within that category. Scene-to-scene covers things like ARRI LogC3
-  → ACEScg; display-to-display covers repurposing an already-graded
-  master between display standards (e.g. sRGB code values reinterpreted
-  as Rec.709). It deliberately won't let you cross from scene-referred to
-  display-referred or back — that conversion needs an actual rendering
-  decision, which is what ACES DRT (below) is for.
+A shelf of reference images imported into the session. Import a file,
+then double-click an entry (or use its "☰" menu) to load it as the
+Viewer's Sample or Reference image.
+
+**Source:** `image_library_panel.py`; entries are `image_library.py`'s
+`ImageLibraryEntry`/`ImageLibrary`.
+
+## LUT Library
+
+LUTs you've ingested into the session. Once imported, a LUT's full data
+lives in the session — moving, renaming, or deleting the original file
+afterward won't break anything.
+
+**Source:** `lut_library_panel.py`; entries are `lut_library.py`'s
+`LUTLibraryEntry`/`LUTLibrary`.
+
+## CDL Library
+
+Saved ASC CDL grades (SOP/SAT values), either saved from a CDL stage in
+the Stack or imported from a file.
+
+**Source:** `cdl_library_panel.py`; the underlying SOP/SAT values are the
+same `cdl.py` structures a CDL stage in the Stack uses (see **ASC CDL**
+under **Stack → Operators** below).
+
+## Stack Memories
+
+Named snapshots of the whole Stack, so you can save a look, keep working,
+and get back to it later. Can also be exported to/imported from their own
+`.ltm` file, independent of the session.
+
+**Source:** `stack_memories_panel.py`; snapshots are serialized the same
+way a session's Stack is (see `session_io.py`).
+
+## Viewer
+
+The sample image preview, before/after wipe compare. Two roles:
+**Sample**, which shows the Stack's live result, and **Reference**, a
+second image the Stack never touches — useful for comparing your grade
+against a separate plate, still, or approved frame. Load each from the
+Image Library or via the Viewer's "☰" menu ("Load Sample Image..." /
+"Load Reference Image..."). That same menu's "Left Image"/"Right Image"
+submenus each pick independently from three sources — Sample Before,
+Sample After, or Reference — and "Enable Wipe" switches between a plain
+single-image view (showing whatever "Right Image" is set to, the default
+at launch) and the split-screen compare. Reference has its own "Adapt
+Reference..." entry, unmanaged by default. The Viewer previews raw code
+values, Unmanaged by default — use "Adapt Sample Image..." to declare a
+source space and convert it non-destructively before preview. Scroll to
+zoom in/out (anchored on the cursor), middle-mouse-drag to pan around,
+middle-double-click to reset back to fit — independent of the left-click
+wipe divider drag, so both work at once without conflicting.
+
+**Source:** `sample_image_panel.py` (image loading/adapt/wipe-source
+logic) driving `wipe_compare_widget.py` (the actual compare/zoom/pan
+widget). The Stack's live result shown as "Sample After" is graded on the
+GPU when the Stack is GPU-eligible (`gpu_stack_renderer.py`), falling
+back to the same CPU path (`stack.apply_stack_to_image_array`) otherwise
+— visually identical either way, just a performance difference.
+
+## Stack
+
+The main work area: an ordered list of stages. Reorder by dragging,
+toggle any stage on/off, give it its own opacity, click a stage to edit
+its parameters in the **Parameters** panel.
+
+**Source:** `stack_panel.py` (the list UI) driving `stack.py` (the
+`Stage`/`Stack` model and `_apply_stage_to_array` dispatch every operator
+below ultimately runs through).
+
+### Adding a stage
+
+From the Stack's **"☰"** menu or **Stack** menu bar entry, **Add [Operator
+Name]** adds a fresh stage with identity/no-op parameters, ready to edit
+in Parameters. A LUT stage can also be started by double-clicking or
+dragging a file in from the Browser.
+
+### Operators
+
+Every operator below is a `Stage` in the Stack, dispatched by
+`stack.py`'s `_apply_stage_to_array`. Every one is a genuine no-op at its
+identity/default parameters, and every field can be click-drag-scrubbed
+(see **Parameters** below) — hold **Shift** while dragging for finer
+control.
+
+- **LUT** — applies a loaded LUT's own table directly (3D or 1D,
+  whichever the file declares). Not itself a live-editable operator —
+  the table came from a file (or "New Identity LUT..."), not sliders.
+  **Source:** `colour-science`'s own `colour.LUT3D`/`colour.LUT1D`
+  (`.apply()`), loaded via `app_logic.load_lut_any_format`. GPU-
+  accelerated for a plain, default-domain `colour.LUT3D` (`gpu_lut_shader.py`,
+  routed through OCIO's own `Lut3DTransform` GPU codegen); a LUT1D, an
+  explicit-domain LUT, or a retarget-wrapped one (below) stays on CPU.
+
 - **LUT Retarget** — not its own stage, but a checkbox on any LUT stage's
   own inspector ("Retarget (reinterpret this LUT's declared input/output
   color space)"). Use it when a LUT was authored expecting one space but
@@ -166,7 +167,11 @@ space and convert it non-destructively before preview.
   the LUT actually expects) and To (the space you want to use instead);
   LUTier wraps the LUT with a pre-conversion and post-conversion rather
   than resampling the LUT's own table, so the original data never
-  changes.
+  changes. **Source:** `retarget.py`'s `retarget_io` (wraps the LUT
+  object); baking a retargeted LUT to a flat table is
+  `app_logic.bake_retargeted_lut`. Not GPU-accelerated — a retarget-
+  wrapped LUT stage always falls the whole Stack back to CPU.
+
 - **Printer Lights** — a per-channel R/G/B trim in printer-point units
   (~12 points per stop, the standard film-lab convention), not raw gain
   numbers. Set the stage's **Working Color Space** to whatever encoding
@@ -177,7 +182,13 @@ space and convert it non-destructively before preview.
   wrong doesn't break anything visibly obvious, it just means the points
   no longer correspond to real stops. "Gang R/G/B" links all three
   sliders together for an even trim; "Reset to 0" clears the stage back
-  to a no-op.
+  to a no-op. **Source:** `printer_lights.py` (`apply_printer_lights_in_working_space`
+  — decode-to-linear via `aces_drt.py`'s OCIO registry, gain, re-encode).
+  GPU-accelerated via `gpu_printer_lights_shader.py` (composes the same
+  decode/encode as two OCIO-generated shaders around a hand-written gain
+  uniform) whenever OCIO is installed and the working space has an
+  unambiguous linear sibling; otherwise CPU-only.
+
 - **ASC CDL (SOP/SAT)** — the standard primary-grade formula every
   grading tool exchanges as `.cc`/`.cdl`/`.ccc` files: Slope/Offset/Power
   per channel, plus an overall Saturation. Each of Slope/Offset/Power
@@ -185,17 +196,102 @@ space and convert it non-destructively before preview.
   a single slider/spinbox. SOP and SAT bypass independently via their own
   Enable checkboxes. Style picks ASC (clamped between SOP and SAT — the
   spec default, matches other CDL tools) or No Clip (extended range,
-  matching this app's other stages). "Save to CDL Library..." saves the
-  stage's current values as a named, reusable entry.
-- **ACES DRT** — engages the selected ACES DRT for the scene-to-display
-  transform, via OpenColorIO's built-in ACES configs. Pick a Config
-  (which ACES version/config to use — Studio configs cover far more real
-  camera spaces than CG configs, which are synthetic/render-only), a
-  Working Color Space (what your footage is actually in), a Display, and
-  a View (the specific Output Transform variant, e.g. "ACES 1.0 - SDR
-  Video" or an HDR variant).
+  matching this app's other stages — the default). "Save to CDL
+  Library..." saves the stage's current values as a named, reusable
+  entry. **Source:** `cdl.py` (wraps OCIO's own `CDLTransform`); the
+  color-balance wheel widget's geometry/math is `color_balance.py` +
+  `color_wheel_widget.py`. GPU-accelerated via a hand-written uniform
+  shader, `gpu_cdl_shader.py` (matches OCIO's own generated CDL shader to
+  within ~1.4e-7).
 
-## Stack Forking
+- **Grading Primary** — OCIO's pivot-based lift/gamma/gain-style primary
+  grade, distinct from CDL (which is specifically ASC-standard
+  interchange). A Style dropdown picks which field set applies: **Log**
+  (Brightness/Contrast/Gamma, tuned for a log-encoded working space,
+  default), **Lin** (Offset/Exposure/Contrast, scene-linear), or **Video**
+  (Lift/Gamma/Gain, the classic 3-wheel grade). Pivot and Saturation are
+  always shown regardless of style. Contrast/Gamma/Gain are floored at
+  0.01 (OCIO's own `validate()` requires them strictly positive).
+  **Source:** `grading_primary.py` (wraps OCIO's `GradingPrimaryTransform`/
+  `GradingPrimary`/`GradingRGBM`). GPU-accelerated via OCIO's own
+  `makeDynamic()` mechanism (`gpu_ocio_dynamic.py`) — dragging a slider
+  pushes a GPU uniform, never recompiles the shader.
+
+- **Exposure/Contrast** — OCIO's exposure/contrast/gamma tool. A Style
+  dropdown picks which mid-gray reference contrast pivots around:
+  **Linear** (scene-referred, default), **Logarithmic** (log-encoded),
+  or **Video** (display-referred). Three fields: Exposure (stops),
+  Contrast, Gamma. (Pivot/logExposureStep/logMidGray are intentionally
+  not exposed — OCIO bakes those as shader constants even in a
+  dynamic-uniform shader, so exposing them would force a recompile on
+  every edit; OCIO's own defaults are used.) **Source:**
+  `exposure_contrast.py` (wraps OCIO's `ExposureContrastTransform`).
+  GPU-accelerated via `gpu_ocio_dynamic.py` (three independent dynamic
+  properties — exposure/contrast/gamma each push their own uniform).
+
+- **Grading Tone** — OCIO's print-style tone shaping across 5
+  overlapping ranges: Blacks, Shadows, Midtones, Highlights, Whites, each
+  with independent R/G/B/Master gain plus its own Start/Width along the
+  tone curve, plus a single S-Contrast scalar. Same Style dropdown as
+  Grading Primary (Log/Lin/Video). Every range's gain is bounded (OCIO's
+  own real, undocumented `validate()` limits — 0.1–1.9 for
+  Blacks/Midtones/Whites, 0.2–1.8 for Shadows/Highlights), S-Contrast
+  bounded 0.01–1.99; values are clamped rather than rejected. **Source:**
+  `grading_tone.py` (wraps OCIO's `GradingToneTransform`/`GradingTone`/
+  `GradingRGBMSW`). GPU-accelerated via `gpu_ocio_dynamic.py` — every
+  field here (all 5 ranges plus S-Contrast) is a real GPU uniform under
+  one dynamic property.
+
+- **Grading RGB Curve** — four independently-editable channel curves
+  (Red/Green/Blue/Master) mapping input value to output value, OCIO's
+  curve-grading tool. Same Style dropdown (Log/Lin/Video). Pick a channel
+  with the R/G/B/M buttons, then edit that channel's curve directly:
+  click-drag on empty plot area to add a point and position it in one
+  motion, right-click an existing point to remove it (minimum 2 points
+  per curve), "Reset Channel to Identity" resets just the active channel.
+  Points are constrained to the drawn plot box. **Source:**
+  `grading_rgb_curve.py` (wraps OCIO's `GradingRGBCurveTransform`/
+  `GradingRGBCurve`/`GradingBSplineCurve`); the curve-editing widget
+  itself (drag/add/remove, Catmull-Rom curve rendering) is
+  `curve_editor_widget.py`, a hand-rolled `QWidget`/`QPainter` control
+  (pyqtgraph has no usable 2D curve-editor primitive — checked directly).
+  GPU-accelerated via `gpu_ocio_dynamic.py` — all four curves push
+  through one dynamic property's array-typed uniforms.
+
+- **ACES DRT** — engages the selected ACES DRT (Display Rendering
+  Transform — the RRT+ODT chain, or ACES 2.0's unified Output Transform)
+  for the scene-to-display transform, via OpenColorIO's built-in ACES
+  configs. Pick a Config (which ACES version/config to use — Studio
+  configs cover far more real camera spaces than CG configs, which are
+  synthetic/render-only), a Working Color Space (what your footage is
+  actually in), a Display, and a View (the specific Output Transform
+  variant, e.g. "ACES 1.0 - SDR Video" or an HDR variant like "ACES 1.1 -
+  HDR Video (1000 nits & P3 lim)"). **Source:** `aces_drt.py`
+  (`apply_aces_output_transform`, via `PyOpenColorIO.Config.CreateFromBuiltinConfig`
+  and a `DisplayViewTransform`). GPU-accelerated via `gpu_aces_drt_shader.py`
+  — every SDR display/view needs zero GPU textures, but every HDR
+  display/view needs one (a packed 1D shaper LUT OCIO's own codegen
+  emits), which this module uploads and binds; this was the root cause of
+  a real, fixed "milky"/compressed-looking HDR Viewer bug (the texture
+  bind was previously missing entirely for this stage kind).
+
+- **Color Space Conversion** — "these code values are actually in space
+  X, re-express them in space Y." A plain reinterpretation with no
+  rendering or creative decision involved: pick a Config (which OCIO ACES
+  config to read spaces from), a Category (Scene-Referred camera/working
+  spaces, or Display-Referred display standards), then From and To within
+  that category. Scene-to-scene covers things like ARRI LogC3 → ACEScg;
+  display-to-display covers repurposing an already-graded master between
+  display standards (e.g. sRGB code values reinterpreted as Rec.709). It
+  deliberately won't let you cross from scene-referred to display-
+  referred or back — that conversion needs an actual rendering decision,
+  which is what ACES DRT (above) is for. **Source:** `colorspace_convert.py`
+  (`apply_colorspace_conversion`, a plain `ocio.ColorSpaceTransform`,
+  reusing `aces_drt.py`'s config registry). GPU-accelerated via
+  `gpu_shader_cache.py`'s `OcioGpuStageCache` (no texture needed for any
+  conversion observed so far).
+
+### Stack Forking
 
 Blend two parallel chains of stages back into one signal — useful for
 blending two LMTs, or any two grades, against each other. From the
@@ -212,13 +308,13 @@ stages per branch as you like. The next stage after Fork Merge sees only
 the single, rejoined signal.
 
 Fork Merge's own slider sets the A↔B crossfade between the two branches'
-results. Its **Opacity** (the same control every stage row has, below
-the stage list) is the fork's *total* opacity — it blends the merged
-result against the signal as it stood right before the Fork Split,
-same "this stage's fully-applied output blended against this stage's
-own input" rule every other stage's opacity already follows. Disabling
-Fork Split (its row's ✓/✗ toggle) treats the whole region — both
-branches and the merge — as a no-op.
+results. Its **Opacity** (the same control every stage row has, built
+into the row next to its name) is the fork's *total* opacity — it blends
+the merged result against the signal as it stood right before the Fork
+Split, same "this stage's fully-applied output blended against this
+stage's own input" rule every other stage's opacity already follows.
+Disabling Fork Split (its row's enabled-toggle dot) treats the whole
+region — both branches and the merge — as a no-op.
 
 Deleting one half of a fork pair (Fork Split or Fork Merge, via that
 row's own "×") leaves the other half unmatched, which is a genuinely
@@ -226,16 +322,127 @@ invalid stack until you remove or re-pair it — an inline warning appears
 below the Stack list explaining why, rather than the app crashing or
 silently showing a stale preview.
 
-## Grid size and domain
+**Source:** `stack.py`'s `_run_stages` (structural split/merge handling,
+not a color operation itself — the operators inside each branch are each
+still dispatched through `_apply_stage_to_array` as usual). Not yet
+GPU-accelerated — any Stack containing a fork falls back to CPU
+(`stack.apply_stack_to_image_array`) entirely.
 
-Set from the Stack's **"☰"** menu or **Stack** menu bar entry →
-**Edit Size/Domain...**. Grid size is the resolution of the final baked
-LUT (9 through 97, or type your own — 33 is the common default). Domain
-is the input range each channel is sampled over, normally [0, 1];
-uncheck "Link R/G/B" to set channels independently. "Use Input Bounds
-From First Stack Entry" pulls the domain straight from the first stage
-if it's a LUT that declares its own (e.g. a non-stock IDT/LMT). Hit
-**Apply Grid Size / Domain** to commit.
+### Grid size and domain
+
+Set from the Stack's **"☰"** menu or **Stack** menu bar entry → **Edit
+Size/Domain...**. Grid size is the resolution of the final baked LUT (9
+through 97, or type your own — 33 is the common default). Domain is the
+input range each channel is sampled over, normally [0, 1]; uncheck "Link
+R/G/B" to set channels independently. "Use Input Bounds From First Stack
+Entry" pulls the domain straight from the first stage if it's a LUT that
+declares its own (e.g. a non-stock IDT/LMT). Hit **Apply Grid Size /
+Domain** to commit.
+
+**Source:** `stack.py`'s `Stack.size`/`domain_min`/`domain_max` and
+`bake_stack_to_lut3d`.
+
+## Parameters
+
+The inspector for whichever stage is selected in the Stack — one
+inspector page per operator kind, described under **Stack → Operators**
+above (each operator's own fields, ranges, and source file are listed
+there, not duplicated here). Every numeric field throughout the app (CDL
+Slope/Offset/Power/Sat, Stack opacity, Domain min/max, ...) can be
+click-dragged left/right to scrub its value up/down, not just typed into
+or nudged with its up/down arrows — hold **Shift** while dragging for
+finer control.
+
+**Source:** `stack_panel.py`'s per-kind `_build_*_inspector`/`_apply_*_live`
+methods.
+
+## Scopes
+
+Histogram, Waveform, and Vectorscope share one panel (pick which shows
+from its "☰" menu or the Scopes menu bar entry). Two Waveform-only tree
+submenus live in that same menu: "Waveform Style" (RGB Parade / Luma / R
+/ G / B) and "Waveform Graticule" (None / PQ / mV / %) — PQ overlays
+standard SMPTE ST 2084 nit levels (100/203/1000/4000/10000 nits), mV the
+conventional 0–700mV waveform-monitor scale, and % a plain 0–100% scale
+in steps of 10; exactly one graticule (or none) shows at a time.
+"Graticule Intensity..." (same menu) opens a dialog with a single opacity
+slider, shared across all three graticules, for dimming an overlay that's
+too bright against a given image.
+
+**Source:** `scopes_panel.py` (the panel/UI) driving `scopes.py`
+(`compute_histogram`/`compute_waveform`/`compute_vectorscope`, plus the
+graticule stop calculations) — always computed on CPU, capped to a small
+fixed resolution for a GPU-eligible Stack (see `sample_image_panel.py`'s
+`SCOPES_MAX_DIMENSION`) so this recompute stays cheap regardless of how
+expensive the actual grade is.
+
+## Graph
+
+Two views of the Stack's baked LUT, picked from its **"☰"** menu (or the
+**Graph** menu-bar entry): **3D**, or one of **1D Y** / **1D R** / **1D
+G** / **1D B**. **3D** is the interactive point-cloud visualization of
+the LUT's deformation lattice, with a wireframe **cage** connecting each
+point to its lattice neighbors so the deformation reads as a mesh, not
+just a cloud; rotate/zoom with the mouse; its **"☰"** menu's **3D
+Settings...** opens a small dialog with "Grid density" (how many points
+are sampled) and "Cage opacity" (fades the cage in/out, 0–100%, defaults
+to 30%). Each **1D** choice plots exactly one of the same LUT's Y/R/G/B
+response curves — output vs. input, the traditional "curves" view — swept
+across the Stack's own Domain Min/Max (**Stack → Grid size and domain**
+above) rather than a fixed 0–1 range, so it stays correct for HDR/scene-
+linear grades. All views update live and stay in sync with the Stack;
+switching between them never loses data or resizes the panel.
+
+**Source:** `lut_viewer_3d.py`'s `LutViewer3D` (built on pyqtgraph's
+`GLViewWidget`/`GLScatterPlotItem`/`GLLinePlotItem`), fed the same
+`bake_stack_to_lut3d` result Export/the LUT Library use.
+
+---
+
+## Workspace & Window Management
+
+Every panel can be **dragged by its title bar** to rearrange the whole
+workspace freely — drop it against any edge of another panel to place it
+there, drop it onto another panel's title bar to tab the two together, or
+drag it out into open space to pop it into its own floating window. There
+is no fixed layout to fight against; the arrangement described panel-by-
+panel above is only where LUTier starts, not a constraint.
+
+Every panel can also be shown/hidden from the **Workspace** menu (or its
+own Shift+1 through Shift+0 shortcut), and every panel's "☰" button in
+its top-right corner has the same actions as its matching entry in the
+menu bar — whichever you find faster. Any panel can also be **floated**
+out of the main window into its own window without dragging — Cmd+Shift+1
+through Cmd+Shift+0 (same digit as its show/hide shortcut), or "Float
+[Panel]" in the Workspace menu — which stays above the main window
+specifically, though it can still be covered by (or cover) other floating
+panels/dialogs and other applications entirely. Closing a floated panel's
+window, or floating it again, puts it right back into the main window.
+
+Hold **Alt** while hovering over an entry in Stack Memories, LUT Library,
+CDL Library, Image Library, or a stage in the Stack itself to see a
+floating info card with that entry's full details near the cursor —
+handy for a saved Stack Memory's full stage-by-stage breakdown, or a
+Library entry's full source file path, without selecting it first. Move
+the cursor off the entry, or release Alt, to dismiss it.
+
+LUTier remembers your panel arrangement (position, size, shown/hidden,
+floating, window size — however you last left it, dragged or not)
+automatically between launches — no separate save step. The Workspace
+menu also has **Reset to Default Workspace** (snaps everything back to
+LUTier's built-in layout) and **Export Workspace Preset...**/**Import
+Workspace Preset...** (saves or loads a specific arrangement, including
+floating state, as its own file — independent of whatever's currently
+open, and separate from a saved session — see **Sessions** below).
+
+The Workspace menu's **Accent Color...** lets you pick your own accent
+color (used for selection, focus, panel headers, and highlights
+throughout the app) in place of LUTier's default muted blue. It applies
+immediately and is remembered between launches, independent of your
+panel arrangement.
+
+**Source:** `workspace_io.py` (layout persistence/presets), `hover_inspector.py`
+(the Alt-hover info card), `theme_prefs.py`/`style.py` (accent color).
 
 ## Sessions
 
@@ -248,7 +455,9 @@ it survives a save/reload on the same machine as long as the original
 file hasn't moved. Panel layout (position, size, shown/hidden/floating,
 window size) is NOT part of a session — it's remembered automatically
 between launches instead, and can be saved/loaded independently as its
-own preset file — see Workspace above.
+own preset file — see **Workspace & Window Management** above.
+
+**Source:** `session_io.py`.
 
 ## Export
 
@@ -269,10 +478,14 @@ filename:
   that still into the Image Library.
 - **Import to LUT Library** — also ingests the exported LUT into the LUT
   Library (the full-precision baked table, not a re-read of the exported
-  file — see lut_library_panel.py's docstring on why that distinction
-  matters for a lossy format like .3dl).
+  file — see `lut_library_panel.py`'s docstring on why that distinction
+  matters for a lossy format like `.3dl`).
 - **Save Stack Memory** — also saves the current Stack as a new Stack
   Memory, named after the exported file.
+
+**Source:** `main_window.py`'s Export dialog, writing via `colour-science`'s
+own `colour.write_LUT` for most formats and `colour_clf_io`/`clf_adapter.py`
+specifically for CLF.
 
 ## Undo/Redo
 
@@ -281,6 +494,9 @@ reordering, or adjusting a stage; recalling a Stack Memory; applying a
 CDL or LUT Library entry; opening a session. It doesn't cover library
 management (importing/renaming/deleting a saved LUT or CDL) or the
 sample image.
+
+**Source:** `undo_history.py`'s `UndoHistory` (`session_io.py`'s
+`undo_history_to_session_list` persists it across a saved session).
 
 ## Keyboard shortcuts
 

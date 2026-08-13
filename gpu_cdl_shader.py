@@ -88,7 +88,7 @@ vec4 OCIOMain(vec4 inPixel)
 """
 
 
-def set_cdl_uniforms(gl, program, slope, offset, power, saturation, style):
+def set_cdl_uniforms(gl, program, slope, offset, power, saturation, style, opacity=1.0):
     """Push one CDL stage's current values onto an already-linked,
     already-in-use `program` containing CDL_SHADER_SOURCE -- the whole
     point of this file: this is the ONLY thing that needs to happen on a
@@ -98,7 +98,13 @@ def set_cdl_uniforms(gl, program, slope, offset, power, saturation, style):
     live GL context, same reasoning as every other Qt-free backend module
     in this app -- only the caller, which already has a current context,
     needs the real `GL` bindings). `style` is this app's own style key
-    ("no_clip"/"asc", see cdl.AVAILABLE_STYLES), not an OCIO enum."""
+    ("no_clip"/"asc", see cdl.AVAILABLE_STYLES), not an OCIO enum.
+    `opacity` sets the shared uStageOpacity uniform every compiled
+    OCIOMain-based program has (see gpu_shader_prototype.py's fragment
+    shader template) -- defaults to 1.0 (full strength) since
+    render_program_on_gpu already does the same before calling this, so
+    only a real multi-stage chain (gpu_stack_renderer.py) needs to pass
+    anything else."""
     if style not in ("no_clip", "asc"):
         raise ValueError(f"Unknown CDL style: {style!r} (expected 'no_clip' or 'asc')")
     gl.glUniform3f(gl.glGetUniformLocation(program, "uCdlSlope"), *slope)
@@ -106,3 +112,4 @@ def set_cdl_uniforms(gl, program, slope, offset, power, saturation, style):
     gl.glUniform3f(gl.glGetUniformLocation(program, "uCdlPower"), *power)
     gl.glUniform1f(gl.glGetUniformLocation(program, "uCdlSaturation"), saturation)
     gl.glUniform1i(gl.glGetUniformLocation(program, "uCdlClamped"), style == "asc")
+    gl.glUniform1f(gl.glGetUniformLocation(program, "uStageOpacity"), opacity)

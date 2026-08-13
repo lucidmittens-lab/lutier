@@ -1635,6 +1635,7 @@ class MainWindow(QMainWindow):
         why the crash kept recurring even after #29-#32's fixes -- every
         one of Tom's app-quit-with-a-panel-floating tests went through
         this exact path, rebuilding GL content during shutdown."""
+        self.sample_image.shutdown_casting()
         state = self.get_workspace_state()
         self._dock_all_floating_panels(rebuild_gl_content=False)
         workspace_io.save_remembered_workspace(state)
@@ -2313,6 +2314,19 @@ def main():
     # too. MUST be set before QApplication is constructed -- Qt reads it
     # exactly once, at that point.
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+    # NOTE for GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 5: no
+    # QSurfaceFormat override is set here on purpose. wipe_compare_
+    # widget.py's own GPU pipeline targets GLSL 1.20/OpenGL 2.1
+    # Compatibility Profile specifically because that's what this Mac's
+    # true platform-default QOpenGLWidget context already is (confirmed
+    # directly via GL_VERSION/GL_SHADING_LANGUAGE_VERSION) -- forcing a
+    # newer Core Profile app-wide was tried and confirmed on real
+    # hardware to break the Graph panel's pyqtgraph rendering outright
+    # (its GLScatterPlotItem/GLLinePlotItem code never binds its own
+    # Vertex Array Object, which Core Profile requires but Compatibility
+    # Profile doesn't -- a real ShaderValidationError, not a guess). The
+    # platform default is already exactly right; don't "helpfully" add a
+    # format override back here.
     app = QApplication(sys.argv)
     window = build_window(app)
     sys.exit(app.exec())

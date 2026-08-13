@@ -12,8 +12,9 @@ every other GUI-touching verification in this project (see RUNNING.md).
 """
 import sys
 
+import numpy as np
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QMouseEvent, QPixmap, QWheelEvent
+from PySide6.QtGui import QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication
 
 from wipe_compare_widget import MAX_ZOOM, MIN_ZOOM, WipeCompareWidget
@@ -27,12 +28,16 @@ def _app():
 
 
 def _widget(image_size=(200, 100), widget_size=(400, 300)):
+    """As of the Stage 5 GPU rewrite, set_after takes a raw (H,W,3)
+    float32 array (domain [0,1]), not a QPixmap -- image_size is (w, h),
+    matching the old QPixmap(*image_size) convention, so array shape is
+    (h, w, 3), the numpy/image convention (reversed from image_size)."""
     _app()
     w = WipeCompareWidget()
     w.resize(*widget_size)
-    pixmap = QPixmap(*image_size)
-    pixmap.fill(Qt.GlobalColor.red)
-    w.set_after(pixmap)
+    img_w, img_h = image_size
+    array = np.full((img_h, img_w, 3), (1.0, 0.0, 0.0), dtype=np.float32)  # solid red
+    w.set_after(array)
     return w
 
 

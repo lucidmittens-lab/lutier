@@ -136,6 +136,7 @@ class HoverInspector(QObject):
         super().__init__()
         self._registry = {}  # id(list_widget) -> (list_widget, info_for_item)
         self._card = _HoverCard()
+        self._refreshing = False  # re-entrancy guard, see eventFilter's own comment
         QApplication.instance().installEventFilter(self)
 
     def register(self, list_widget, info_for_item):
@@ -145,8 +146,28 @@ class HoverInspector(QObject):
         self._registry.pop(id(list_widget), None)
 
     def eventFilter(self, obj, event):
+        # Re-entrancy guard -- confirmed on real hardware that _refresh's
+        # own self._card.hide()/show() calls can synchronously trigger
+        # MORE watched events (e.g. Leave) that Qt delivers through this
+        # SAME application-wide filter before the outer _refresh() call
+        # has returned, recursing. Ordinarily shallow and harmless, but a
+        # real reproduced case (a burst of Stack edits driving many rapid
+        # repaints while an unrelated widget elsewhere is also being
+        # constructed) recursed deeply enough to exhaust the C stack --
+        # a hard segfault, not a catchable RecursionError. This isn't
+        # about the Viewer's own GPU rendering specifically -- ordinary
+        # QListWidget construction reproduced it too -- so the safe fix
+        # is here, at the one place both recursion legs pass through,
+        # not in whichever caller happens to be generating events that
+        # particular time.
+        if self._refreshing:
+            return False
         if event.type() in _WATCHED_EVENT_TYPES:
-            self._refresh()
+            self._refreshing = True
+            try:
+                self._refresh()
+            finally:
+                self._refreshing = False
         return False  # purely observational -- never actually consume the event
 
     def _registered_ancestor(self, widget):

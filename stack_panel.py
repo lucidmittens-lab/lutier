@@ -76,7 +76,7 @@ loading a file or Identity LUT from the Browser does too; (2) selecting a
 stage shows the right inspector in the PARAMS area; (3) "Edit
 Size/Domain..." (was "Stack Output...", now also in the header menu)
 still opens the same dialog; (4) each stage renders as a bordered card
-with the selected one highlighted; (5) a card's check/cross button
+with the selected one highlighted; (5) a card's enabled-toggle button
 toggles that stage's enabled state directly, no selection needed;
 (6) dragging a stage to a new position reorders the real Stack, INCLUDING
 the single-stage-dragged-into-empty-space case that used to empty the
@@ -100,24 +100,32 @@ inspector correctly afterward.
 """
 from pathlib import Path
 from itertools import zip_longest
+from collections import namedtuple
 
 import numpy as np
-from PySide6.QtCore import Qt, QObject, QSize, Signal
-from PySide6.QtGui import QPainter, QPen
+import shiboken6
+from PySide6.QtCore import Qt, QObject, QSize, QPoint, Signal, QVariantAnimation, QEasingCurve
+from PySide6.QtGui import QPainter, QPen, QDrag, QPixmap, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QDoubleSpinBox,
     QGroupBox, QSlider, QCheckBox, QStackedWidget, QInputDialog,
     QDialog, QDialogButtonBox, QFrame, QToolButton, QAbstractItemView, QMenu,
-    QSizePolicy,
+    QSizePolicy, QButtonGroup, QGraphicsOpacityEffect,
 )
 
 import stack as st
 import aces_drt
 import cdl
 import colorspace_convert as csc
+import custom_drt
+import exposure_contrast as ec
+import grading_primary as gpr
+import grading_rgb_curve as grc
+import grading_tone as gtn
 import color_balance as cb
 from color_wheel_widget import ColorBalanceWheel
+from curve_editor_widget import CurveEditorWidget, CHANNEL_ORDER, CHANNEL_COLORS, CHANNEL_LABELS
 from app_logic import load_lut_any_format, create_identity_lut, list_available_colourspaces
 from printer_lights import POINTS_PER_STOP, DEFAULT_WORKING_COLOURSPACE
 import hover_inspector
@@ -127,10 +135,36 @@ from floating_dialog import make_floating_tool_window, show_floating
 # style.HINT_TEXT_HEX -- see style.py's FOURTEENTH PASS docstring: hint
 # text is a literal hex now, not palette(placeholder-text) (doesn't
 # reliably survive Qt's style-polish pass on this Qt build).
-from style import HINT_TEXT_HEX
+from style import HINT_TEXT_HEX, PANEL_BORDER_RADIUS
 
 COMMON_SIZES = [9, 17, 25, 33, 45, 65, 97]
 PRINTER_LIGHT_RANGE = 50
+
+# One entry per _StackListWidget row (see StackPanel._row_insert_index,
+# built fresh in _refresh_list) -- where a dropped/dragged stage should
+# land if it's dropped at this row's position. `ordinary` is a plain
+# self.stack.stages insertion index, used for a row OUTSIDE any fork
+# region (an int) or None if this row is fork-interior. `branch_a`/
+# `branch_b` are each a self.stack.stages insertion index for landing in
+# that branch specifically, or None if this row is NOT fork-interior.
+# Exactly one of (`ordinary`, the pair `branch_a`/`branch_b`) is
+# populated for any given row -- never both, never neither -- which is
+# what makes "drop resolves to no branch" structurally unreachable for
+# any row inside a fork's two-column table (see _StackListWidget.
+# _drop_branch/StackPanel._on_stage_reordered). Replaces the single
+# plain int _row_insert_index held per row before forking became
+# drag-native (2026-08-12).
+_RowTargets = namedtuple("_RowTargets", ["ordinary", "branch_a", "branch_b"])
+
+# Sentinel default for StackPanel._add_stage's `branch` param -- lets a
+# caller distinguish "didn't specify, auto-assign a branch if this lands
+# inside an open fork region" (every "Add Operator" menu action, which
+# has no column information) from "explicitly wants None" (a drag-and-
+# drop insert that resolved to an ordinary, non-fork position -- see
+# StackPanel._resolve_drop_target). Plain `None` can't serve as that
+# "unspecified" default since it's also the legitimate explicit value
+# for "no branch."
+_UNSPECIFIED_BRANCH = object()
 
 # CDL SOP fields: (params key, display label, spin min, spin max, identity
 # value, spin step, wheel strength). "wheel strength" is how much a
@@ -148,6 +182,102 @@ CDL_SOP_FIELD_SPECS = [
 ]
 CDL_WHEEL_DIAMETER = 90
 CDL_SAT_RANGE = 400  # slider units -> /100 -> 0.0-4.0, matching the spin range
+
+# Which of GradingPrimary's RGBM fields are actually meaningful per style
+# (see grading_primary.py's own docstring) -- _build_grading_primary_
+# inspector builds a row for every field below, but only these three (per
+# style) are ever shown at once, toggled by _update_grading_primary_field_
+# visibility on style change. Pivot and Saturation are always shown --
+# both are meaningful (or at least harmless) regardless of style.
+GRADING_PRIMARY_STYLE_FIELDS = {
+    "log": ("brightness", "contrast", "gamma"),
+    "lin": ("offset", "exposure", "contrast"),
+    "video": ("lift", "gamma", "gain"),
+}
+# (field_key, label, is_additive) -- additive fields (identity 0.0, e.g.
+# brightness) get a different range/step than multiplicative ones
+# (identity 1.0, e.g. contrast/gamma/gain) -- same "own spin range around
+# identity" reasoning as CDL_SOP_FIELD_SPECS above, just without that
+# spec's wheel-specific "strength" column since these fields use plain
+# R/G/B/M spinboxes, no color-balance wheel (GradingRGBM's 4th "master"
+# component is a REAL, independently stored value here, unlike CDL's
+# wheel-computed master, which is a UI-only convenience -- see
+# grading_primary.py's docstring).
+GRADING_PRIMARY_FIELD_SPECS = [
+    ("brightness", "Brightness", True),
+    ("contrast", "Contrast", False),
+    ("gamma", "Gamma", False),
+    ("offset", "Offset", True),
+    ("exposure", "Exposure", True),
+    ("lift", "Lift", True),
+    ("gain", "Gain", False),
+]
+GRADING_PRIMARY_ADDITIVE_RANGE = (-2.0, 2.0, 0.01)  # lo, hi, step
+# Floor is 0.01, not 0.0 -- ocio.GradingPrimary.validate() requires
+# contrast/gamma to stay strictly positive (confirmed via probing, see
+# grading_primary.py's own _POSITIVE_FIELD_FLOOR comment); gain doesn't
+# strictly need this floor but shares this range constant for simplicity.
+GRADING_PRIMARY_MULT_RANGE = (0.01, 4.0, 0.01)
+
+
+def _format_grading_primary_label(params):
+    """Stage-row label for a 'grading_primary' stage -- shows the active
+    style (same "the row tells you what it actually does" convention
+    _format_cdl_label follows), not a static "Grading Primary". Doesn't
+    dump every RGBM field's values the way CDL's label does -- there are
+    7 possible fields here vs. CDL's fixed 3, so a full dump would be
+    unreadable; the style name plus the inspector (which shows only the
+    fields that style actually uses) is enough context."""
+    style = params.get("style", gpr.DEFAULT_STYLE)
+    style_label = dict(gpr.list_available_styles()).get(style, style)
+    # Style labels are long/descriptive (good for a combo box); the row
+    # label just wants the short name before the first " (".
+    short_style = style_label.split(" (")[0]
+    return f"Grading Primary ({short_style})"
+
+
+def _format_exposure_contrast_label(params):
+    """Stage-row label for an 'exposure_contrast' stage -- shows its live
+    exposure/contrast/gamma values (same "the row tells you what it
+    actually does" convention _format_cdl_label/_format_grading_primary_
+    label follow) -- only 3 scalar fields here, so (unlike grading_
+    primary's style-only label) a full value dump fits comfortably."""
+    exposure = params.get("exposure", ec.IDENTITY_EXPOSURE)
+    contrast = params.get("contrast", ec.IDENTITY_CONTRAST)
+    gamma = params.get("gamma", ec.IDENTITY_GAMMA)
+    return f"Exposure/Contrast  Exp {exposure:+.2f}  Con {contrast:.2f}  Gam {gamma:.2f}"
+
+
+# Human-readable labels for grading_tone.RANGE_KEYS, in display order
+# (matches OCIO's own blacks->shadows->midtones->highlights->whites
+# ordering, dark to light).
+GRADING_TONE_RANGE_LABELS = {
+    "blacks": "Blacks", "shadows": "Shadows", "midtones": "Midtones",
+    "highlights": "Highlights", "whites": "Whites",
+}
+
+
+def _format_grading_tone_label(params):
+    """Stage-row label for a 'grading_tone' stage -- shows the active
+    style only (same reasoning as _format_grading_primary_label: 5
+    ranges x 6 fields is far too much to dump into one row label, the
+    inspector is where the actual values live)."""
+    style = params.get("style", gtn.DEFAULT_STYLE)
+    style_label = dict(gtn.list_available_styles()).get(style, style)
+    short_style = style_label.split(" (")[0]
+    return f"Grading Tone ({short_style})"
+
+
+def _format_grading_rgb_curve_label(params):
+    """Stage-row label for a 'grading_rgb_curve' stage -- shows the
+    active style only (same reasoning as _format_grading_primary_label/
+    _format_grading_tone_label: 4 curves x an arbitrary number of control
+    points each is far too much to dump into one row label, the inspector
+    -- the curve editor itself -- is where the actual shape lives)."""
+    style = params.get("style", grc.DEFAULT_STYLE)
+    style_label = dict(grc.list_available_styles()).get(style, style)
+    short_style = style_label.split(" (")[0]
+    return f"Grading RGB Curve ({short_style})"
 
 
 def _format_cdl_label(params):
@@ -191,6 +321,36 @@ def _format_fork_merge_label(params):
     return f"Fork Merge  (A {a_pct}% / B {b_pct}%)"
 
 
+# Short, fixed-width badge text per stage.kind -- a quick-scan visual cue
+# in each row (per Tom, "snappier and more interactive" pass) so "what's
+# in my stack" is readable at a glance without parsing every label's
+# prose. Plain monospace-friendly abbreviations rather than pictographic
+# icons -- this app has no icon/image asset pipeline anywhere else (every
+# existing per-purpose glyph, the ☰ menu button, the ●/○ enabled toggle,
+# the × delete button, is a plain Unicode character styled through QSS),
+# so a text badge is the one approach consistent with that. Falls back to
+# the kind string itself (upper, truncated) for anything not listed here
+# rather than showing nothing.
+STAGE_KIND_BADGES = {
+    "lut": "LUT",
+    "printer_lights": "PL",
+    "aces_drt": "DRT",
+    "custom_drt": "CDR",
+    "cdl": "CDL",
+    "colorspace": "CS",
+    "grading_primary": "GP",
+    "exposure_contrast": "EC",
+    "grading_tone": "GT",
+    "grading_rgb_curve": "RGB",
+    "fork_split": "FRK",
+    "fork_merge": "MRG",
+}
+
+
+def _stage_kind_badge_text(kind):
+    return STAGE_KIND_BADGES.get(kind, kind[:3].upper())
+
+
 # Stack()'s own constructor defaults, read once rather than hardcoded here
 # a second time -- used by _update_domain_readout to flag when the current
 # grid size/domain differ from a freshly-created stack's, so it's obvious
@@ -232,6 +392,28 @@ def _stage_info_text(stage):
         lines.append(f"Working space: {p.get('working_colourspace', '?')}")
     elif stage.kind == "aces_drt":
         lines.append(f"{p.get('working_colourspace', '?')} -> {p.get('display', '?')}/{p.get('view', '?')}")
+    elif stage.kind == "custom_drt":
+        mastering_display = p.get("mastering_display", custom_drt.DEFAULT_MASTERING_DISPLAY)
+        final_target = p.get(
+            "final_target", custom_drt.DEFAULT_FINAL_TARGET_FOR_DISPLAY[mastering_display])
+        lines.append(f"{p.get('working_colourspace', '?')} -> {mastering_display} -> {final_target}")
+        if mastering_display == "HDR":
+            lines.append(
+                f"PQ, mastering {p.get('mastering_brightness', custom_drt.DEFAULT_MASTERING_BRIGHTNESS)} nits")
+        elif mastering_display == "SDR":
+            lines.append("Gamma 2.4" if final_target != "sRGB" else "sRGB")
+        else:
+            lines.append("Gamma 2.6")
+        lines.append(
+            f"Contrast {p.get('contrast', custom_drt.DEFAULT_CONTRAST):.2f}  "
+            f"Headroom {p.get('headroom', custom_drt.DEFAULT_HEADROOM):.1f} stops")
+        lines.append(
+            f"Identity zone {p.get('identity_zone', custom_drt.DEFAULT_IDENTITY_ZONE):.0%}  "
+            f"Transition {p.get('transition_softness', custom_drt.DEFAULT_TRANSITION_SOFTNESS):.0%}")
+        lines.append(
+            f"Fullness R{p.get('fullness_r', custom_drt.DEFAULT_FULLNESS_R):.2f} "
+            f"G{p.get('fullness_g', custom_drt.DEFAULT_FULLNESS_G):.2f} "
+            f"B{p.get('fullness_b', custom_drt.DEFAULT_FULLNESS_B):.2f}")
     elif stage.kind == "cdl":
         r, g, b = p.get("slope", cdl.IDENTITY_SLOPE)
         ro, go, bo = p.get("offset", cdl.IDENTITY_OFFSET)
@@ -244,6 +426,37 @@ def _stage_info_text(stage):
             lines.append("SAT: bypassed")
     elif stage.kind == "colorspace":
         lines.append(f"{p.get('src', '?')} -> {p.get('dst', '?')}")
+    elif stage.kind == "grading_primary":
+        style = p.get("style", gpr.DEFAULT_STYLE)
+        lines.append(f"Style: {style}")
+        for field_key in GRADING_PRIMARY_STYLE_FIELDS.get(style, ()):
+            default = gpr.IDENTITY_ADD if field_key in ("brightness", "offset", "lift") else gpr.IDENTITY_MULT
+            r, g, b, m = p.get(field_key, default)
+            label = dict((k, lbl) for k, lbl, _add in GRADING_PRIMARY_FIELD_SPECS)[field_key]
+            lines.append(f"{label}: R{r:.3f} G{g:.3f} B{b:.3f} M{m:.3f}")
+        lines.append(f"Pivot {p.get('pivot', gpr.DEFAULT_PIVOT):.3f}  "
+                     f"Sat {p.get('saturation', gpr.DEFAULT_SATURATION):.3f}")
+    elif stage.kind == "exposure_contrast":
+        lines.append(f"Style: {p.get('style', ec.DEFAULT_STYLE)}")
+        lines.append(
+            f"Exposure {p.get('exposure', ec.IDENTITY_EXPOSURE):+.3f}  "
+            f"Contrast {p.get('contrast', ec.IDENTITY_CONTRAST):.3f}  "
+            f"Gamma {p.get('gamma', ec.IDENTITY_GAMMA):.3f}")
+    elif stage.kind == "grading_tone":
+        style = p.get("style", gtn.DEFAULT_STYLE)
+        lines.append(f"Style: {style}")
+        for range_key in gtn.RANGE_KEYS:
+            r, g, b, m, start, width = p.get(range_key) or gtn.DEFAULT_RANGE_VALUES[range_key]
+            lines.append(
+                f"{GRADING_TONE_RANGE_LABELS[range_key]}: R{r:.2f} G{g:.2f} B{b:.2f} M{m:.2f}  "
+                f"(start {start:.2f}, width {width:.2f})")
+        lines.append(f"S-Contrast {p.get('scontrast', gtn.DEFAULT_SCONTRAST):.3f}")
+    elif stage.kind == "grading_rgb_curve":
+        style = p.get("style", grc.DEFAULT_STYLE)
+        lines.append(f"Style: {style}")
+        for channel in grc.RGB_CHANNELS:
+            points = p.get(channel) or grc.DEFAULT_CONTROL_POINTS
+            lines.append(f"{channel.capitalize()}: {len(points)} points")
     elif stage.kind == "fork_merge":
         lines.append(f"Blend: {p.get('blend', 0.5):.0%}")
 
@@ -316,44 +529,110 @@ class _StageRowWidget(QFrame):
     get Qt's normal "click anywhere in the row selects it" behavior for
     free (the item widget eats the mouse press before QAbstractItemView
     ever sees it) -- so this forwards any press that isn't on the enabled
-    toggle, branch combo, or delete button to StackPanel via
+    toggle, opacity spin, or delete button to StackPanel via
     on_row_clicked(stage.id).
 
     Delete button ("x" at the row's far end) removes THIS stage directly,
     no selection required first -- same "act on the row you clicked, not
-    whatever happens to be selected" convention as the enabled toggle.
-    Reordering is drag-and-drop (see _StackListWidget), removal is this
-    button or Delete/Backspace on the selected row (see
-    _StackListWidget.keyPressEvent).
+    whatever happens to be selected" convention as the enabled toggle
+    (fork_split/fork_merge's "x" removes BOTH markers together, see
+    StackPanel._delete_stage_linked). Reordering is drag-and-drop (see
+    _StackListWidget), removal is this button or Delete/Backspace on the
+    selected row (see _StackListWidget.keyPressEvent).
 
-    STACK FORKING (per Tom): fork_split/fork_merge stages get this exact
-    same card, no special styling -- Tom's call after the first pass
-    ("bulky and non-matching") was that a fork region's boundaries should
-    read as ordinary operator rows, not marker rows; the region itself is
-    now visually obvious from the two-column table between them (see
-    StackPanel._flush_fork_grid/_ForkBranchGridRowWidget) rather than from
-    a decorated split/merge row. `compact=True` is used for a cell INSIDE
-    that two-column table (via _ForkBranchGridRowWidget) -- tighter
-    margins, no stage-number prefix (a single incrementing number doesn't
-    mean much once two branches run in parallel), an elided label (see
-    _ElidingLabel, full text still in the tooltip), and a narrow single-letter
-    branch combo ("A"/"B"/"—") instead of the full "Branch A"/"Branch B"/
-    "No branch" text, since a compact cell is only ever used for a stage
-    that's ALREADY inside a fork region (column position already implies
-    which branch), so the combo here is purely a way to move it to the
-    OTHER branch or clear it back to unassigned, not to newly place a
-    stage that has nowhere better to go yet -- that's what the wider combo
-    on a full-width row is for."""
+    STACK FORKING (per Tom, REWORKED 2026-08-12): fork_split/fork_merge
+    stages get this exact same card, no special styling -- a fork
+    region's boundaries read as ordinary operator rows, not marker rows;
+    the region itself is visually obvious from the two-column table
+    between them (see StackPanel._flush_fork_grid/
+    _ForkBranchGridRowWidget). `compact=True` is used for a cell INSIDE
+    that two-column table -- tighter margins and an elided label (see
+    _ElidingLabel, full text still in the tooltip), same as before, but
+    there's no branch combo anymore (removed entirely, along with the
+    stage-number prefix from an earlier round): a stage's branch is now
+    purely a function of which column it's been dragged into -- see
+    _StackListWidget._drop_branch/StackPanel._on_stage_reordered. Every
+    _StageRowWidget, compact or not, is uniformly draggable now (no more
+    ItemIsDragEnabled carve-out for fork-grid cells) via _StackListWidget
+    resolving drag source/target by STAGE ID (_stage_id_at), not by
+    QListWidget row, since a fork-grid row can hold two independently
+    draggable stages, one per side.
+
+    SNAPPIER/MORE INTERACTIVE PASS (per Tom, 2026-08-12, two rounds):
+
+    1. update_content() -- a targeted in-place refresh (label text,
+       opacity, enabled state) for a stage whose PARAMS changed live but
+       whose position in the list/fork layout didn't. Added so
+       StackPanel's _apply_*_live handlers (CDL, ACES DRT, Color Space,
+       Grading Primary, Exposure/Contrast, Grading Tone, Grading RGB
+       Curve, Fork Merge's blend), _on_row_enabled_clicked, and this
+       row's own opacity_spin can update just THIS card instead of
+       calling StackPanel._refresh_list(), which tears down and
+       reconstructs every card in the whole list on every single tick of
+       a drag -- the concrete, measured cause of "laggy" live editing
+       found while building this. _refresh_list() itself is unchanged
+       and still used for anything actually structural (add/remove/
+       reorder/branch-region changes).
+    2. An animated (~140ms) translucent dim overlay for the disabled
+       state, painted in paintEvent instead of an instant QSS unpolish/
+       polish snap -- see _disabled_anim/_on_disabled_progress. Selection
+       does NOT get this treatment (round two, per Tom): a first pass
+       gave it the same overlay-wash-plus-bold-label treatment, but Tom's
+       call after trying it was that the highlight should be JUST the
+       card border's own color changing to accent (see style.py's
+       [stageSelected] rule) -- nothing else, so set_selected below is
+       now a plain property+repolish, same mechanism as any other QSS
+       property switch elsewhere in this app. Hover took three attempts
+       (see style.py's own QFrame#stackStageRow:hover comment for the
+       full account): a barely-visible neutral-gray brighten, then the
+       app's own text-field convention (full accent, same as selected --
+       too easy to confuse with actual selection), and finally its own
+       dedicated color, palette(accent) -- see style.py's
+       get_tertiary_color(), a 33%-darker derivative of the accent
+       that's distinct from both idle-gray and selected-accent. WA_Hover
+       set below is what makes the :hover QSS pseudo-state actually
+       repaint on this QFrame.
+    3. A kind badge (see STAGE_KIND_BADGES/_stage_kind_badge_text) next
+       to the enabled toggle on EVERY card, compact (fork-grid) cells
+       included (round two, per Tom: badges were originally full-width-
+       only, back when a compact cell also had to fit the now-removed
+       branch combo in the same cramped space) -- a quick-scan visual
+       cue for what a card actually is, without reading its label's
+       prose.
+    4. opacity_spin -- moved IN-ROW, next to the stage name, always
+       visible and directly editable (drag-to-scrub, same as before).
+       Round one had opacity as a separate "Opacity:" control below the
+       whole list, operating on "whichever stage happens to be
+       selected" -- Tom's round-two feedback was that this location was
+       confusing, disconnected from the row it actually affects. That
+       control (StackPanel.opacity_spin, _on_opacity_changed) is gone;
+       StackPanel._on_row_opacity_changed is this row's own handler now.
+    5. The enabled toggle is a filled/hollow dot (●/○), not a checkmark/
+       cross -- per Tom, "something more elegant than the checkmark."
+       See _apply_enabled_state.
+    6. No more leading "1. "/"2. " stage-number prefix on the label
+       (round two, per Tom: "lose the number before the operator name")
+       -- the old display_number param this constructor and update_
+       content took is gone entirely, not just left unused; a stage's
+       position was already visually obvious from its order in the
+       list, and the badge (point 3) now carries more of the "what is
+       this at a glance" job the number was also partly doing."""
+
+    _DISABLED_OVERLAY_ALPHA = 0.32
+    _ANIM_DURATION_MS = 140
 
     def __init__(self, stage, on_row_clicked, on_enabled_clicked, on_delete_clicked,
-                 on_branch_changed=None, in_fork_region=False, compact=False,
-                 display_number=None, parent=None):
+                 on_opacity_changed=None, compact=False, parent=None):
         super().__init__(parent)
         self.stage_id = stage.id
+        self.compact = compact
         self._on_row_clicked = on_row_clicked
         self.setObjectName("stackStageRow")
-        self.setProperty("stageEnabled", stage.enabled)
-        is_fork_marker = stage.kind in ("fork_split", "fork_merge")
+        # QFrame doesn't opt into QSS :hover repaints on its own (unlike a
+        # QPushButton etc.) -- needed for style.py's new
+        # QFrame#stackStageRow:hover rule (per Tom: hovering a row should
+        # brighten its border a little, independent of selection).
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         # Only flagged for QSS on a stray tag OUTSIDE a fork region (see
         # style.py's [stageBranch] rule) -- inside the two-column table,
         # column position already says which branch a cell belongs to, so
@@ -363,13 +642,25 @@ class _StageRowWidget(QFrame):
             self.setProperty("stageBranch", stage.branch)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
+        self._selected = False
+
+        self._enabled_progress = 1.0 if stage.enabled else 0.0
+        self._disabled_anim = QVariantAnimation(self)
+        self._disabled_anim.setDuration(self._ANIM_DURATION_MS)
+        self._disabled_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._disabled_anim.valueChanged.connect(self._on_disabled_progress)
+
+        # Slightly tighter than before (per Tom's "tighten row density"
+        # ask) -- both compact and full-width margins/spacing trimmed a
+        # couple px each, still comfortable to click, just less wasted
+        # padding per card so more of the stack is visible at once.
         layout = QHBoxLayout(self)
         if compact:
-            layout.setContentsMargins(5, 3, 5, 3)
-            layout.setSpacing(4)
+            layout.setContentsMargins(4, 2, 4, 2)
+            layout.setSpacing(3)
         else:
-            layout.setContentsMargins(8, 6, 8, 6)
-            layout.setSpacing(8)
+            layout.setContentsMargins(6, 4, 6, 4)
+            layout.setSpacing(6)
 
         self.enabled_button = QToolButton()
         self.enabled_button.setObjectName("stageEnabledToggle")
@@ -377,12 +668,26 @@ class _StageRowWidget(QFrame):
         self.enabled_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.enabled_button.setToolTip("Click to enable/disable this stage")
         self.enabled_button.clicked.connect(lambda: on_enabled_clicked(stage.id))
-        self._set_enabled_glyph(stage.enabled)
         layout.addWidget(self.enabled_button)
 
-        text_col = QVBoxLayout()
-        text_col.setSpacing(0)
-        label_text = stage.label if display_number is None else f"{display_number}. {stage.label}"
+        # Kind badge -- shown on EVERY card now, compact (fork-grid) cells
+        # included (round two, per Tom: "the glyphs for operators dont
+        # show up when they are in a fork"). Originally full-width-only,
+        # back when a compact cell also had to fit the branch combo in
+        # the same cramped space -- that's gone now (branch is purely
+        # positional, see class docstring's STACK FORKING section), so
+        # there's no longer a real space reason to omit it, and fork
+        # cells behaving like ordinary rows in every other respect
+        # (full drag support, opacity spin) made the missing badge read
+        # as an oversight rather than a deliberate simplification.
+        self.badge_widget = QLabel(_stage_kind_badge_text(stage.kind))
+        self.badge_widget.setObjectName("stageKindBadge")
+        self.badge_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.badge_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout.addWidget(self.badge_widget)
+
+        self._text_col = QVBoxLayout()
+        self._text_col.setSpacing(0)
         # _ElidingLabel truncates with "…" to fit whatever width it
         # actually ends up with (compact fork-grid cell or a full-width
         # row alike), keeping the untruncated text as its own tooltip --
@@ -391,67 +696,42 @@ class _StageRowWidget(QFrame):
         # _elide()) since a full-width row can run out of space too, per
         # Tom: the delete button at the row's far end should stay visible
         # regardless of panel width, not get pushed off past it.
-        self.label_widget = _ElidingLabel(label_text)
+        self.label_widget = _ElidingLabel(stage.label)
         self.label_widget.setObjectName("stageLabel")
-        self.label_widget.setProperty("stageEnabled", stage.enabled)
         # Transparent to mouse events -- otherwise a click on the label
         # text itself is swallowed by the QLabel rather than reaching this
         # frame's mousePressEvent below, and "click anywhere on the card
         # to select it" would only work in the card's empty margins.
         self.label_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        text_col.addWidget(self.label_widget)
-        if stage.opacity < 1.0:
-            opacity_label = QLabel(f"{round(stage.opacity * 100)}% opacity")
-            opacity_label.setStyleSheet(f"color: {HINT_TEXT_HEX}; font-size: 10px;")
-            opacity_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            text_col.addWidget(opacity_label)
-        layout.addLayout(text_col, stretch=1)
+        self._text_col.addWidget(self.label_widget)
+        layout.addLayout(self._text_col, stretch=1)
 
-        # Branch A/B assignment -- only shown for an ordinary stage (not
-        # fork_split/fork_merge themselves) that's either currently inside
-        # an open fork region (in_fork_region) or already carries a branch
-        # tag that needs a way to be cleared (a stray tag from having been
-        # left outside a region -- see stack.py's Stage docstring: inert,
-        # not an error, but still worth surfacing so it doesn't look like
-        # it silently vanished). No combo at all for the common case of an
-        # ordinary stage nowhere near a fork, keeping every other row
-        # exactly as before.
-        self.branch_combo = None
-        if not is_fork_marker and (in_fork_region or stage.branch):
-            self.branch_combo = QComboBox()
-            self.branch_combo.setObjectName("stageBranchCombo")
-            if compact:
-                # Single-letter items -- this cell is already inside the
-                # two-column table, so the combo's only job here is
-                # "move to the other branch" or "clear," not "place."
-                self.branch_combo.addItem("—", None)
-                self.branch_combo.addItem("A", "a")
-                self.branch_combo.addItem("B", "b")
-                self.branch_combo.setFixedWidth(40)
-            else:
-                self.branch_combo.addItem("No branch", None)
-                self.branch_combo.addItem("Branch A", "a")
-                self.branch_combo.addItem("Branch B", "b")
-            idx = self.branch_combo.findData(stage.branch)
-            self.branch_combo.setCurrentIndex(idx if idx >= 0 else 0)
-            if stage.branch and not in_fork_region:
-                self.branch_combo.setToolTip(
-                    f"Tagged Branch {stage.branch.upper()}, but this stage isn't "
-                    "between a matched Fork Split/Fork Merge pair right now -- "
-                    "the tag is inert. Pick \"No branch\" to clear it, or move "
-                    "this stage back inside the fork region.")
-            else:
-                self.branch_combo.setToolTip(
-                    "Move this stage to Branch A or B, or clear it back to "
-                    "unassigned.")
-            if on_branch_changed is not None:
-                self.branch_combo.currentIndexChanged.connect(
-                    lambda _i: on_branch_changed(stage.id, self.branch_combo.currentData()))
-            layout.addWidget(self.branch_combo)
+        # Opacity, live, right in the row next to the stage name (per Tom
+        # -- the old version lived in a separate "Opacity:" control below
+        # the whole list, tied to "whichever stage happens to be
+        # selected," which read as confusing/disconnected from the stage
+        # it actually affected). Always visible now, not just when
+        # non-default, since it's an actionable control here rather than
+        # a passive "opacity isn't 100%" hint -- you shouldn't have to
+        # already know a row has non-default opacity before you can see
+        # where to change it. Narrower in compact (fork-grid) cells, same
+        # "keep the compact cell lean" precedent the badge (below) follows.
+        self.opacity_spin = QSpinBox()
+        self.opacity_spin.setObjectName("stageOpacitySpin")
+        self.opacity_spin.setRange(0, 100)
+        self.opacity_spin.setSuffix("%")
+        self.opacity_spin.setValue(round(stage.opacity * 100))
+        self.opacity_spin.setFixedWidth(48 if compact else 60)
+        self.opacity_spin.setToolTip("This stage's opacity -- 0% is fully bypassed, 100% is full strength.")
+        enable_drag_to_scrub(self.opacity_spin)
+        if on_opacity_changed is not None:
+            self.opacity_spin.valueChanged.connect(
+                lambda value: on_opacity_changed(stage.id, value))
+        layout.addWidget(self.opacity_spin)
 
-        # "x" (not the enabled toggle's checkmark/cross glyphs -- a
-        # DIFFERENT symbol on purpose, so the two aren't visually
-        # confusable at a glance) at the row's far end.
+        # "x" (not the enabled toggle's dot glyph -- a DIFFERENT symbol on
+        # purpose, so the two aren't visually confusable at a glance) at
+        # the row's far end.
         self.delete_button = QToolButton()
         self.delete_button.setObjectName("stageDeleteButton")
         self.delete_button.setAutoRaise(True)
@@ -461,25 +741,109 @@ class _StageRowWidget(QFrame):
         self.delete_button.clicked.connect(lambda: on_delete_clicked(stage.id))
         layout.addWidget(self.delete_button)
 
-    def _set_enabled_glyph(self, enabled):
-        self.enabled_button.setText("✓" if enabled else "✗")  # checkmark / cross
+        # Sets stageEnabled on self/enabled_button/label_widget and the
+        # glyph, all in one place -- see _apply_enabled_state. animate=
+        # False at construction time: nothing's been painted yet, so
+        # there's nothing to ease from.
+        self._apply_enabled_state(stage.enabled, animate=False, repolish=False)
+
+    def _apply_enabled_state(self, enabled, animate=True, repolish=True):
+        """Sets the enabled/disabled glyph + QSS property on every part of
+        the card that depends on it, and (unless this is the initial
+        construction, see __init__'s call) eases the dim overlay in/out
+        (see paintEvent) instead of snapping it -- called both by
+        __init__ and by update_content (StackPanel._on_row_enabled_
+        clicked's targeted path, see class docstring point 1)."""
+        # Filled/hollow dot (per Tom: "something more elegant than the
+        # checkmark") -- a solid accent-colored dot reads as "on," a
+        # hollow outline as "off," without the heavier, more insistent
+        # look a bold checkmark/cross pair had at this size.
+        self.enabled_button.setText("●" if enabled else "○")
         self.enabled_button.setProperty("stageEnabled", enabled)
+        self.setProperty("stageEnabled", enabled)
+        self.label_widget.setProperty("stageEnabled", enabled)
+        if repolish:
+            for widget in (self, self.enabled_button, self.label_widget):
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
+        target = 1.0 if enabled else 0.0
+        if animate:
+            self._disabled_anim.stop()
+            self._disabled_anim.setStartValue(self._enabled_progress)
+            self._disabled_anim.setEndValue(target)
+            self._disabled_anim.start()
+        else:
+            self._enabled_progress = target
+
+    def _on_disabled_progress(self, value):
+        self._enabled_progress = value
+        self.update()
 
     def set_selected(self, selected):
+        # Plain property + repolish -- see class docstring point 2 on why
+        # this is deliberately NOT animated the way the disabled dim is:
+        # selection here is just the card border's own color switching to
+        # accent (style.py's [stageSelected] rule), same mechanism as any
+        # other QSS property change in this app, not a custom-painted
+        # effect.
+        if selected == self._selected:
+            return
+        self._selected = selected
         self.setProperty("stageSelected", selected)
         self.style().unpolish(self)
         self.style().polish(self)
 
+    def update_content(self, stage):
+        """Refreshes THIS card's label/opacity/enabled-state in place for
+        a stage whose params changed live but whose position in the
+        list/fork layout didn't -- see class docstring point 1 and
+        StackPanel._update_row_content. Deliberately does NOT touch
+        stage_id or the badge -- neither of those can change
+        via a live param edit, only via a structural mutation that
+        already goes through StackPanel._refresh_list().
+
+        Opacity is synced with blockSignals -- this same spin box is also
+        this row's OWN opacity control (see __init__), so an edit that
+        came from somewhere else entirely (e.g. recalling a CDL Library
+        entry, undo/redo) needs to update the displayed value without
+        re-firing valueChanged straight back into
+        StackPanel._on_row_opacity_changed."""
+        self.label_widget.setText(stage.label)
+        self.opacity_spin.blockSignals(True)
+        self.opacity_spin.setValue(round(stage.opacity * 100))
+        self.opacity_spin.blockSignals(False)
+        self._apply_enabled_state(stage.enabled, animate=True)
+
+    def paintEvent(self, event):
+        # Animated overlay on top of the QSS-painted card -- see class
+        # docstring point 2. A translucent palette(window) wash that eases
+        # in/out as _enabled_progress moves (1.0 = fully enabled = no
+        # dim), on top of whatever the QSS border/background already
+        # painted for the enabled/selected/hover state.
+        super().paintEvent(event)
+        disabled_alpha = self._DISABLED_OVERLAY_ALPHA * (1.0 - self._enabled_progress)
+        if disabled_alpha <= 0.002:
+            return
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setPen(Qt.PenStyle.NoPen)
+            rect = self.rect().adjusted(0, 0, -1, -1)
+            color = QColor(self.palette().window().color())
+            color.setAlphaF(disabled_alpha)
+            painter.setBrush(color)
+            painter.drawRoundedRect(rect, PANEL_BORDER_RADIUS, PANEL_BORDER_RADIUS)
+        finally:
+            painter.end()
+
     def mousePressEvent(self, event):
-        # Let the enabled toggle / branch combo / delete button handle
-        # their own clicks -- only treat this as "select the row" when the
-        # press lands elsewhere on the card (label, opacity text, empty
-        # margin).
+        # Let the enabled toggle / opacity spin / delete button handle
+        # their own clicks -- only treat this as "select the row" when
+        # the press lands elsewhere on the card (label, empty margin).
         pos = event.position().toPoint()
-        on_branch_combo = self.branch_combo is not None and self.branch_combo.geometry().contains(pos)
         if not (self.enabled_button.geometry().contains(pos)
                 or self.delete_button.geometry().contains(pos)
-                or on_branch_combo):
+                or self.opacity_spin.geometry().contains(pos)):
             self._on_row_clicked(self.stage_id)
         super().mousePressEvent(event)
 
@@ -509,7 +873,7 @@ class _ForkBranchGridRowWidget(QFrame):
     StackPanel._flush_fork_grid)."""
 
     def __init__(self, left_stage, right_stage, on_row_clicked, on_enabled_clicked,
-                 on_delete_clicked, on_branch_changed, parent=None):
+                 on_delete_clicked, on_opacity_changed, parent=None):
         super().__init__(parent)
         self.setObjectName("stackForkGridRow")
         layout = QHBoxLayout(self)
@@ -517,20 +881,20 @@ class _ForkBranchGridRowWidget(QFrame):
         layout.setSpacing(6)
 
         self.left_widget = self._build_cell(
-            left_stage, on_row_clicked, on_enabled_clicked, on_delete_clicked, on_branch_changed)
+            left_stage, on_row_clicked, on_enabled_clicked, on_delete_clicked, on_opacity_changed)
         layout.addWidget(self.left_widget, stretch=1)
 
         self.right_widget = self._build_cell(
-            right_stage, on_row_clicked, on_enabled_clicked, on_delete_clicked, on_branch_changed)
+            right_stage, on_row_clicked, on_enabled_clicked, on_delete_clicked, on_opacity_changed)
         layout.addWidget(self.right_widget, stretch=1)
 
     @staticmethod
-    def _build_cell(stage, on_row_clicked, on_enabled_clicked, on_delete_clicked, on_branch_changed):
+    def _build_cell(stage, on_row_clicked, on_enabled_clicked, on_delete_clicked, on_opacity_changed):
         if stage is None:
             return _EmptyBranchCell()
         return _StageRowWidget(
             stage, on_row_clicked, on_enabled_clicked, on_delete_clicked,
-            on_branch_changed=on_branch_changed, in_fork_region=True, compact=True)
+            on_opacity_changed=on_opacity_changed, compact=True)
 
     def set_selected(self, selected_stage_id):
         """Highlights whichever cell (if either) matches the currently
@@ -561,7 +925,31 @@ class _StackListWidget(QListWidget):
     def __init__(self, panel, parent=None):
         super().__init__(parent)
         self._panel = panel
+        # So style.py can scope OFF the generic QListWidget::item:selected/
+        # :hover rectangular background just for this list -- see that
+        # rule's own comment on why: those global rules were painting a
+        # sharp-cornered highlight rectangle behind/around each row's own
+        # rounded "pill" card (_StageRowWidget's border-based selection
+        # cue), a real, longstanding bug Tom caught (2026-08-12, "get rid
+        # of the large highlight filling the regular 4 sided polygon
+        # around the row's pill shaped entry") that had nothing to do
+        # with this round's border-color simplification -- it was already
+        # there, just never addressed, because the border cue used to be
+        # bold/washed enough (round one) to not visually compete with it.
+        self.setObjectName("stackListWidget")
         self._drop_indicator_row = None  # see dragMoveEvent/paintEvent below
+        # Which column the indicator line should span for a fork-interior
+        # row -- "a"/"b", or None for an ordinary row (full-width line).
+        # See paintEvent.
+        self._drop_indicator_branch = None
+        # The stage id under the press that (maybe) becomes a drag -- see
+        # mousePressEvent/_stage_id_at. NOT the same as currentRow()/
+        # currentItem(): a fork-grid row can hold two independently
+        # draggable stages (one per column), so drag source identity has
+        # to be resolved at the stage level, not the QListWidget row
+        # level. Only ever read by startDrag/dropEvent for the lifetime
+        # of a single press-to-drop gesture.
+        self._pressed_stage_id = None
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         # NOT Qt's built-in indicator -- dragMoveEvent below is a full
@@ -589,6 +977,120 @@ class _StackListWidget(QListWidget):
         # before accepting so that cleanup never fires.
         self.setDefaultDropAction(Qt.DropAction.CopyAction)
 
+    def mousePressEvent(self, event):
+        """Records which STAGE (not which QListWidget row) the press
+        landed on, for startDrag to use as the drag source -- see
+        _pressed_stage_id's own comment in __init__ and _stage_id_at
+        below. Doesn't consume/replace anything: super() still runs
+        unconditionally, same current-row/selection tracking as before."""
+        self._pressed_stage_id = self._stage_id_at(event.position().toPoint())
+        super().mousePressEvent(event)
+
+    def _stage_id_at(self, pos):
+        """Resolves a viewport position to the specific stage id under
+        it. For an ordinary row this is just that row's one stage. For a
+        fork-grid row (see _ForkBranchGridRowWidget) it's whichever
+        SIDE's cell `pos` actually falls in -- left and right hold
+        independently draggable stages now, so "which row" alone isn't
+        enough anymore. None for a position with nothing draggable under
+        it: the "Branch A | Branch B" header, an _EmptyBranchCell, or
+        genuinely outside every row."""
+        item = self.itemAt(pos)
+        if item is None:
+            return None
+        widget = self.itemWidget(item)
+        if isinstance(widget, _StageRowWidget):
+            return widget.stage_id
+        if isinstance(widget, _ForkBranchGridRowWidget):
+            # left_widget/right_widget's own .geometry() is in THIS
+            # composite widget's local coordinates, not the viewport's --
+            # translate pos into that space before testing either cell.
+            local_pos = pos - widget.geometry().topLeft()
+            for cell in (widget.left_widget, widget.right_widget):
+                if isinstance(cell, _StageRowWidget) and cell.geometry().contains(local_pos):
+                    return cell.stage_id
+        return None
+
+    def startDrag(self, supportedActions):
+        """Custom drag visuals (per Tom, "drag ghost/lift on the dragged
+        row"). Qt's default QAbstractItemView.startDrag() renders its
+        drag pixmap from the delegate, which has nothing to paint for a
+        setItemWidget()-covered row (see class docstring on why every row
+        uses setItemWidget rather than a delegate) -- the default drag
+        pixmap is blank/generic. This grabs the actual card's rendered
+        pixels instead, composited at reduced opacity for a "lifted"
+        look, and dims the SOURCE row for the duration of the drag (a
+        "ghost" left behind) so it's obvious both where the card came
+        from and where it currently is.
+
+        Resolves the dragged widget via self._pressed_stage_id ->
+        self._panel._stage_row_widgets (not self.currentItem()/
+        itemWidget() -- those only identify a QListWidget ROW, which
+        isn't precise enough once a fork-grid row can hold two
+        independently draggable stages; _stage_id_at, called from
+        mousePressEvent, already resolved the exact stage the press
+        landed on). self._stage_row_widgets already maps every stage id
+        to its real live card either way -- an ordinary row's own widget,
+        or a fork cell's left_widget/right_widget -- so this needs no
+        special-casing for which kind of row the drag started from.
+
+        The dim is cleared unconditionally right after drag.exec()
+        returns (that call blocks until the drag ends one way or
+        another), covering a cancelled or dropped-outside-any-target drag
+        too -- a successful reorder drop rebuilds the whole list via
+        StackPanel._on_stage_reordered -> _refresh_list() anyway.
+
+        REAL CRASH, found via Tom's own on-screen testing: a successful
+        reorder drop doesn't just make that rebuild redundant, it makes
+        touching `widget` afterward actively dangerous. dropEvent fires
+        SYNCHRONOUSLY inside drag.exec()'s own nested event loop (Qt
+        processes the drop before exec() returns control here), and
+        _refresh_list() -> self.list_widget.clear() destroys every
+        _StageRowWidget's underlying C++ object right then, including
+        this row's -- so by the time this method's own `finally` runs,
+        `widget` can already be a dangling Python wrapper around a
+        deleted C++ object ("libshiboken: Internal C++ object
+        (_StageRowWidget) already deleted", reproduced directly).
+        shiboken6.isValid() is the correct guard for exactly this --
+        same class of "don't touch a Qt object PySide's own wrapper
+        outlived" issue wipe_compare_widget.py's isValid() checks guard
+        against elsewhere in this codebase, just at the shiboken layer
+        instead of QOpenGLWidget's own isValid()."""
+        if self._pressed_stage_id is None:  # pragma: no cover -- defensive, e.g. header/empty cell
+            return
+        widget = self._panel._stage_row_widgets.get(self._pressed_stage_id)
+        item = self.currentItem()
+        drag = QDrag(self)
+        # Qt's own DnD acceptance bookkeeping still wants real mimeData
+        # on the QDrag -- its CONTENT is never actually read for the
+        # internal-reorder case (dropEvent below identifies the source
+        # via self._pressed_stage_id instead), so an empty list here if
+        # there's genuinely no current item is a harmless fallback, not
+        # a real gap.
+        drag.setMimeData(self.model().mimeData([self.indexFromItem(item)] if item is not None else []))
+
+        opacity_effect = None
+        if widget is not None:
+            pixmap = widget.grab()
+            if not pixmap.isNull():
+                lifted = QPixmap(pixmap.size())
+                lifted.fill(Qt.GlobalColor.transparent)
+                painter = QPainter(lifted)
+                painter.setOpacity(0.85)
+                painter.drawPixmap(0, 0, pixmap)
+                painter.end()
+                drag.setPixmap(lifted)
+                drag.setHotSpot(QPoint(pixmap.width() // 2, pixmap.height() // 2))
+            opacity_effect = QGraphicsOpacityEffect(widget)
+            opacity_effect.setOpacity(0.35)
+            widget.setGraphicsEffect(opacity_effect)
+
+        try:
+            drag.exec(supportedActions, Qt.DropAction.CopyAction)
+        finally:
+            if widget is not None and shiboken6.isValid(widget):
+                widget.setGraphicsEffect(None)
+
     def _accepts(self, event):
         return event.mimeData().hasFormat(LUT_PATH_MIME) or event.source() is self
 
@@ -601,19 +1103,27 @@ class _StackListWidget(QListWidget):
     def dragMoveEvent(self, event):
         if self._accepts(event):
             event.acceptProposedAction()
-            self._set_drop_indicator_row(self._drop_row(event.position().toPoint()))
+            pos = event.position().toPoint()
+            self._set_drop_indicator(self._drop_row(pos), self._drop_branch(pos))
         else:
             event.ignore()
-            self._set_drop_indicator_row(None)
+            self._set_drop_indicator(None, None)
 
     def dragLeaveEvent(self, event):
-        self._set_drop_indicator_row(None)
+        self._set_drop_indicator(None, None)
         super().dragLeaveEvent(event)
 
-    def _set_drop_indicator_row(self, row):
-        if row == self._drop_indicator_row:
+    def _set_drop_indicator(self, row, branch_guess):
+        """`branch_guess`: the raw, purely x-position-derived side from
+        _drop_branch (always "a" or "b" while dragging, meaningless for
+        an ordinary row) -- paintEvent below is what actually decides
+        whether the indicator line should span the whole row (ordinary)
+        or just that one column (fork-interior), by checking the target
+        row's own _RowTargets via self._panel."""
+        if row == self._drop_indicator_row and branch_guess == self._drop_indicator_branch:
             return
         self._drop_indicator_row = row
+        self._drop_indicator_branch = branch_guess
         self.viewport().update()
 
     def _drop_row(self, pos):
@@ -625,23 +1135,36 @@ class _StackListWidget(QListWidget):
             row += 1
         return row
 
+    def _drop_branch(self, pos):
+        """Which column a drop position falls in -- "a" (left) or "b"
+        (right) -- always resolvable regardless of row, split at the
+        exact horizontal midpoint of the viewport (both branch columns
+        are laid out stretch=1 in _ForkBranchGridRowWidget, so the
+        visual split always sits there too). StackPanel's drop-target
+        resolver (see _RowTargets) only actually consults this for a
+        fork-interior row; it's harmless to compute unconditionally for
+        every drop, ordinary rows just ignore it."""
+        return "a" if pos.x() < self.viewport().width() / 2 else "b"
+
     def dropEvent(self, event):
-        self._set_drop_indicator_row(None)
+        self._set_drop_indicator(None, None)
         mime = event.mimeData()
-        target_row = self._drop_row(event.position().toPoint())
+        pos = event.position().toPoint()
+        target_row = self._drop_row(pos)
+        branch = self._drop_branch(pos)
         if mime.hasFormat(LUT_PATH_MIME):
             path = bytes(mime.data(LUT_PATH_MIME)).decode("utf-8")
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
-            self._panel._on_lut_path_dropped(path, target_row)
+            self._panel._on_lut_path_dropped(path, target_row, branch)
         elif event.source() is self:
-            source_row = self.currentRow()
+            source_stage_id = self._pressed_stage_id
             # CopyAction here too (see __init__) -- this IS a move at the
             # data level, just one _on_stage_reordered/_refresh_list does
             # itself rather than handing back to Qt's own row-removal.
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
-            self._panel._on_stage_reordered(source_row, target_row)
+            self._panel._on_stage_reordered(source_stage_id, target_row, branch)
         else:
             event.ignore()
 
@@ -649,11 +1172,20 @@ class _StackListWidget(QListWidget):
         """Draws the drag-to-reorder drop-position indicator (see
         __init__'s comment on why this is hand-painted rather than Qt's
         built-in setDropIndicatorShown mechanism) as a highlighted line
-        spanning the row list's width, positioned exactly at the boundary
-        _drop_row() would actually insert at -- above the row under the
-        cursor, or below it, matching that method's own upper/lower-half
-        split. Drawn AFTER super().paintEvent() so it sits on top of the
-        already-painted rows/cards, not underneath them."""
+        positioned exactly at the boundary _drop_row() would actually
+        insert at -- above the row under the cursor, or below it,
+        matching that method's own upper/lower-half split. Drawn AFTER
+        super().paintEvent() so it sits on top of the already-painted
+        rows/cards, not underneath them.
+
+        Per Tom: for a fork-interior target row, the line should only
+        span the ONE column the drop will actually land in, not the
+        full row width -- a full-width line there would suggest the
+        drop affects both branches, when it only ever affects one. Reads
+        the target row's own _RowTargets (via self._panel -- see
+        _refresh_list/_RowTargets) to tell an ordinary row (full width)
+        apart from a fork-interior one (half width, whichever half
+        _drop_indicator_branch says)."""
         super().paintEvent(event)
         if self._drop_indicator_row is None:
             return
@@ -664,12 +1196,23 @@ class _StackListWidget(QListWidget):
             y = self.visualItemRect(self.item(self.count() - 1)).bottom()
         else:
             y = 0
+        x_start, x_end = 0, viewport.width()
+        if self._panel is not None:
+            row_targets = self._panel._row_insert_index
+            if 0 <= self._drop_indicator_row < len(row_targets):
+                targets = row_targets[self._drop_indicator_row]
+                if targets.ordinary is None:  # fork-interior -- span just the one column
+                    half = viewport.width() / 2
+                    if self._drop_indicator_branch == "b":
+                        x_start, x_end = half, viewport.width()
+                    else:
+                        x_start, x_end = 0, half
         painter = QPainter(viewport)
         try:
             pen = QPen(self.palette().highlight().color())
             pen.setWidth(2)
             painter.setPen(pen)
-            painter.drawLine(0, y, viewport.width(), y)
+            painter.drawLine(int(x_start), y, int(x_end), y)
         finally:
             painter.end()
 
@@ -735,6 +1278,15 @@ class StackPanel(QObject):
         self._selected_stage_id = None
         self._row_stage_ids = []
         self._row_insert_index = []
+        # stage_id -> _StageRowWidget, rebuilt every _refresh_list() call
+        # (see _add_stage_row_item/_flush_fork_grid) -- lets a live param
+        # edit (_update_row_content, called by every _apply_*_live
+        # handler and _on_row_enabled_clicked) update just the one row a
+        # change actually touched instead of tearing down and rebuilding
+        # every card via _refresh_list(), which used to run on every
+        # single tick of a slider/spinbox drag -- see _StageRowWidget's
+        # own docstring, "SNAPPIER/MORE INTERACTIVE PASS."
+        self._stage_row_widgets = {}
         self.stack = st.Stack()
         # Reused across repeated get_baked_lut() calls (MainWindow's
         # _on_stack_changed calls it on every single edit) so nudging one
@@ -768,19 +1320,13 @@ class StackPanel(QObject):
         hover_inspector.register(self.list_widget, self._hover_info_for_item)
 
         # No more standalone "Enabled" checkbox here -- each row's own
-        # enabled indicator (the check/cross button) is directly clickable
-        # now, see _StageRowWidget / _on_row_enabled_clicked.
-        selection_row = QHBoxLayout()
-        selection_row.addWidget(QLabel("Opacity:"))
-        self.opacity_spin = QSpinBox()
-        self.opacity_spin.setRange(0, 100)
-        self.opacity_spin.setValue(100)
-        self.opacity_spin.setSuffix("%")
-        enable_drag_to_scrub(self.opacity_spin)
-        self.opacity_spin.valueChanged.connect(self._on_opacity_changed)
-        selection_row.addWidget(self.opacity_spin)
-        selection_row.addStretch(1)
-        layout.addLayout(selection_row)
+        # enabled indicator (a filled/hollow dot) is directly clickable
+        # now, see _StageRowWidget / _on_row_enabled_clicked. Likewise no
+        # more standalone "Opacity:" control here either (removed per
+        # Tom, 2026-08-12 round two -- confusing, disconnected from the
+        # row it actually affected) -- each row now has its OWN opacity
+        # spin box built into the card, see _StageRowWidget.opacity_spin
+        # / StackPanel._on_row_opacity_changed.
 
         # No more Move Up/Move Down/Remove button row (per Tom) --
         # reordering is drag-and-drop (see _StackListWidget), removing is
@@ -854,6 +1400,11 @@ class StackPanel(QObject):
         if not aces_drt.OCIO_AVAILABLE:
             aces_drt_action.setToolTip(
                 f"PyOpenColorIO isn't installed: {aces_drt.OCIO_IMPORT_ERROR}")
+        custom_drt_action = menu.addAction("Add CAMier DRT", self._on_add_custom_drt_clicked)
+        custom_drt_action.setEnabled(aces_drt.OCIO_AVAILABLE)
+        if not aces_drt.OCIO_AVAILABLE:
+            custom_drt_action.setToolTip(
+                f"PyOpenColorIO isn't installed: {aces_drt.OCIO_IMPORT_ERROR}")
         cdl_action = menu.addAction("Add ASC CDL", self._on_add_cdl_clicked)
         cdl_action.setEnabled(cdl.OCIO_AVAILABLE)
         if not cdl.OCIO_AVAILABLE:
@@ -864,6 +1415,26 @@ class StackPanel(QObject):
         if not csc.OCIO_AVAILABLE:
             csc_action.setToolTip(
                 f"PyOpenColorIO isn't installed: {csc.OCIO_IMPORT_ERROR}")
+        gpr_action = menu.addAction("Add Grading Primary", self._on_add_grading_primary_clicked)
+        gpr_action.setEnabled(gpr.OCIO_AVAILABLE)
+        if not gpr.OCIO_AVAILABLE:
+            gpr_action.setToolTip(
+                f"PyOpenColorIO isn't installed: {gpr.OCIO_IMPORT_ERROR}")
+        ec_action = menu.addAction("Add Exposure/Contrast", self._on_add_exposure_contrast_clicked)
+        ec_action.setEnabled(ec.OCIO_AVAILABLE)
+        if not ec.OCIO_AVAILABLE:
+            ec_action.setToolTip(
+                f"PyOpenColorIO isn't installed: {ec.OCIO_IMPORT_ERROR}")
+        gtn_action = menu.addAction("Add Grading Tone", self._on_add_grading_tone_clicked)
+        gtn_action.setEnabled(gtn.OCIO_AVAILABLE)
+        if not gtn.OCIO_AVAILABLE:
+            gtn_action.setToolTip(
+                f"PyOpenColorIO isn't installed: {gtn.OCIO_IMPORT_ERROR}")
+        grc_action = menu.addAction("Add Grading RGB Curve", self._on_add_grading_rgb_curve_clicked)
+        grc_action.setEnabled(grc.OCIO_AVAILABLE)
+        if not grc.OCIO_AVAILABLE:
+            grc_action.setToolTip(
+                f"PyOpenColorIO isn't installed: {grc.OCIO_IMPORT_ERROR}")
         menu.addSeparator()
         fork_action = menu.addAction("Add Fork (Split + Merge)", self._on_add_fork_clicked)
         fork_action.setToolTip(
@@ -885,8 +1456,13 @@ class StackPanel(QObject):
         self._build_lut_inspector()
         self._build_printer_lights_inspector()
         self._build_aces_drt_inspector()
+        self._build_custom_drt_inspector()
         self._build_cdl_inspector()
         self._build_colorspace_inspector()
+        self._build_grading_primary_inspector()
+        self._build_exposure_contrast_inspector()
+        self._build_grading_tone_inspector()
+        self._build_grading_rgb_curve_inspector()
         self._build_fork_split_inspector()
         self._build_fork_merge_inspector()
         layout.addWidget(self.inspector_stack, stretch=1)
@@ -1144,10 +1720,13 @@ class StackPanel(QObject):
           row (usually one, empty for a non-selectable header/spacer row,
           two would only happen if a future change put both branches'
           cells under one selectable id, which isn't the case here).
-        - self._row_insert_index[row] -- the self.stack.stages index a
-          NEW stage should be inserted at if something is dropped at that
-          row's position (see _on_stage_reordered/_on_lut_path_dropped).
-          Has one extra trailing entry for "dropped past the last row."
+        - self._row_insert_index[row] -- a _RowTargets (see that class's
+          own docstring) saying where a stage dropped at this row's
+          position should land -- an ordinary self.stack.stages index
+          for a ordinary/non-fork row, or a branch_a/branch_b pair for a
+          fork-interior row (see _on_stage_reordered/_on_lut_path_
+          dropped). Has one extra trailing entry for "dropped past the
+          last row."
 
         `keep_selection`: a stage ID to select after rebuilding (used
         when a mutation just created/moved a specific stage the caller
@@ -1163,6 +1742,7 @@ class StackPanel(QObject):
         self.list_widget.clear()
         self._row_stage_ids = []
         self._row_insert_index = []
+        self._stage_row_widgets = {}
         stage_id_to_row = {}
 
         stages = self.stack.stages
@@ -1184,23 +1764,33 @@ class StackPanel(QObject):
                         i += 1
                     else:
                         # An untagged stage sitting inside an open region
-                        # -- normally only transient (right after being
-                        # added, before its branch is picked) or a sign
-                        # the structure is currently invalid (see
-                        # set_bake_error). Flush whatever's been
-                        # buffered so far as its own grid block, THEN
-                        # render this one as an ordinary full-width row
-                        # (with the wide branch combo, so it's the first
-                        # thing offering an assignment), so it doesn't
+                        # -- should be UNREACHABLE now via drag, add, or
+                        # delete (branch assignment is purely positional,
+                        # see _StackListWidget's own docstring); this is
+                        # a defensive rendering path for a corrupted or
+                        # hand-edited session file (see set_bake_error,
+                        # which is what actually surfaces the problem to
+                        # the user -- _run_stages raises on exactly this
+                        # state). Flush whatever's been buffered so far
+                        # as its own grid block, THEN render this one as
+                        # an ordinary full-width row, so it doesn't
                         # silently vanish into a column it was never
                         # actually placed in.
-                        self._flush_fork_grid(region_a, region_b, stage_id_to_row)
+                        self._flush_fork_grid(region_a, region_b, i, stage_id_to_row)
                         region_a, region_b = [], []
-                        self._add_stage_row_item(s, i, stage_id_to_row, in_fork_region=True)
+                        self._add_stage_row_item(s, i, stage_id_to_row)
                         i += 1
-                self._flush_fork_grid(region_a, region_b, stage_id_to_row)
+                merge_index = i  # the fork_merge's own index, or n if unmatched (already-invalid state)
+                self._flush_fork_grid(region_a, region_b, merge_index, stage_id_to_row)
                 if i < n and stages[i].kind == "fork_merge":
-                    self._add_stage_row_item(stages[i], i, stage_id_to_row)
+                    # Branch-only _RowTargets, not the ordinary default
+                    # _add_stage_row_item would otherwise use -- dropping
+                    # just ABOVE fork_merge is still logically inside the
+                    # fork (append to a branch), not an ordinary
+                    # top-level position; see _RowTargets' own docstring.
+                    self._add_stage_row_item(
+                        stages[i], i, stage_id_to_row,
+                        row_targets=_RowTargets(None, merge_index, merge_index))
                     i += 1
                 # else: fork_split with no fork_merge before the end of
                 # the stack -- already an invalid, bake-erroring state
@@ -1212,8 +1802,11 @@ class StackPanel(QObject):
                 i += 1
 
         # Trailing sentinel -- "dropped past the very last row" means
-        # "append at the end of the stack."
-        self._row_insert_index.append(len(stages))
+        # "append at the end of the stack," always ordinary (the end of
+        # the whole stack can never itself be inside an open fork
+        # region -- an unclosed fork_split is already an invalid state
+        # flagged via set_bake_error, not a legitimate drop target).
+        self._row_insert_index.append(_RowTargets(len(stages), None, None))
 
         if target_id is not None and target_id in stage_id_to_row:
             self._selected_stage_id = target_id
@@ -1232,26 +1825,66 @@ class StackPanel(QObject):
         # row "changed" -- it never got the chance to.
         self._on_selection_changed(self.list_widget.currentRow())
 
-    def _add_stage_row_item(self, stage, stack_index, stage_id_to_row, in_fork_region=False):
+    def _update_row_content(self, stage_id):
+        """Updates just ONE row's card in place (label/opacity/enabled
+        state) via _StageRowWidget.update_content, instead of
+        _refresh_list()'s clear-and-rebuild-everything -- see
+        _stage_row_widgets' own docstring in __init__ and
+        _StageRowWidget's "SNAPPIER/MORE INTERACTIVE PASS" docstring.
+        Every _apply_*_live handler below (CDL, ACES DRT, Color Space,
+        Grading Primary, Exposure/Contrast, Grading Tone, Grading RGB
+        Curve, Fork Merge's blend) and _on_row_enabled_clicked call this
+        instead of self._refresh_list() now, since none of them change
+        a stage's POSITION or its fork-region membership -- only its
+        label text, opacity sub-label, or enabled glyph, none of which
+        need the list rebuilt out from under every other row too.
+
+        Falls back to a full _refresh_list() if `stage_id` isn't in
+        _stage_row_widgets (shouldn't happen in practice -- would mean a
+        live-apply handler fired for a stage that was never actually
+        rendered -- but a stale/missing row is exactly the kind of thing
+        worth recovering from safely rather than silently no-opping)."""
+        try:
+            stage = self.stack.find_stage(stage_id)
+        except KeyError:
+            return
+        widget = self._stage_row_widgets.get(stage_id)
+        if widget is None:  # pragma: no cover -- defensive, see docstring
+            self._refresh_list()
+            return
+        widget.update_content(stage)
+
+    def _add_stage_row_item(self, stage, stack_index, stage_id_to_row, row_targets=None):
         """Appends one full-width QListWidgetItem for `stage` (at
         self.stack.stages[stack_index]) -- used for every row that isn't
-        part of a fork region's two-column table. Records this row's
-        position in both lookup tables _refresh_list builds; see its
-        docstring."""
+        part of a fork region's two-column table (this now INCLUDES
+        fork_split/fork_merge themselves -- both are ordinary full-width
+        cards, just with special meaning to _run_stages). Records this
+        row's position in both lookup tables _refresh_list builds; see
+        its docstring.
+
+        `row_targets`: the _RowTargets this row should use for drop
+        resolution -- defaults to `_RowTargets(stack_index, None, None)`
+        (an ordinary, non-fork-interior drop target), which is correct
+        for every caller except fork_merge's own row: dropping just
+        ABOVE fork_merge is still logically inside the fork (append to
+        the end of whichever branch), not an ordinary top-level position,
+        so _refresh_list passes an explicit branch-only override for
+        that one row. See _RowTargets' own docstring."""
         item = QListWidgetItem()
         row_widget = _StageRowWidget(
             stage, self._on_row_clicked, self._on_row_enabled_clicked,
-            self._on_row_delete_clicked, on_branch_changed=self._on_row_branch_changed,
-            in_fork_region=in_fork_region, display_number=stack_index + 1)
+            self._on_row_delete_clicked, on_opacity_changed=self._on_row_opacity_changed)
         item.setSizeHint(row_widget.sizeHint())
         self.list_widget.addItem(item)
         self.list_widget.setItemWidget(item, row_widget)
         row = self.list_widget.count() - 1
         self._row_stage_ids.append([stage.id])
-        self._row_insert_index.append(stack_index)
+        self._row_insert_index.append(row_targets or _RowTargets(stack_index, None, None))
         stage_id_to_row[stage.id] = row
+        self._stage_row_widgets[stage.id] = row_widget
 
-    def _flush_fork_grid(self, region_a, region_b, stage_id_to_row):
+    def _flush_fork_grid(self, region_a, region_b, merge_index, stage_id_to_row):
         """Appends one _ForkBranchGridRowWidget QListWidgetItem per paired
         position across region_a/region_b -- each a list of
         (stack_index, Stage) tuples already in stack order for that
@@ -1264,49 +1897,63 @@ class StackPanel(QObject):
         "can't checkerboard" (per Tom) falls straight out of zip_longest's
         own behavior rather than needing a separate check here.
 
-        No-op if both branches are empty (nothing buffered yet, or an
-        untagged stage immediately followed fork_split with nothing
-        tagged before it)."""
-        if not region_a and not region_b:
-            return
-        self._add_fork_grid_header()
-        for a_entry, b_entry in zip_longest(region_a, region_b):
+        ALWAYS renders the header plus at least one paired row now, even
+        when BOTH branches are empty (e.g. right after "Add Fork") -- per
+        Tom, a fork region needs a real, always-droppable landing zone
+        immediately, not just header text with nothing to drop onto.
+
+        Every cell is a genuine, fully draggable _StageRowWidget now (see
+        _StackListWidget's own docstring on resolving drag source/target
+        by stage id and column rather than QListWidget row) or an inert
+        _EmptyBranchCell. `merge_index` -- this region's fork_merge's own
+        self.stack.stages index -- is what a PADDED (empty) side's
+        _RowTargets branch entry resolves to: "append to the end of that
+        branch," always well-defined even when the branch is currently
+        empty, which is exactly what makes every interior row a valid
+        drop target for BOTH columns, never landing "in neither branch"
+        (see _RowTargets' own docstring)."""
+        first_a = region_a[0][0] if region_a else merge_index
+        first_b = region_b[0][0] if region_b else merge_index
+        self._add_fork_grid_header(first_a, first_b)
+        pairs = list(zip_longest(region_a, region_b)) or [(None, None)]
+        for a_entry, b_entry in pairs:
             a_index, a_stage = a_entry if a_entry else (None, None)
             b_index, b_stage = b_entry if b_entry else (None, None)
             item = QListWidgetItem()
-            # Not draggable -- a cell inside this table isn't a
-            # reorderable top-level row in this round (see
-            # _StackListWidget's docstring); moving a stage between
-            # branches or out of the fork is the branch combo's job, see
-            # _StageRowWidget(compact=True).
-            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
             row_widget = _ForkBranchGridRowWidget(
                 a_stage, b_stage, self._on_row_clicked, self._on_row_enabled_clicked,
-                self._on_row_delete_clicked, self._on_row_branch_changed)
+                self._on_row_delete_clicked, self._on_row_opacity_changed)
             item.setSizeHint(row_widget.sizeHint())
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, row_widget)
             row = self.list_widget.count() - 1
             ids_here = [s.id for s in (a_stage, b_stage) if s is not None]
             self._row_stage_ids.append(ids_here)
-            # "Insert before this row" means "insert before whichever of
-            # this row's real stages comes first in the actual flat
-            # stack" -- the two branches are interleaved in stack order,
-            # so this is well-defined even when only one side has a
-            # stage at this position.
-            indices_here = [idx for idx in (a_index, b_index) if idx is not None]
-            self._row_insert_index.append(min(indices_here))
+            self._row_insert_index.append(_RowTargets(
+                None,
+                a_index if a_index is not None else merge_index,
+                b_index if b_index is not None else merge_index))
             if a_stage is not None:
                 stage_id_to_row[a_stage.id] = row
+                self._stage_row_widgets[a_stage.id] = row_widget.left_widget
             if b_stage is not None:
                 stage_id_to_row[b_stage.id] = row
+                self._stage_row_widgets[b_stage.id] = row_widget.right_widget
 
-    def _add_fork_grid_header(self):
+    def _add_fork_grid_header(self, first_a_index, first_b_index):
         """A lightweight "Branch A | Branch B" column header, added once
         right before the first paired row of a fork region's table --
         so which side is which doesn't rely purely on remembering
         left/right (see _flush_fork_grid). Not selectable (NoItemFlags)
-        so keyboard Up/Down skips over it, same as a real spacer would."""
+        so keyboard Up/Down skips over it, same as a real spacer would --
+        but it's still a genuine drop target: dropping on it means
+        "insert as the very first thing in that branch," same as
+        dropping on the upper half of the first paired row below it
+        would, which is why `first_a_index`/`first_b_index` (each
+        already resolved by the caller to either the first stage's own
+        index, or the region's fork_merge index if that branch is
+        currently empty) are exactly what the first grid row itself
+        would use -- see _RowTargets' own docstring."""
         item = QListWidgetItem()
         item.setFlags(Qt.ItemFlag.NoItemFlags)
         header = QWidget()
@@ -1321,10 +1968,7 @@ class StackPanel(QObject):
         self.list_widget.addItem(item)
         self.list_widget.setItemWidget(item, header)
         self._row_stage_ids.append([])
-        # A drop landing on the header behaves the same as landing right
-        # at the top of the table -- reuse whichever insert index the
-        # previous row (fork_split itself) already recorded.
-        self._row_insert_index.append(self._row_insert_index[-1] if self._row_insert_index else 0)
+        self._row_insert_index.append(_RowTargets(None, first_a_index, first_b_index))
 
     def _selected_stage(self):
         if self._selected_stage_id is None:
@@ -1353,15 +1997,6 @@ class StackPanel(QObject):
         else:
             self._selected_stage_id = None
 
-        stage = self._selected_stage()
-        self.opacity_spin.blockSignals(True)
-        if stage is None:
-            self.opacity_spin.setValue(100)
-            self.opacity_spin.setEnabled(False)
-        else:
-            self.opacity_spin.setEnabled(True)
-            self.opacity_spin.setValue(round(stage.opacity * 100))
-        self.opacity_spin.blockSignals(False)
         self._update_row_selection_styling()
         self._refresh_inspector()
 
@@ -1388,7 +2023,19 @@ class StackPanel(QObject):
                 row = i
                 break
         if row is not None:
-            self.list_widget.setCurrentRow(row)
+            if self.list_widget.currentRow() == row:
+                # A fork-grid row holds BOTH branches' cells under the
+                # same QListWidget row index -- clicking branch B while
+                # branch A (same row) is selected leaves currentRow()
+                # unchanged, so Qt swallows setCurrentRow() below as a
+                # no-op and currentRowChanged never fires, leaving
+                # _on_selection_changed (and the styling/inspector
+                # refresh it drives) stale even though
+                # self._selected_stage_id above already moved to B.
+                # Drive it directly in that case.
+                self._on_selection_changed(row)
+            else:
+                self.list_widget.setCurrentRow(row)
         else:  # pragma: no cover -- defensive, shouldn't happen
             self._on_selection_changed(-1)
 
@@ -1398,51 +2045,59 @@ class StackPanel(QObject):
         except KeyError:
             return
         stage.enabled = not stage.enabled
-        self._refresh_list()
+        # Targeted update, not _refresh_list() -- toggling enabled never
+        # changes a stage's position or fork-region membership, so there's
+        # nothing structural for a full rebuild to catch; see
+        # _update_row_content's own docstring. Also lets the toggle's own
+        # dim animation actually play (a fresh widget from _refresh_list()
+        # would just appear already-dimmed, nothing to ease from).
+        self._update_row_content(stage_id)
         self._emit_changed()
 
-    def _on_row_branch_changed(self, stage_id, branch):
-        """A stage row's own Branch A/B combo was changed (see
-        _StageRowWidget) -- writes straight to Stage.branch the same way
-        stack.py's own tests tag a branch onto a Stage (plain attribute
-        assignment, not one of the make_xxx_stage constructors -- branch
-        is an orthogonal tag any stage kind can carry, see stack.py's
-        Stage docstring). `branch` is None ("No branch"/"—") or "a"/"b"
-        -- exactly the combo's own item data, so no translation needed
-        here."""
-        try:
-            stage = self.stack.find_stage(stage_id)
-        except KeyError:
-            return
-        stage.branch = branch
-        self._refresh_list()
-        self._emit_changed()
+    def _resolve_drop_target(self, target_row, branch_guess):
+        """Turns a raw (target_row, branch_guess) pair from
+        _StackListWidget -- target_row a QListWidget row POSITION (see
+        _drop_row), branch_guess a purely x-position-derived "a"/"b" (see
+        _drop_branch, always one or the other regardless of whether the
+        row is actually fork-interior) -- into the two things a caller
+        actually needs: (insert_index, branch), where `branch` is the
+        REAL answer (None for an ordinary row, ignoring branch_guess
+        entirely; "a"/"b" for a fork-interior row, picking branch_guess's
+        side).
 
-    def _on_stage_reordered(self, source_row, target_row):
-        """source_row/target_row are QListWidget row POSITIONS (from
-        _StackListWidget._drop_row), not self.stack.stages indices -- see
-        _refresh_list's docstring on why those stopped being the same
-        thing once a fork region's rows could represent two stages (or
-        zero) at once. self._row_stage_ids/_row_insert_index (rebuilt
-        every _refresh_list call) translate between the two."""
-        if source_row < 0 or source_row >= len(self._row_stage_ids):
-            return
-        source_ids = self._row_stage_ids[source_row]
-        if len(source_ids) != 1:
-            # Not a single ordinary/reorderable row (a fork-grid cell
-            # pair, or a non-selectable header) -- shouldn't be
-            # reachable anyway since those rows have drag disabled (see
-            # _flush_fork_grid), but bail out safely rather than guess.
+        self._row_insert_index (rebuilt every _refresh_list call, see
+        that method's own docstring and _RowTargets) is what makes this
+        possible without inspecting stack structure directly here --
+        each row already recorded, at render time, whichever of
+        (ordinary, branch_a, branch_b) actually applies to it. Falls
+        back to "append at the very end, ordinary" for an out-of-range
+        row (dropped below the last real row)."""
+        if 0 <= target_row < len(self._row_insert_index):
+            targets = self._row_insert_index[target_row]
+        else:
+            targets = _RowTargets(len(self.stack.stages), None, None)
+        if targets.ordinary is not None:
+            return targets.ordinary, None
+        if branch_guess == "a":
+            return targets.branch_a, "a"
+        return targets.branch_b, "b"
+
+    def _on_stage_reordered(self, source_stage_id, target_row, branch_guess):
+        """source_stage_id is the STAGE that was pressed (see
+        _StackListWidget._pressed_stage_id/_stage_id_at) -- not a
+        QListWidget row, since a fork-grid row can hold two independently
+        draggable stages. target_row/branch_guess resolve via
+        _resolve_drop_target into an actual self.stack.stages index and
+        the real target branch (None outside any fork, "a"/"b" inside
+        one)."""
+        if source_stage_id is None:
             return
         try:
-            stage = self.stack.find_stage(source_ids[0])
+            stage = self.stack.find_stage(source_stage_id)
         except KeyError:
             return
         source_index = self.stack.stages.index(stage)
-        if 0 <= target_row < len(self._row_insert_index):
-            target_index = self._row_insert_index[target_row]
-        else:
-            target_index = len(self.stack.stages)
+        target_index, branch = self._resolve_drop_target(target_row, branch_guess)
         # target_index is where the stage should land if the list were
         # rebuilt fresh; pulling it out of its OWN current spot first
         # shifts everything after that spot down by one, so any target
@@ -1450,30 +2105,76 @@ class StackPanel(QObject):
         # always needed.
         dest = target_index - 1 if target_index > source_index else target_index
         dest = max(0, min(dest, len(self.stack.stages) - 1))
-        if dest == source_index:
+        # Position AND branch both have to be unchanged for this to be a
+        # true no-op -- a same-index cross-branch move (e.g. the last
+        # slot of a short Branch A dropped into Branch B, which can
+        # numerically resolve to the same index) must still apply.
+        if dest == source_index and branch == stage.branch:
             return
         self.stack.move_stage(stage.id, dest)
+        # Unconditional, not just "if branch is not None" -- this is what
+        # clears a stray tag when a stage is dragged OUT of a fork region
+        # back to an ordinary position (previously, only the now-removed
+        # branch combo's "No branch" option could do that at all).
+        stage.branch = branch
         self._refresh_list(keep_selection=stage.id)
         self._emit_changed()
 
-    def _on_lut_path_dropped(self, path, target_row):
+    def _on_lut_path_dropped(self, path, target_row, branch_guess):
         """A LUT file was dragged in from the Browser panel and dropped at
-        `target_row` (a QListWidget row position -- see
-        _on_stage_reordered's docstring on why that needs translating,
-        via _row_insert_index, into an actual self.stack.stages index)."""
-        if 0 <= target_row < len(self._row_insert_index):
-            insert_index = self._row_insert_index[target_row]
-        else:
-            insert_index = None
-        self.add_lut_stage_from_path(path, index=insert_index)
+        `target_row`/`branch_guess` -- see _resolve_drop_target."""
+        insert_index, branch = self._resolve_drop_target(target_row, branch_guess)
+        self.add_lut_stage_from_path(path, index=insert_index, branch=branch)
 
-    def _on_opacity_changed(self, value):
-        stage = self._selected_stage()
-        if stage is None:
+    def _on_row_opacity_changed(self, stage_id, value):
+        """`_StageRowWidget.opacity_spin`'s own valueChanged, for THAT
+        row's stage specifically -- not "whichever stage happens to be
+        selected" (see class docstring point 4 on why the old panel-level
+        opacity control worked that way and why it moved). Targeted
+        update, not _refresh_list() -- this spin has drag-to-scrub
+        enabled, so it fires on every tick of a drag same as the various
+        _apply_*_live handlers; see _update_row_content's own docstring."""
+        try:
+            stage = self.stack.find_stage(stage_id)
+        except KeyError:
             return
         stage.opacity = value / 100.0
-        self._refresh_list()
+        self._update_row_content(stage_id)
         self._emit_changed()
+
+    def _delete_stage_linked(self, stage_id):
+        """The one place both stage-removal entry points (_on_remove_
+        clicked, _on_row_delete_clicked) actually mutate self.stack --
+        per Tom: fork_split/fork_merge "should also be linked so they
+        delete together." Deleting either half of a matched pair removes
+        BOTH markers as one action, rather than leaving the other half
+        dangling (previously an invalid, bake-erroring stack state until
+        manually cleaned up -- see set_bake_error). Any stage currently
+        assigned to a branch inside that region is NOT deleted -- left
+        exactly where it already sits in self.stack.stages, just with
+        `.branch` cleared back to None, so it becomes an ordinary
+        top-level stage instead of silently losing a user's tuned grade.
+        No reordering: in the common "add a fork, then fill Branch A,
+        then Branch B" workflow, physical list order already reads as
+        "A's stages, then B's" once un-tagged, so this is both the
+        lowest-risk option and, in practice, usually the visually
+        obvious one too.
+
+        Falls back to a plain Stack.remove_stage for an ordinary stage,
+        or a fork marker with no resolvable partner (find_fork_partner
+        returning None -- an already-corrupted/hand-edited stack;
+        removing just the one marker is no worse than today)."""
+        stage = self.stack.find_stage(stage_id)  # KeyError propagates -- caller decides how to handle
+        if stage.kind in ("fork_split", "fork_merge"):
+            partner = st.find_fork_partner(self.stack.stages, stage_id)
+            if partner is not None:
+                split_id, merge_id, interior_ids = partner
+                for interior_id in interior_ids:
+                    self.stack.find_stage(interior_id).branch = None
+                self.stack.remove_stage(split_id)
+                self.stack.remove_stage(merge_id)
+                return
+        self.stack.remove_stage(stage_id)
 
     def _on_remove_clicked(self):
         """Removes whichever stage is currently SELECTED -- the
@@ -1483,7 +2184,7 @@ class StackPanel(QObject):
         stage = self._selected_stage()
         if stage is None:
             return
-        self.stack.remove_stage(stage.id)
+        self._delete_stage_linked(stage.id)
         self._refresh_list()
         self._refresh_inspector()
         self._emit_changed()
@@ -1492,9 +2193,10 @@ class StackPanel(QObject):
         """A stage row's own "x" was clicked -- removes THAT stage
         specifically, whether or not it's the currently selected one
         (same "act on the row you clicked" convention as
-        _on_row_enabled_clicked)."""
+        _on_row_enabled_clicked). fork_split/fork_merge's "x" removes
+        BOTH markers together -- see _delete_stage_linked."""
         try:
-            self.stack.remove_stage(stage_id)
+            self._delete_stage_linked(stage_id)
         except KeyError:
             return
         self._refresh_list()
@@ -1510,12 +2212,14 @@ class StackPanel(QObject):
     # "the current LUT" directly, so there's no need for a second,
     # duplicate way to do the same thing inside the Stack panel itself.
 
-    def add_lut_stage_from_path(self, path, index=None):
+    def add_lut_stage_from_path(self, path, index=None, branch=_UNSPECIFIED_BRANCH):
         """Public entry point -- used by MainWindow to route Browser's
         file_selected signal here, and by _on_lut_path_dropped for a
         drag-and-drop from the Browser panel's file list (which supplies
-        `index`, the drop position; the plain file_selected/double-click
-        path leaves it None and appends at the end, same as always)."""
+        `index`/`branch`, the drop position already resolved; the plain
+        file_selected/double-click path leaves both at their defaults --
+        append at the end, auto-assign a branch if that lands inside an
+        open fork region, same as always)."""
         try:
             lut = load_lut_any_format(path)
         except Exception as e:  # noqa: BLE001 -- surface any loader failure to the user
@@ -1529,7 +2233,7 @@ class StackPanel(QObject):
         # LUT is just "reload this path." See session_io.py's docstring.
         stage.params["source_kind"] = "file"
         stage.params["source_path"] = str(path)
-        self._add_stage(stage, index=index)
+        self._add_stage(stage, index=index, branch=branch)
 
     def add_identity_stage(self, size, index=None):
         """Public entry point -- used by MainWindow to route Browser's
@@ -1572,6 +2276,22 @@ class StackPanel(QObject):
         stage = st.make_aces_drt_stage("ACES2065-1", display, view, config_name=config_name)
         self._add_stage(stage)
 
+    def _on_add_custom_drt_clicked(self):
+        if not aces_drt.OCIO_AVAILABLE:
+            return
+        # "ACEScct", not aces_drt's own "ACES2065-1" default -- matches
+        # DEFAULT_SAMPLE_IMAGE_SOURCE_COLOURSPACE (app_logic.py), the
+        # declared encoding of the bundled default sample image every
+        # CAMier render in the design/validation pass was checked
+        # against. Getting this wrong doesn't error -- it just silently
+        # reinterprets log-encoded values as if they were already linear,
+        # producing a real but wrong-looking result (confirmed: mean
+        # output shifts from 0.40 to 0.59 on the bundled image). Still
+        # just a starting point -- change the Working Color Space combo
+        # to match whatever's actually loaded.
+        stage = st.make_custom_drt_stage("ACEScct")
+        self._add_stage(stage)
+
     def _on_add_cdl_clicked(self):
         if not cdl.OCIO_AVAILABLE:
             return
@@ -1592,16 +2312,47 @@ class StackPanel(QObject):
         stage = st.make_colorspace_stage(default_space, default_space, config_name=config_name)
         self._add_stage(stage)
 
+    def _on_add_grading_primary_clicked(self):
+        if not gpr.OCIO_AVAILABLE:
+            return
+        stage = st.make_grading_primary_stage()
+        stage.label = _format_grading_primary_label(stage.params)
+        self._add_stage(stage)
+
+    def _on_add_exposure_contrast_clicked(self):
+        if not ec.OCIO_AVAILABLE:
+            return
+        stage = st.make_exposure_contrast_stage()
+        stage.label = _format_exposure_contrast_label(stage.params)
+        self._add_stage(stage)
+
+    def _on_add_grading_tone_clicked(self):
+        if not gtn.OCIO_AVAILABLE:
+            return
+        stage = st.make_grading_tone_stage()
+        stage.label = _format_grading_tone_label(stage.params)
+        self._add_stage(stage)
+
+    def _on_add_grading_rgb_curve_clicked(self):
+        if not grc.OCIO_AVAILABLE:
+            return
+        stage = st.make_grading_rgb_curve_stage()
+        stage.label = _format_grading_rgb_curve_label(stage.params)
+        self._add_stage(stage)
+
     def _on_add_fork_clicked(self):
         """Adds a fork_split/fork_merge pair, appended at the end as
         ordinary flat stages (per Tom's Stack Forking spec -- see
         stack.py's docstring, STACK FORKING). Nothing goes between them
-        yet; add any stage kind the normal way, then use that row's own
-        Branch A/B combo (see _StageRowWidget/_on_row_branch_changed) to
-        place it inside this region. Both are added in one go (not via
-        _add_stage twice, which would each emit/refresh separately) so
-        the list only rebuilds once and selection lands on the new Fork
-        Split row."""
+        yet; add any stage kind the normal way, then DRAG it into either
+        column of the two-column table that immediately appears between
+        the two markers (see _flush_fork_grid -- a fork region always
+        renders a real, droppable landing zone now, even empty) to place
+        it inside this region -- which column you drop it in IS its
+        branch, there's no separate control for it. Both markers are
+        added in one go (not via _add_stage twice, which would each
+        emit/refresh separately) so the list only rebuilds once and
+        selection lands on the new Fork Split row."""
         split = st.make_fork_split_stage()
         merge = st.make_fork_merge_stage()
         merge.label = _format_fork_merge_label(merge.params)
@@ -1610,7 +2361,7 @@ class StackPanel(QObject):
         self._refresh_list(keep_selection=split.id)
         self._emit_changed()
 
-    def _add_stage(self, stage, index=None):
+    def _add_stage(self, stage, index=None, branch=_UNSPECIFIED_BRANCH):
         """The one place every "add a stage" entry point in this class
         (Add Printer Lights/ACES DRT/CDL/Color Space, LUT file/Identity/
         Library-entry, CDL Library apply-as-new-stage) funnels through.
@@ -1625,14 +2376,32 @@ class StackPanel(QObject):
         that's the caller deliberately choosing a position, not asking
         for the default.
 
-        Either way, once the final position is known, _maybe_auto_assign_
-        fork_branch checks whether it falls inside an open fork region
-        and, if so, picks Branch A/B for it automatically (see that
-        method) rather than always leaving it an unassigned "stray" tag
-        for the user to resolve by hand via the row's own combo."""
+        `branch` left at its _UNSPECIFIED_BRANCH sentinel default (every
+        caller with no column information -- the "Add Operator" menu)
+        falls through to _maybe_auto_assign_fork_branch, which now ALWAYS
+        picks a real Branch A/B if the final position lands inside an
+        open fork region -- never leaves it unassigned, same "never in
+        neither branch" invariant the drag-and-drop paths already
+        enforce structurally (see that method's own docstring for the
+        priority it uses). A caller that already resolved a real branch
+        value from a drop position (_on_lut_path_dropped, via
+        add_lut_stage_from_path) passes it explicitly instead, bypassing
+        auto-assignment entirely -- including passing `None` explicitly
+        for an ordinary, non-fork drop, which auto-assignment would
+        otherwise never produce on its own (it only ever sets "a"/"b",
+        never clears an existing tag)."""
+        # Captured BEFORE computing index -- _default_insert_index()
+        # derives index from this exact same selection, and
+        # _maybe_auto_assign_fork_branch wants to know what was actually
+        # selected (not just the resulting index) to prefer "continue
+        # this stage's own branch" over a pure empty-side guess.
+        selected_stage = self._selected_stage()
         if index is None:
             index = self._default_insert_index()
-        self._maybe_auto_assign_fork_branch(stage, index)
+        if branch is _UNSPECIFIED_BRANCH:
+            self._maybe_auto_assign_fork_branch(stage, index, selected_stage)
+        else:
+            stage.branch = branch
         self.stack.add_stage(stage, index=index)
         self._refresh_list(keep_selection=stage.id)
         self._emit_changed()
@@ -1648,21 +2417,50 @@ class StackPanel(QObject):
         idx = next((i for i, s in enumerate(self.stack.stages) if s.id == stage.id), None)
         return idx + 1 if idx is not None else None
 
-    def _maybe_auto_assign_fork_branch(self, stage, index):
+    def _maybe_auto_assign_fork_branch(self, stage, index, selected_stage=None):
         """If `index` (a gap position in self.stack.stages BEFORE `stage`
         is inserted) falls strictly inside an open fork_split/fork_merge
-        region, auto-assign `stage`'s branch per Tom: both sides empty ->
-        Branch A; one side already has stages and the other's empty ->
-        the EMPTY side. Both sides already populated is left alone
-        (stage.branch stays None/"stray" until the user picks a side via
-        that row's own combo, same as today) -- there's no reasonable
-        default to prefer when both sides are equally valid. A plain
-        stage being added is never itself a fork_split/fork_merge, so
-        there's no need to guard against that here."""
+        region, auto-assign `stage`'s branch -- NEVER leaves it
+        unassigned (round two, per Tom: adding an operator with the
+        fork_split marker selected, or with a branch-interior stage
+        selected, was landing the new stage orphaned -- "not in either
+        branch" -- whenever the OTHER branch also happened to be
+        non-empty, since the original heuristic only ever looked at
+        emptiness, never at what was actually selected). Priority:
+
+        1. `selected_stage` (whichever stage _default_insert_index
+           actually derived `index` from) is itself already branch-
+           tagged -> continue THAT SAME branch. This is the common case
+           Tom described: a branch-interior stage is selected, "add
+           operator" should obviously join it in the same branch it's
+           spawning under, regardless of whether the other branch also
+           has content.
+        2. Otherwise (selected_stage is fork_split itself, or nothing
+           useful to key off of): one side empty, other populated -> the
+           EMPTY side, same as before.
+        3. Both sides empty -> Branch A, same as before.
+        4. Both sides already populated AND no branch context from
+           selection (e.g. fork_split itself was selected, or nothing
+           was selected at all) -> ALSO Branch A now, closing the one
+           remaining gap where this used to leave a stage orphaned --
+           the user can still drag it into Branch B afterward if that's
+           not what they wanted, same as any other stage.
+
+        A plain stage being added is never itself a fork_split/
+        fork_merge, so there's no need to guard against that here.
+
+        Only reached from _add_stage (the "Add Operator" menu path,
+        which has no column information) -- the drag-and-drop insert
+        paths (_on_stage_reordered/_on_lut_path_dropped) resolve their
+        own branch directly from drop position instead and never call
+        this."""
         if index is None:
             return
         region = st.find_enclosing_fork_region(self.stack.stages, index)
         if region is None:
+            return
+        if selected_stage is not None and selected_stage.branch in ("a", "b"):
+            stage.branch = selected_stage.branch
             return
         split_index, merge_index = region
         counts = st.fork_region_branch_counts(self.stack.stages, split_index, merge_index)
@@ -1670,6 +2468,8 @@ class StackPanel(QObject):
             stage.branch = "a"
         elif counts["b"] == 0:
             stage.branch = "b"
+        else:
+            stage.branch = "a"  # both already populated, no branch context to key off -- never leave it unassigned
 
     # ---- inspector: empty ----------------------------------------------
 
@@ -2030,7 +2830,245 @@ class StackPanel(QObject):
         stage.params["display"] = display
         stage.params["view"] = view
         stage.label = f"ACES DRT ({working_space} -> {display}/{view})"
-        self._refresh_list()
+        self._update_row_content(stage.id)
+        self._emit_changed()
+
+    # ---- inspector: custom_drt ("CAMier") stage ------------------------
+
+    # (attr suffix, label, min, max, step, decimals, default) -- one row
+    # per numeric param, grouped under bold section labels below rather
+    # than a nested QGroupBox each, same convention grading_tone's ranges
+    # use. Order matches custom_drt.py's own pipeline stages.
+    _CDR_TONESCALE_FIELDS = (
+        ("contrast", "Contrast", 0.0, 1.0, 0.01, 3, custom_drt.DEFAULT_CONTRAST),
+        ("headroom", "Headroom (stops)", 0.1, 10.0, 0.1, 2, custom_drt.DEFAULT_HEADROOM),
+        ("blend_percentile", "Highlight blend starts at", 0.5, 0.999, 0.001, 3,
+         custom_drt.DEFAULT_BLEND_PERCENTILE),
+        ("tail_width", "Highlight width (stops)", 0.1, 20.0, 0.1, 2, custom_drt.DEFAULT_TAIL_WIDTH),
+    )
+    _CDR_DESAT_FIELDS = (
+        ("desat_start", "Desaturation starts at", 0.0, 1.0, 0.01, 3, custom_drt.DEFAULT_DESAT_START),
+        ("desat_end", "Fully neutral at", 0.0, 1.0, 0.01, 3, custom_drt.DEFAULT_DESAT_END),
+    )
+    _CDR_GAMUT_FIELDS = (
+        ("identity_zone", "Identity zone", 0.0, 1.0, 0.01, 3, custom_drt.DEFAULT_IDENTITY_ZONE),
+        ("transition_softness", "Transition softness", 0.0, 1.0, 0.01, 3,
+         custom_drt.DEFAULT_TRANSITION_SOFTNESS),
+        ("fullness_r", "Fullness R", 0.0, 1.0, 0.01, 3, custom_drt.DEFAULT_FULLNESS_R),
+        ("fullness_g", "Fullness G", 0.0, 1.0, 0.01, 3, custom_drt.DEFAULT_FULLNESS_G),
+        ("fullness_b", "Fullness B", 0.0, 1.0, 0.01, 3, custom_drt.DEFAULT_FULLNESS_B),
+    )
+
+    def _build_custom_drt_inspector(self):
+        """CAMier -- LUTier's own DRT (see custom_drt.py's docstring for
+        the full four-stage pipeline this panel exposes: tonescale,
+        highlight desaturation, gamut compression). Real-time like
+        Printer Lights (see _build_printer_lights_inspector) -- every
+        combo/spin box change writes straight into the selected stage's
+        params and re-bakes immediately, no Update Stage button."""
+        group = QGroupBox("CAMier DRT Stage")
+        outer = QVBoxLayout(group)
+
+        if not aces_drt.OCIO_AVAILABLE:
+            label = QLabel(
+                "CAMier DRT stages are unavailable -- PyOpenColorIO failed to "
+                f"import:\n{aces_drt.OCIO_IMPORT_ERROR}\n\n"
+                "Install with: pip3 install opencolorio, then restart."
+            )
+            label.setWordWrap(True)
+            outer.addWidget(label)
+            self.inspector_stack.addWidget(group)
+            self._custom_drt_inspector_index = self.inspector_stack.count() - 1
+            return
+
+        space_row = QHBoxLayout()
+        space_row.addWidget(QLabel("Working Color Space:"))
+        self.cdr_space_combo = QComboBox()
+        self.cdr_space_combo.addItems(custom_drt.list_working_colourspaces())
+        self.cdr_space_combo.currentTextChanged.connect(self._on_cdr_field_changed)
+        space_row.addWidget(self.cdr_space_combo, stretch=1)
+        outer.addLayout(space_row)
+
+        self._cdr_spins = {}
+
+        def add_section(title, fields):
+            section_label = QLabel(title)
+            section_label.setStyleSheet("font-weight: 600;")
+            outer.addWidget(section_label)
+            for key, field_label, lo, hi, step, decimals, default in fields:
+                row = QHBoxLayout()
+                row.addWidget(QLabel(field_label))
+                spin = QDoubleSpinBox()
+                spin.setRange(lo, hi)
+                spin.setDecimals(decimals)
+                spin.setSingleStep(step)
+                spin.setValue(default)
+                enable_drag_to_scrub(spin)
+                spin.valueChanged.connect(self._on_cdr_field_changed)
+                row.addWidget(spin, stretch=1)
+                self._cdr_spins[key] = spin
+                outer.addLayout(row)
+
+        add_section("Tonescale", self._CDR_TONESCALE_FIELDS)
+        add_section("Highlight Desaturation", self._CDR_DESAT_FIELDS)
+
+        gamut_label = QLabel("Gamut Compression")
+        gamut_label.setStyleSheet("font-weight: 600;")
+        outer.addWidget(gamut_label)
+        for key, field_label, lo, hi, step, decimals, default in self._CDR_GAMUT_FIELDS:
+            row = QHBoxLayout()
+            row.addWidget(QLabel(field_label))
+            spin = QDoubleSpinBox()
+            spin.setRange(lo, hi)
+            spin.setDecimals(decimals)
+            spin.setSingleStep(step)
+            spin.setValue(default)
+            enable_drag_to_scrub(spin)
+            spin.valueChanged.connect(self._on_cdr_field_changed)
+            row.addWidget(spin, stretch=1)
+            self._cdr_spins[key] = spin
+            outer.addLayout(row)
+
+        # ---- Mastering Display -> Final Target (Tom, 2026-08-13 "good
+        # hygiene" pass -- see custom_drt.py's own docstring). Mastering
+        # Display bundles BOTH the gamut step 4's radial compression
+        # targets AND that display's own reference EOTF (SDR=Rec.709/
+        # gamma 2.4, HDR=P3-D65/PQ, Theatrical=P3-D65/gamma 2.6). Final
+        # Target's own OPTIONS depend on which Mastering Display is
+        # selected -- repopulated by _populate_cdr_final_target_combo
+        # whenever Mastering Display changes. Mastering Brightness only
+        # means anything for an HDR (PQ) master, so it's disabled (not
+        # hidden -- less layout churn on every toggle) otherwise.
+        mastering_label = QLabel("Mastering Display -> Final Target")
+        mastering_label.setStyleSheet("font-weight: 600;")
+        outer.addWidget(mastering_label)
+
+        mastering_display_row = QHBoxLayout()
+        mastering_display_row.addWidget(QLabel("Mastering Display"))
+        self.cdr_mastering_display_combo = QComboBox()
+        self.cdr_mastering_display_combo.addItems(list(custom_drt.MASTERING_DISPLAYS))
+        self.cdr_mastering_display_combo.currentTextChanged.connect(
+            self._on_cdr_mastering_display_changed)
+        mastering_display_row.addWidget(self.cdr_mastering_display_combo, stretch=1)
+        outer.addLayout(mastering_display_row)
+
+        final_target_row = QHBoxLayout()
+        final_target_row.addWidget(QLabel("Final Target"))
+        self.cdr_final_target_combo = QComboBox()
+        self.cdr_final_target_combo.currentTextChanged.connect(self._on_cdr_field_changed)
+        final_target_row.addWidget(self.cdr_final_target_combo, stretch=1)
+        outer.addLayout(final_target_row)
+        self._populate_cdr_final_target_combo(custom_drt.DEFAULT_MASTERING_DISPLAY)
+
+        brightness_row = QHBoxLayout()
+        brightness_row.addWidget(QLabel("Mastering Brightness"))
+        self.cdr_mastering_brightness_combo = QComboBox()
+        self.cdr_mastering_brightness_combo.currentIndexChanged.connect(self._on_cdr_field_changed)
+        brightness_row.addWidget(self.cdr_mastering_brightness_combo, stretch=1)
+        outer.addLayout(brightness_row)
+        self._populate_cdr_mastering_brightness_combo(custom_drt.DEFAULT_MASTERING_DISPLAY)
+        self.cdr_mastering_brightness_combo.setEnabled(False)  # SDR is the default mastering display
+
+        reset_button = QPushButton("Reset to Defaults")
+        reset_button.clicked.connect(self._on_cdr_reset_clicked)
+        outer.addWidget(reset_button)
+
+        self.inspector_stack.addWidget(group)
+        self._custom_drt_inspector_index = self.inspector_stack.count() - 1
+
+    def _populate_cdr_final_target_combo(self, mastering_display, select=None):
+        """Repopulates self.cdr_final_target_combo's OPTIONS from
+        custom_drt.FINAL_TARGETS[mastering_display] -- Final Target's own
+        valid choices genuinely depend on which Mastering Display is
+        selected (Tom: "Final target EOTF and Gamut with options
+        dependent on mastering display"), so this can't be a fixed,
+        pre-populated combo like the other pickers in this inspector.
+        Signals blocked during the clear+repopulate so this never counts
+        as a live edit on its own -- only the resulting selection (which
+        DOES fire currentTextChanged once, same as any other combo pick)
+        does."""
+        select = select or custom_drt.DEFAULT_FINAL_TARGET_FOR_DISPLAY[mastering_display]
+        self.cdr_final_target_combo.blockSignals(True)
+        self.cdr_final_target_combo.clear()
+        self.cdr_final_target_combo.addItems(list(custom_drt.FINAL_TARGETS[mastering_display]))
+        idx = self.cdr_final_target_combo.findText(select)
+        self.cdr_final_target_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cdr_final_target_combo.blockSignals(False)
+
+    def _populate_cdr_mastering_brightness_combo(self, mastering_display, select=None):
+        """Theatrical gets its own single, disabled "48 nits (reference)"
+        entry -- the real SMPTE/DCI theatrical reference projection level
+        (custom_drt.DEFAULT_THEATRICAL_REFERENCE_BRIGHTNESS), shown for
+        context only (Tom, 2026-08-13: "more true contextually"), NOT
+        wired into the render math -- Theatrical's own EOTF is a plain
+        gamma 2.6 power law that never consumes mastering_brightness at
+        all (only PQ does). SDR/HDR both get the normal fixed picklist,
+        matching custom_drt.MASTERING_BRIGHTNESS_OPTIONS -- only HDR ever
+        enables the combo (see _on_cdr_mastering_display_changed)."""
+        self.cdr_mastering_brightness_combo.blockSignals(True)
+        self.cdr_mastering_brightness_combo.clear()
+        if mastering_display == "Theatrical":
+            self.cdr_mastering_brightness_combo.addItem(
+                "48 nits (reference)", custom_drt.DEFAULT_THEATRICAL_REFERENCE_BRIGHTNESS)
+            self.cdr_mastering_brightness_combo.setCurrentIndex(0)
+        else:
+            for nits in custom_drt.MASTERING_BRIGHTNESS_OPTIONS:
+                self.cdr_mastering_brightness_combo.addItem(f"{nits} nits", nits)
+            idx = self.cdr_mastering_brightness_combo.findData(
+                select or custom_drt.DEFAULT_MASTERING_BRIGHTNESS)
+            self.cdr_mastering_brightness_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cdr_mastering_brightness_combo.blockSignals(False)
+
+    def _on_cdr_field_changed(self, _value=None):
+        self._apply_custom_drt_live()
+
+    def _on_cdr_mastering_display_changed(self, mastering_display=None):
+        mastering_display = mastering_display or self.cdr_mastering_display_combo.currentText()
+        self._populate_cdr_final_target_combo(mastering_display)
+        self._populate_cdr_mastering_brightness_combo(mastering_display)
+        self.cdr_mastering_brightness_combo.setEnabled(mastering_display == "HDR")
+        self._apply_custom_drt_live()
+
+    def _on_cdr_reset_clicked(self):
+        # Each setValue below fires _on_cdr_field_changed (unless already
+        # at that value), which applies live the same as typing would --
+        # same convention as _on_gtn_reset_clicked/_on_pl_reset_clicked.
+        for fields in (self._CDR_TONESCALE_FIELDS, self._CDR_DESAT_FIELDS, self._CDR_GAMUT_FIELDS):
+            for key, _label, _lo, _hi, _step, _decimals, default in fields:
+                self._cdr_spins[key].setValue(default)
+        idx = self.cdr_mastering_display_combo.findText(custom_drt.DEFAULT_MASTERING_DISPLAY)
+        if idx >= 0:
+            self.cdr_mastering_display_combo.setCurrentIndex(idx)
+        self._populate_cdr_final_target_combo(custom_drt.DEFAULT_MASTERING_DISPLAY)
+        self._populate_cdr_mastering_brightness_combo(custom_drt.DEFAULT_MASTERING_DISPLAY)
+        self.cdr_mastering_brightness_combo.setEnabled(custom_drt.DEFAULT_MASTERING_DISPLAY == "HDR")
+        self._apply_custom_drt_live()
+
+    def _apply_custom_drt_live(self):
+        """Guarded by _refreshing_inspector, same convention as
+        _apply_aces_drt_live/_apply_printer_lights_live -- switching TO a
+        custom_drt stage also drives these widgets via
+        _refresh_inspector_body, which shouldn't count as a live edit."""
+        if self._refreshing_inspector:
+            return
+        stage = self._selected_stage()
+        if stage is None or stage.kind != "custom_drt":
+            return
+        working_space = self.cdr_space_combo.currentText()
+        mastering_display = self.cdr_mastering_display_combo.currentText()
+        final_target = self.cdr_final_target_combo.currentText()
+        if not working_space or not mastering_display or not final_target:
+            return
+        stage.params["working_colourspace"] = working_space
+        for fields in (self._CDR_TONESCALE_FIELDS, self._CDR_DESAT_FIELDS, self._CDR_GAMUT_FIELDS):
+            for key, _label, _lo, _hi, _step, _decimals, _default in fields:
+                stage.params[key] = self._cdr_spins[key].value()
+        stage.params["mastering_display"] = mastering_display
+        stage.params["final_target"] = final_target
+        stage.params["mastering_brightness"] = (
+            self.cdr_mastering_brightness_combo.currentData() or custom_drt.DEFAULT_MASTERING_BRIGHTNESS)
+        stage.label = f"CAMier DRT ({working_space} -> {mastering_display}/{final_target})"
+        self._update_row_content(stage.id)
         self._emit_changed()
 
     # ---- inspector: ASC CDL stage -------------------------------------
@@ -2284,10 +3322,12 @@ class StackPanel(QObject):
         stage.params["sat_enabled"] = self.cdl_sat_enabled_checkbox.isChecked()
         # Row label shows the live SOP/SAT values (per Tom, matching the
         # 'colorspace' stage's dynamic label) -- needs its own
-        # _refresh_list call to actually repaint the row, same as
-        # _apply_aces_drt_live/_apply_colorspace_live.
+        # _update_row_content call to actually repaint the row, same as
+        # _apply_aces_drt_live/_apply_colorspace_live. Was a full
+        # _refresh_list() -- the measured cause of "laggy" CDL wheel/spin
+        # drags, see _StageRowWidget's docstring.
         stage.label = _format_cdl_label(stage.params)
-        self._refresh_list()
+        self._update_row_content(stage.id)
         self._emit_changed()
 
     def _on_cdl_save_to_library_clicked(self):
@@ -2423,7 +3463,473 @@ class StackPanel(QObject):
         stage.params["src"] = src
         stage.params["dst"] = dst
         stage.label = f"Color Space ({src} -> {dst})"
-        self._refresh_list()
+        self._update_row_content(stage.id)
+        self._emit_changed()
+
+    # ---- inspector: grading_primary stage --------------------------------
+
+    def _build_grading_primary_inspector(self):
+        group = QGroupBox("Grading Primary Stage")
+        outer = QVBoxLayout(group)
+
+        if not gpr.OCIO_AVAILABLE:
+            label = QLabel(
+                "Grading Primary stages are unavailable -- PyOpenColorIO failed "
+                f"to import:\n{gpr.OCIO_IMPORT_ERROR}\n\n"
+                "Install with: pip3 install opencolorio, then restart."
+            )
+            label.setWordWrap(True)
+            outer.addWidget(label)
+            self.inspector_stack.addWidget(group)
+            self._grading_primary_inspector_index = self.inspector_stack.count() - 1
+            return
+
+        style_row = QHBoxLayout()
+        style_row.addWidget(QLabel("Style:"))
+        self.gpr_style_combo = QComboBox()
+        for style_key, style_label in gpr.list_available_styles():
+            self.gpr_style_combo.addItem(style_label, style_key)
+        self.gpr_style_combo.currentIndexChanged.connect(self._on_gpr_style_changed)
+        style_row.addWidget(self.gpr_style_combo, stretch=1)
+        outer.addLayout(style_row)
+
+        # Every RGBM field gets its own row (label + R/G/B/M spinboxes,
+        # no color-balance wheel -- see GRADING_PRIMARY_FIELD_SPECS' own
+        # comment on why this is simpler than CDL's wheel treatment), but
+        # only the 3 fields GRADING_PRIMARY_STYLE_FIELDS says the current
+        # style actually uses are ever VISIBLE at once (see
+        # _update_gpr_field_visibility) -- every field's row still exists
+        # and keeps its own value even while hidden, so switching styles
+        # back and forth never loses whatever was dialed in.
+        self._gpr_field_rows = {}    # {field_key: QWidget} for show/hide
+        self._gpr_field_spins = {}   # {field_key: {"R":.., "G":.., "B":.., "M":..}}
+
+        for field_key, field_label, is_additive in GRADING_PRIMARY_FIELD_SPECS:
+            default = 0.0 if is_additive else 1.0
+            lo, hi, step = GRADING_PRIMARY_ADDITIVE_RANGE if is_additive else GRADING_PRIMARY_MULT_RANGE
+
+            row_widget = QWidget()
+            row = QHBoxLayout(row_widget)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addWidget(QLabel(f"{field_label}:"))
+            channel_spins = {}
+            for channel in ("R", "G", "B", "M"):
+                spin = QDoubleSpinBox()
+                spin.setRange(lo, hi)
+                spin.setDecimals(4)
+                spin.setSingleStep(step)
+                spin.setValue(default)
+                enable_drag_to_scrub(spin)
+                spin.valueChanged.connect(self._on_gpr_field_changed)
+                row.addWidget(QLabel(channel))
+                row.addWidget(spin)
+                channel_spins[channel] = spin
+            self._gpr_field_spins[field_key] = channel_spins
+            self._gpr_field_rows[field_key] = row_widget
+            outer.addWidget(row_widget)
+
+        pivot_row = QHBoxLayout()
+        pivot_row.addWidget(QLabel("Pivot:"))
+        self.gpr_pivot_spin = QDoubleSpinBox()
+        self.gpr_pivot_spin.setRange(-2.0, 2.0)
+        self.gpr_pivot_spin.setDecimals(4)
+        self.gpr_pivot_spin.setSingleStep(0.01)
+        self.gpr_pivot_spin.setValue(gpr.DEFAULT_PIVOT)
+        enable_drag_to_scrub(self.gpr_pivot_spin)
+        self.gpr_pivot_spin.valueChanged.connect(self._on_gpr_field_changed)
+        pivot_row.addWidget(self.gpr_pivot_spin)
+        outer.addLayout(pivot_row)
+
+        sat_row = QHBoxLayout()
+        sat_row.addWidget(QLabel("Saturation:"))
+        self.gpr_sat_spin = QDoubleSpinBox()
+        self.gpr_sat_spin.setRange(0.0, 4.0)
+        self.gpr_sat_spin.setDecimals(4)
+        self.gpr_sat_spin.setSingleStep(0.01)
+        self.gpr_sat_spin.setValue(gpr.DEFAULT_SATURATION)
+        enable_drag_to_scrub(self.gpr_sat_spin)
+        self.gpr_sat_spin.valueChanged.connect(self._on_gpr_field_changed)
+        sat_row.addWidget(self.gpr_sat_spin)
+        outer.addLayout(sat_row)
+
+        reset_button = QPushButton("Reset to Identity")
+        reset_button.clicked.connect(self._on_gpr_reset_clicked)
+        outer.addWidget(reset_button)
+
+        self.inspector_stack.addWidget(group)
+        self._grading_primary_inspector_index = self.inspector_stack.count() - 1
+        self._update_gpr_field_visibility()
+
+    def _update_gpr_field_visibility(self):
+        style = self.gpr_style_combo.currentData() or gpr.DEFAULT_STYLE
+        visible_fields = set(GRADING_PRIMARY_STYLE_FIELDS.get(style, ()))
+        for field_key, row_widget in self._gpr_field_rows.items():
+            row_widget.setVisible(field_key in visible_fields)
+
+    def _on_gpr_style_changed(self, _index):
+        self._update_gpr_field_visibility()
+        self._apply_gpr_live()
+
+    def _on_gpr_field_changed(self, _value=None):
+        self._apply_gpr_live()
+
+    def _on_gpr_reset_clicked(self):
+        # Each setValue below fires _on_gpr_field_changed (unless already
+        # at that value), which applies live the same as typing would --
+        # same convention as _on_cdl_reset_sop_clicked.
+        for field_key, _label, is_additive in GRADING_PRIMARY_FIELD_SPECS:
+            default = 0.0 if is_additive else 1.0
+            for spin in self._gpr_field_spins[field_key].values():
+                spin.setValue(default)
+        self.gpr_pivot_spin.setValue(gpr.DEFAULT_PIVOT)
+        self.gpr_sat_spin.setValue(gpr.DEFAULT_SATURATION)
+
+    def _apply_gpr_live(self):
+        """Reads every field/pivot/saturation spinbox plus the style combo
+        and writes into the selected stage's params -- called after every
+        edit instead of needing an Update Stage click, same convention as
+        _apply_cdl_live/_apply_colorspace_live. Guarded by
+        _refreshing_inspector (colorspace's simpler style, rather than
+        CDL's per-widget blockSignals) since switching TO a
+        grading_primary stage also drives these spinboxes via
+        _refresh_inspector_body, which shouldn't count as a live edit."""
+        if self._refreshing_inspector:
+            return
+        stage = self._selected_stage()
+        if stage is None or stage.kind != "grading_primary":
+            return
+        for field_key, _label, _is_additive in GRADING_PRIMARY_FIELD_SPECS:
+            spins = self._gpr_field_spins[field_key]
+            stage.params[field_key] = tuple(spins[c].value() for c in ("R", "G", "B", "M"))
+        stage.params["pivot"] = self.gpr_pivot_spin.value()
+        stage.params["saturation"] = self.gpr_sat_spin.value()
+        stage.params["style"] = self.gpr_style_combo.currentData() or gpr.DEFAULT_STYLE
+        stage.label = _format_grading_primary_label(stage.params)
+        self._update_row_content(stage.id)
+        self._emit_changed()
+
+    # ---- inspector: exposure_contrast stage ------------------------------
+
+    def _build_exposure_contrast_inspector(self):
+        group = QGroupBox("Exposure/Contrast Stage")
+        outer = QVBoxLayout(group)
+
+        if not ec.OCIO_AVAILABLE:
+            label = QLabel(
+                "Exposure/Contrast stages are unavailable -- PyOpenColorIO failed "
+                f"to import:\n{ec.OCIO_IMPORT_ERROR}\n\n"
+                "Install with: pip3 install opencolorio, then restart."
+            )
+            label.setWordWrap(True)
+            outer.addWidget(label)
+            self.inspector_stack.addWidget(group)
+            self._exposure_contrast_inspector_index = self.inspector_stack.count() - 1
+            return
+
+        style_row = QHBoxLayout()
+        style_row.addWidget(QLabel("Style:"))
+        self.ec_style_combo = QComboBox()
+        for style_key, style_label in ec.list_available_styles():
+            self.ec_style_combo.addItem(style_label, style_key)
+        self.ec_style_combo.currentIndexChanged.connect(self._on_ec_field_changed)
+        style_row.addWidget(self.ec_style_combo, stretch=1)
+        outer.addLayout(style_row)
+
+        # Simplest inspector of the four Tier 1 kinds -- just exposure/
+        # contrast/gamma, each a single scalar (no per-channel R/G/B/M
+        # here, unlike grading_primary's RGBM fields). Pivot/
+        # logExposureStep/logMidGray are deliberately not exposed here --
+        # see exposure_contrast.py's own docstring on why (not dynamic
+        # GPU properties, would force a shader recompile per edit).
+        self._ec_field_spins = {}
+        for field_key, field_label, default, lo, hi in (
+            ("exposure", "Exposure", ec.IDENTITY_EXPOSURE, -8.0, 8.0),
+            ("contrast", "Contrast", ec.IDENTITY_CONTRAST, 0.0, 4.0),
+            ("gamma", "Gamma", ec.IDENTITY_GAMMA, 0.01, 4.0),
+        ):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(f"{field_label}:"))
+            spin = QDoubleSpinBox()
+            spin.setRange(lo, hi)
+            spin.setDecimals(4)
+            spin.setSingleStep(0.01)
+            spin.setValue(default)
+            enable_drag_to_scrub(spin)
+            spin.valueChanged.connect(self._on_ec_field_changed)
+            row.addWidget(spin, stretch=1)
+            self._ec_field_spins[field_key] = spin
+            outer.addLayout(row)
+
+        reset_button = QPushButton("Reset to Identity")
+        reset_button.clicked.connect(self._on_ec_reset_clicked)
+        outer.addWidget(reset_button)
+
+        self.inspector_stack.addWidget(group)
+        self._exposure_contrast_inspector_index = self.inspector_stack.count() - 1
+
+    def _on_ec_field_changed(self, _value=None):
+        self._apply_ec_live()
+
+    def _on_ec_reset_clicked(self):
+        # Each setValue below fires _on_ec_field_changed (unless already
+        # at that value), which applies live the same as typing would --
+        # same convention as _on_cdl_reset_sop_clicked/_on_gpr_reset_clicked.
+        self._ec_field_spins["exposure"].setValue(ec.IDENTITY_EXPOSURE)
+        self._ec_field_spins["contrast"].setValue(ec.IDENTITY_CONTRAST)
+        self._ec_field_spins["gamma"].setValue(ec.IDENTITY_GAMMA)
+
+    def _apply_ec_live(self):
+        """Guarded by _refreshing_inspector, same convention as
+        _apply_gpr_live/_apply_colorspace_live -- switching TO an
+        exposure_contrast stage also drives these widgets via
+        _refresh_inspector_body, which shouldn't count as a live edit."""
+        if self._refreshing_inspector:
+            return
+        stage = self._selected_stage()
+        if stage is None or stage.kind != "exposure_contrast":
+            return
+        stage.params["exposure"] = self._ec_field_spins["exposure"].value()
+        stage.params["contrast"] = self._ec_field_spins["contrast"].value()
+        stage.params["gamma"] = self._ec_field_spins["gamma"].value()
+        stage.params["style"] = self.ec_style_combo.currentData() or ec.DEFAULT_STYLE
+        stage.label = _format_exposure_contrast_label(stage.params)
+        self._update_row_content(stage.id)
+        self._emit_changed()
+
+    # ---- inspector: grading_tone stage ------------------------------------
+
+    def _build_grading_tone_inspector(self):
+        """Largest of the four Tier 1 inspectors (5 ranges x 6 fields each,
+        see OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md's own note on
+        this) -- one compact QGroupBox row per range (R/G/B/M gain +
+        Start/Width, all on one line) built from a shared loop rather than
+        5 hand-laid-out sections, same "don't repeat the widget-building
+        code 5 times" reasoning as GRADING_PRIMARY_FIELD_SPECS' loop."""
+        group = QGroupBox("Grading Tone Stage")
+        outer = QVBoxLayout(group)
+
+        if not gtn.OCIO_AVAILABLE:
+            label = QLabel(
+                "Grading Tone stages are unavailable -- PyOpenColorIO failed "
+                f"to import:\n{gtn.OCIO_IMPORT_ERROR}\n\n"
+                "Install with: pip3 install opencolorio, then restart."
+            )
+            label.setWordWrap(True)
+            outer.addWidget(label)
+            self.inspector_stack.addWidget(group)
+            self._grading_tone_inspector_index = self.inspector_stack.count() - 1
+            return
+
+        style_row = QHBoxLayout()
+        style_row.addWidget(QLabel("Style:"))
+        self.gtn_style_combo = QComboBox()
+        for style_key, style_label in gtn.list_available_styles():
+            self.gtn_style_combo.addItem(style_label, style_key)
+        self.gtn_style_combo.currentIndexChanged.connect(self._on_gtn_field_changed)
+        style_row.addWidget(self.gtn_style_combo, stretch=1)
+        outer.addLayout(style_row)
+
+        self._gtn_range_spins = {}  # {range_key: {"R":.., "G":.., "B":.., "M":.., "Start":.., "Width":..}}
+        for range_key in gtn.RANGE_KEYS:
+            r, g, b, m, start, width = gtn.DEFAULT_RANGE_VALUES[range_key]
+            defaults = {"R": r, "G": g, "B": b, "M": m, "Start": start, "Width": width}
+            # R/G/B/M's range is gtn.GAIN_BOUNDS[range_key] -- OCIO's own
+            # validate() bound, NOT the same for every range (shadows/
+            # highlights are tighter than blacks/midtones/whites) -- see
+            # that constant's own comment for why this matters: a value
+            # outside it raised a real ocio.Exception INSIDE paintGL on a
+            # live slider drag, which crashed the app before paintGL grew
+            # its own exception guard. Start/Width have no such per-field
+            # bound (their validity depends on the OTHER ranges' values
+            # too) -- Width's floor here is just "can't be negative," a
+            # reasonable UI constraint on its own terms, not a guarantee
+            # of validity (gpu_stack_renderer.py's own exception handling
+            # around setGradingTone is what actually covers that case).
+            gain_lo, gain_hi = gtn.GAIN_BOUNDS[range_key]
+            # A plain bold label, not a nested QGroupBox -- every other
+            # inspector page in this panel (CDL, ACES DRT, Grading
+            # Primary, ...) uses exactly ONE outer QGroupBox for the
+            # whole page and plain rows/labels inside it; a second,
+            # nested bordered box per range here was the one place that
+            # broke that convention (5 extra boxes-within-a-box).
+            range_label = QLabel(GRADING_TONE_RANGE_LABELS[range_key])
+            range_label.setStyleSheet("font-weight: 600;")
+            outer.addWidget(range_label)
+            row = QHBoxLayout()
+            channel_spins = {}
+            for channel, lo, hi in (
+                ("R", gain_lo, gain_hi), ("G", gain_lo, gain_hi),
+                ("B", gain_lo, gain_hi), ("M", gain_lo, gain_hi),
+                ("Start", -2.0, 2.0), ("Width", 0.0, 2.0),
+            ):
+                spin = QDoubleSpinBox()
+                spin.setRange(lo, hi)
+                spin.setDecimals(4)
+                spin.setSingleStep(0.01)
+                spin.setValue(defaults[channel])
+                enable_drag_to_scrub(spin)
+                spin.valueChanged.connect(self._on_gtn_field_changed)
+                row.addWidget(QLabel(channel))
+                row.addWidget(spin)
+                channel_spins[channel] = spin
+            self._gtn_range_spins[range_key] = channel_spins
+            outer.addLayout(row)
+
+        scontrast_row = QHBoxLayout()
+        scontrast_row.addWidget(QLabel("S-Contrast:"))
+        self.gtn_scontrast_spin = QDoubleSpinBox()
+        self.gtn_scontrast_spin.setRange(*gtn.SCONTRAST_BOUNDS)
+        self.gtn_scontrast_spin.setDecimals(4)
+        self.gtn_scontrast_spin.setSingleStep(0.01)
+        self.gtn_scontrast_spin.setValue(gtn.DEFAULT_SCONTRAST)
+        enable_drag_to_scrub(self.gtn_scontrast_spin)
+        self.gtn_scontrast_spin.valueChanged.connect(self._on_gtn_field_changed)
+        scontrast_row.addWidget(self.gtn_scontrast_spin, stretch=1)
+        outer.addLayout(scontrast_row)
+
+        reset_button = QPushButton("Reset to Identity")
+        reset_button.clicked.connect(self._on_gtn_reset_clicked)
+        outer.addWidget(reset_button)
+
+        self.inspector_stack.addWidget(group)
+        self._grading_tone_inspector_index = self.inspector_stack.count() - 1
+
+    def _on_gtn_field_changed(self, _value=None):
+        self._apply_gtn_live()
+
+    def _on_gtn_reset_clicked(self):
+        # Each setValue below fires _on_gtn_field_changed (unless already
+        # at that value), which applies live the same as typing would --
+        # same convention as _on_cdl_reset_sop_clicked/_on_gpr_reset_clicked.
+        for range_key in gtn.RANGE_KEYS:
+            r, g, b, m, start, width = gtn.DEFAULT_RANGE_VALUES[range_key]
+            spins = self._gtn_range_spins[range_key]
+            for channel, value in zip(("R", "G", "B", "M", "Start", "Width"), (r, g, b, m, start, width)):
+                spins[channel].setValue(value)
+        self.gtn_scontrast_spin.setValue(gtn.DEFAULT_SCONTRAST)
+
+    def _apply_gtn_live(self):
+        """Guarded by _refreshing_inspector, same convention as
+        _apply_gpr_live/_apply_ec_live -- switching TO a grading_tone
+        stage also drives these widgets via _refresh_inspector_body,
+        which shouldn't count as a live edit."""
+        if self._refreshing_inspector:
+            return
+        stage = self._selected_stage()
+        if stage is None or stage.kind != "grading_tone":
+            return
+        for range_key in gtn.RANGE_KEYS:
+            spins = self._gtn_range_spins[range_key]
+            stage.params[range_key] = tuple(
+                spins[c].value() for c in ("R", "G", "B", "M", "Start", "Width"))
+        stage.params["scontrast"] = self.gtn_scontrast_spin.value()
+        stage.params["style"] = self.gtn_style_combo.currentData() or gtn.DEFAULT_STYLE
+        stage.label = _format_grading_tone_label(stage.params)
+        self._update_row_content(stage.id)
+        self._emit_changed()
+
+    # ---- inspector: grading_rgb_curve stage --------------------------------
+
+    def _build_grading_rgb_curve_inspector(self):
+        """Curve editor for a 'grading_rgb_curve' stage's four channel
+        curves -- unlike every other Tier 1 inspector (all spin-box
+        driven), the actual value-editing widget here is
+        CurveEditorWidget (see that module's own docstring on why it's
+        hand-rolled rather than pyqtgraph-based, per a background
+        research pass that read pyqtgraph's own installed source). The
+        channel selector row picks which ONE of the four curves is
+        currently draggable; all four are always held by the widget and
+        always written back to stage.params on every edit (see
+        CurveEditorWidget's own docstring on why -- same "write the whole
+        param block back" convention grading_tone's 5 ranges follow)."""
+        group = QGroupBox("Grading RGB Curve Stage")
+        outer = QVBoxLayout(group)
+
+        if not grc.OCIO_AVAILABLE:
+            label = QLabel(
+                "Grading RGB Curve stages are unavailable -- PyOpenColorIO failed "
+                f"to import:\n{grc.OCIO_IMPORT_ERROR}\n\n"
+                "Install with: pip3 install opencolorio, then restart."
+            )
+            label.setWordWrap(True)
+            outer.addWidget(label)
+            self.inspector_stack.addWidget(group)
+            self._grading_rgb_curve_inspector_index = self.inspector_stack.count() - 1
+            return
+
+        style_row = QHBoxLayout()
+        style_row.addWidget(QLabel("Style:"))
+        self.grc_style_combo = QComboBox()
+        for style_key, style_label in grc.list_available_styles():
+            self.grc_style_combo.addItem(style_label, style_key)
+        self.grc_style_combo.currentIndexChanged.connect(self._on_grc_field_changed)
+        style_row.addWidget(self.grc_style_combo, stretch=1)
+        outer.addLayout(style_row)
+
+        channel_row = QHBoxLayout()
+        channel_row.addWidget(QLabel("Channel:"))
+        self.grc_channel_buttons = {}
+        self._grc_channel_button_group = QButtonGroup(group)
+        self._grc_channel_button_group.setExclusive(True)
+        for channel in CHANNEL_ORDER:
+            button = QToolButton()
+            button.setText(CHANNEL_LABELS[channel])
+            button.setCheckable(True)
+            color = CHANNEL_COLORS[channel]
+            button.setStyleSheet(
+                f"QToolButton {{ color: rgb({color.red()},{color.green()},{color.blue()}); "
+                "font-weight: 600; }"
+                f"QToolButton:checked {{ background-color: rgba({color.red()},{color.green()},"
+                f"{color.blue()},60); border: 1px solid rgb({color.red()},{color.green()},{color.blue()}); }}"
+            )
+            button.clicked.connect(lambda _checked, ch=channel: self._on_grc_channel_button_clicked(ch))
+            self._grc_channel_button_group.addButton(button)
+            self.grc_channel_buttons[channel] = button
+            channel_row.addWidget(button)
+        self.grc_channel_buttons["master"].setChecked(True)
+        channel_row.addStretch(1)
+        outer.addLayout(channel_row)
+
+        self.grc_curve_editor = CurveEditorWidget()
+        self.grc_curve_editor.pointsChanged.connect(self._on_grc_points_changed)
+        outer.addWidget(self.grc_curve_editor, stretch=1)
+
+        reset_button = QPushButton("Reset Channel to Identity")
+        reset_button.clicked.connect(lambda: self.grc_curve_editor.reset_active_channel())
+        outer.addWidget(reset_button)
+
+        self.inspector_stack.addWidget(group)
+        self._grading_rgb_curve_inspector_index = self.inspector_stack.count() - 1
+
+    def _on_grc_channel_button_clicked(self, channel):
+        self.grc_curve_editor.set_active_channel(channel)
+
+    def _on_grc_field_changed(self, _value=None):
+        self._apply_grc_live()
+
+    def _on_grc_points_changed(self, _channel):
+        self._apply_grc_live()
+
+    def _apply_grc_live(self):
+        """Guarded by _refreshing_inspector, same convention as
+        _apply_ec_live/_apply_gtn_live -- switching TO a grading_rgb_curve
+        stage also drives the curve editor's points via
+        _refresh_inspector_body, which shouldn't count as a live edit.
+        Writes ALL FOUR channels back every time (not just whichever one
+        CurveEditorWidget's pointsChanged just reported), same "whole
+        param block on every edit" convention grading_tone's ranges use --
+        the widget itself always holds all four curves regardless of
+        which one is currently active/draggable."""
+        if self._refreshing_inspector:
+            return
+        stage = self._selected_stage()
+        if stage is None or stage.kind != "grading_rgb_curve":
+            return
+        for channel in grc.RGB_CHANNELS:
+            stage.params[channel] = tuple(self.grc_curve_editor.get_points(channel))
+        stage.params["style"] = self.grc_style_combo.currentData() or grc.DEFAULT_STYLE
+        stage.label = _format_grading_rgb_curve_label(stage.params)
+        self._update_row_content(stage.id)
         self._emit_changed()
 
     # ---- inspector: fork_split stage ------------------------------------
@@ -2443,7 +3949,7 @@ class StackPanel(QObject):
             "dropdown (in the stage list) to place it inside this fork -- "
             "as many stages per branch as you like. Close the fork with a "
             "matching Fork Merge stage below.\n\n"
-            "Disabling this stage (the row's ✓/✗ toggle) treats "
+            "Disabling this stage (the row's enabled-toggle dot) treats "
             "the WHOLE fork region -- both branches and the merge -- as a "
             "no-op, same as if none of it were here."
         )
@@ -2517,7 +4023,7 @@ class StackPanel(QObject):
         a_pct = round((1.0 - blend) * 100)
         b_pct = round(blend * 100)
         self.fork_merge_blend_value_label.setText(f"A {a_pct}% / B {b_pct}%")
-        self._refresh_list()
+        self._update_row_content(stage.id)
         self._emit_changed()
 
     # ---- inspector dispatch -----------------------------------------
@@ -2592,6 +4098,36 @@ class StackPanel(QObject):
                 if idx >= 0:
                     self.drt_view_combo.setCurrentIndex(idx)
             self.inspector_stack.setCurrentIndex(self._aces_drt_inspector_index)
+
+        elif stage.kind == "custom_drt":
+            if aces_drt.OCIO_AVAILABLE:
+                p = stage.params
+                idx = self.cdr_space_combo.findText(p.get("working_colourspace", ""))
+                if idx >= 0:
+                    self.cdr_space_combo.blockSignals(True)
+                    self.cdr_space_combo.setCurrentIndex(idx)
+                    self.cdr_space_combo.blockSignals(False)
+                for fields in (self._CDR_TONESCALE_FIELDS, self._CDR_DESAT_FIELDS, self._CDR_GAMUT_FIELDS):
+                    for key, _label, _lo, _hi, _step, _decimals, default in fields:
+                        spin = self._cdr_spins[key]
+                        spin.blockSignals(True)
+                        spin.setValue(p.get(key, default))
+                        spin.blockSignals(False)
+                mastering_display = p.get(
+                    "mastering_display", custom_drt.DEFAULT_MASTERING_DISPLAY)
+                idx = self.cdr_mastering_display_combo.findText(mastering_display)
+                if idx >= 0:
+                    self.cdr_mastering_display_combo.blockSignals(True)
+                    self.cdr_mastering_display_combo.setCurrentIndex(idx)
+                    self.cdr_mastering_display_combo.blockSignals(False)
+                final_target = p.get(
+                    "final_target", custom_drt.DEFAULT_FINAL_TARGET_FOR_DISPLAY[mastering_display])
+                self._populate_cdr_final_target_combo(mastering_display, select=final_target)
+                self._populate_cdr_mastering_brightness_combo(
+                    mastering_display,
+                    select=p.get("mastering_brightness", custom_drt.DEFAULT_MASTERING_BRIGHTNESS))
+                self.cdr_mastering_brightness_combo.setEnabled(mastering_display == "HDR")
+            self.inspector_stack.setCurrentIndex(self._custom_drt_inspector_index)
 
         elif stage.kind == "cdl":
             if cdl.OCIO_AVAILABLE:
@@ -2683,6 +4219,75 @@ class StackPanel(QObject):
                 if idx >= 0:
                     self.csc_to_combo.setCurrentIndex(idx)
             self.inspector_stack.setCurrentIndex(self._colorspace_inspector_index)
+
+        elif stage.kind == "grading_primary":
+            if gpr.OCIO_AVAILABLE:
+                p = stage.params
+                style = p.get("style", gpr.DEFAULT_STYLE)
+                idx = self.gpr_style_combo.findData(style)
+                if idx >= 0:
+                    self.gpr_style_combo.setCurrentIndex(idx)
+                self._update_gpr_field_visibility()
+
+                for field_key, _label, is_additive in GRADING_PRIMARY_FIELD_SPECS:
+                    default = gpr.IDENTITY_ADD if is_additive else gpr.IDENTITY_MULT
+                    r, g, b, m = p.get(field_key, default)
+                    spins = self._gpr_field_spins[field_key]
+                    for channel, value in zip(("R", "G", "B", "M"), (r, g, b, m)):
+                        spins[channel].setValue(value)
+
+                self.gpr_pivot_spin.setValue(p.get("pivot", gpr.DEFAULT_PIVOT))
+                self.gpr_sat_spin.setValue(p.get("saturation", gpr.DEFAULT_SATURATION))
+            self.inspector_stack.setCurrentIndex(self._grading_primary_inspector_index)
+
+        elif stage.kind == "exposure_contrast":
+            if ec.OCIO_AVAILABLE:
+                p = stage.params
+                idx = self.ec_style_combo.findData(p.get("style", ec.DEFAULT_STYLE))
+                if idx >= 0:
+                    self.ec_style_combo.setCurrentIndex(idx)
+                self._ec_field_spins["exposure"].setValue(p.get("exposure", ec.IDENTITY_EXPOSURE))
+                self._ec_field_spins["contrast"].setValue(p.get("contrast", ec.IDENTITY_CONTRAST))
+                self._ec_field_spins["gamma"].setValue(p.get("gamma", ec.IDENTITY_GAMMA))
+            self.inspector_stack.setCurrentIndex(self._exposure_contrast_inspector_index)
+
+        elif stage.kind == "grading_tone":
+            if gtn.OCIO_AVAILABLE:
+                p = stage.params
+                idx = self.gtn_style_combo.findData(p.get("style", gtn.DEFAULT_STYLE))
+                if idx >= 0:
+                    self.gtn_style_combo.setCurrentIndex(idx)
+                for range_key in gtn.RANGE_KEYS:
+                    r, g, b, m, start, width = p.get(range_key) or gtn.DEFAULT_RANGE_VALUES[range_key]
+                    spins = self._gtn_range_spins[range_key]
+                    for channel, value in zip(("R", "G", "B", "M", "Start", "Width"),
+                                               (r, g, b, m, start, width)):
+                        spins[channel].setValue(value)
+                self.gtn_scontrast_spin.setValue(p.get("scontrast", gtn.DEFAULT_SCONTRAST))
+            self.inspector_stack.setCurrentIndex(self._grading_tone_inspector_index)
+
+        elif stage.kind == "grading_rgb_curve":
+            if grc.OCIO_AVAILABLE:
+                p = stage.params
+                idx = self.grc_style_combo.findData(p.get("style", grc.DEFAULT_STYLE))
+                if idx >= 0:
+                    self.grc_style_combo.setCurrentIndex(idx)
+                for channel in grc.RGB_CHANNELS:
+                    self.grc_curve_editor.set_points(
+                        channel, p.get(channel) or grc.DEFAULT_CONTROL_POINTS)
+                # Deliberately does NOT reset the active channel/checked
+                # button to "master" here -- this branch re-runs on every
+                # single live curve edit too (see _refresh_list's own
+                # comment on why it unconditionally calls
+                # _on_selection_changed -> _refresh_inspector, not just on
+                # an actual stage switch), and forcing "master" here made
+                # clicking R/G/B immediately snap back to Master on the
+                # very next edit (confirmed live). The channel buttons'
+                # own checked state (set by _on_grc_channel_button_clicked)
+                # is left to persist across stage switches too, same as
+                # every other inspector's widgets keep their layout/style
+                # across a switch and only their VALUES get resynced here.
+            self.inspector_stack.setCurrentIndex(self._grading_rgb_curve_inspector_index)
 
         elif stage.kind == "fork_split":
             self.inspector_stack.setCurrentIndex(self._fork_split_inspector_index)

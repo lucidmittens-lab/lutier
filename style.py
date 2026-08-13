@@ -201,7 +201,7 @@ shipped; and a genuinely NEW color, `_HINT_TEXT` (`#617191`), for muted
 INFORMATIONAL text specifically -- split out from `_DARK_MID`, which
 until now did double duty as both "structural border/divider color" AND
 "muted text color." `_DARK_MID` keeps the border/divider job and also
-keeps coloring plain iconographic glyphs (the Stack stage row's ✓/✗
+keeps coloring plain iconographic glyphs (the Stack stage row's ●/○
 enabled-toggle and × delete button, muted-until-hover) -- `_HINT_TEXT`
 (mapped onto `QPalette.PlaceholderText`, referenced in QSS as
 `palette(placeholder-text)`) now covers every place this file or the
@@ -483,6 +483,26 @@ def set_accent_color(hex_color):
     theme_prefs.save_accent_color(hex_color)
 
 
+def get_tertiary_color():
+    """A darker (33%) variant of `get_accent_color()` -- for a cue that
+    should read as "related to the accent" without being confusable with
+    the accent itself, e.g. QFrame#stackStageRow:hover in the STYLESHEET
+    below (per Tom, 2026-08-12: hovering a Stack row needs its own color,
+    distinct from BOTH the plain idle border and the full-accent
+    selected-row border -- an unhovered, unselected row already uses
+    palette(mid), so a third state needed a third color). Fulfilled
+    task #23 ("derive a tertiary color automatically from the accent
+    color, 33% darker") -- exposed as its own function, mirroring
+    get_accent_color(), rather than inlined only where first needed,
+    since any other "accent-adjacent but not THE accent" cue can reuse
+    it. QColor.darker(150) is Qt's own way of saying "33% darker" --
+    darker(factor) scales brightness by 100/factor, and 100/150 ~= 0.667
+    (66.7% of original brightness = 33% darker), not a naive `factor=133`
+    (that's only 25% darker; Qt's darker()/lighter() scale is inverted
+    from a plain percentage-off reading)."""
+    return QColor(get_accent_color()).darker(150).name()
+
+
 def _contrast_text_color(hex_color):
     """Black or white, whichever reads better on top of `hex_color` --
     standard relative-luminance heuristic (ITU-R BT.601 coefficients,
@@ -531,7 +551,12 @@ def build_dark_palette():
     this function again after `set_accent_color()` picks up the new
     accent, contrast-corrected, with no other change needed anywhere
     else in this file (every QSS `palette(highlight)` reference already
-    resolves from whatever this returns)."""
+    resolves from whatever this returns).
+
+    2026-08-12 -- same reasoning now also covers Accent, set from
+    `get_tertiary_color()` (a 33%-darker derivative of the same accent),
+    so `palette(accent)` in QSS reacts to accent changes the same
+    automatic way `palette(highlight)` always has."""
     palette = QPalette()
     accent = get_accent_color()
     accent_text = _contrast_text_color(accent)
@@ -558,6 +583,12 @@ def build_dark_palette():
         QPalette.ColorRole.HighlightedText: accent_text,
         QPalette.ColorRole.Link: _ACCENT_AMBER,
         QPalette.ColorRole.LinkVisited: _ACCENT_AMBER,
+        # Every other classic QPalette role is already spoken for above
+        # (see get_tertiary_color()'s own docstring) -- Accent is a
+        # dedicated, Qt 6.6+ role this codebase had never used before,
+        # confirmed via a direct QSS render test that `palette(accent)`
+        # resolves correctly on the Qt 6.11 this app actually runs on.
+        QPalette.ColorRole.Accent: get_tertiary_color(),
     }
     for group in active_and_inactive:
         for role, color in role_colors.items():
@@ -671,6 +702,29 @@ QListWidget::item:hover:!selected {{
 QListWidget::item:selected {{
     background-color: palette(highlight);
     color: palette(highlighted-text);
+}}
+
+/* Stack panel's list ONLY (_StackListWidget#stackListWidget, stack_panel.py)
+   -- REAL BUG found by Tom (2026-08-12): each row already draws its own
+   rounded "pill" card with its own selection/hover cue (a border-color
+   change, see QFrame#stackStageRow above), but the generic rules just
+   above ALSO paint their own sharp-cornered highlight rectangle behind/
+   around every item -- for every OTHER QListWidget in this app (Browser,
+   LUT/CDL Library, Stack Memories) that's the intended, only selection
+   cue, but here it was a second, competing, uglier highlight the whole
+   time (Tom: "the large highlight filling the regular 4 sided polygon
+   around the row's pill shaped entry"), unrelated to and pre-dating this
+   round's border-color changes -- it just never got addressed before
+   because round one's bolder border treatment didn't visually compete
+   with it as obviously. Transparent here, not removed outright, so the
+   generic rules above stay exactly as they are for every other list. */
+QListWidget#stackListWidget::item:selected {{
+    background-color: transparent;
+    color: palette(text);
+}}
+
+QListWidget#stackListWidget::item:hover:!selected {{
+    background-color: transparent;
 }}
 
 /* Covers the new "..." header menus (Viewer/Stack, see panel_frame.py's
@@ -937,7 +991,39 @@ QGroupBox::title {{
    selection highlight through the widget on top of it (see
    StackPanel._update_row_selection_styling). [stageEnabled="false"] dims
    a disabled stage's card so its on/off state reads at a glance, not just
-   from the toggle glyph. */
+   from the toggle glyph.
+
+   SIMPLIFIED PER TOM (2026-08-12): selection used to also grow the
+   border to 2px and recolor+bold the label text -- Tom's call after
+   trying it was that the highlight should be JUST the border's own
+   color changing to accent, nothing else (no width change -- so a row
+   doesn't nudge its neighbors' vertical position on select/deselect --
+   and no label recolor competing with [stageBranch]'s own accent).
+
+   Hover went through three rounds before landing here. Round one used a
+   subtler brightened-gray hover (palette(light)) -- effectively
+   invisible, only 3 RGB values off palette(mid), confirmed by direct
+   pixel sampling. Round two matched this app's text-field convention
+   (QLineEdit/QComboBox/QSpinBox etc. above go straight to a full
+   `palette(highlight)` border on :hover) -- but per Tom, that made a
+   merely-hovered row look identical to an actually-SELECTED one, which
+   was confusing rather than helpful once seen live. Round three (this
+   one): hover gets its OWN color, `palette(accent)` -- see
+   get_tertiary_color() in this file, a 33%-darker derivative of the
+   accent, distinct from both the plain idle gray and the full-strength
+   selected accent. A row that's BOTH selected and hovered still shows
+   the full accent, not the darker tertiary -- same "the stronger state
+   wins" precedent a focused-AND-hovered QLineEdit already follows
+   elsewhere in this file. WA_Hover is set on _StageRowWidget in Python
+   (QFrame doesn't opt into :hover style repaints on its own).
+
+   Each state below restates the FULL border shorthand (width/style/
+   color), not just a `border-color` override on top of the base rule --
+   a `border-color`-only override wasn't reliably winning against the
+   base rule's own full `border:` shorthand on this Qt build (found via
+   Tom's testing: no visible change at all), so every state is now
+   fully self-contained instead of depending on shorthand/longhand
+   cascade behavior. */
 
 QFrame#stackStageRow {{
     border: 1px solid palette(mid);
@@ -946,8 +1032,19 @@ QFrame#stackStageRow {{
     margin: 2px 0px;
 }}
 
+QFrame#stackStageRow:hover {{
+    border: 1px solid palette(accent);
+}}
+
 QFrame#stackStageRow[stageSelected="true"] {{
-    border: 2px solid palette(highlight);
+    border: 1px solid palette(highlight);
+}}
+
+/* Explicit, not left to selector-specificity ordering -- a SELECTED row
+   being hovered must stay at full accent strength, not demote to the
+   darker hover-only tertiary color the plain :hover rule above uses. */
+QFrame#stackStageRow[stageSelected="true"]:hover {{
+    border: 1px solid palette(highlight);
 }}
 
 QFrame#stackStageRow[stageEnabled="false"] {{
@@ -972,28 +1069,6 @@ QLabel#stageLabel[stageEnabled="false"] {{
     color: {_HINT_TEXT};
 }}
 
-/* New: selection used to be border-only (see stackStageRow[stageSelected]
-   above) -- the label itself gave no visual cue. Two accented cues (card
-   border + label text/weight) read faster than one, especially when
-   several stage cards are visible at once and the border alone competes
-   with [stageBranch]'s own left-border accent color. */
-QFrame#stackStageRow[stageSelected="true"] QLabel#stageLabel {{
-    color: palette(highlight);
-    font-weight: 600;
-}}
-
-/* A row CAN be both disabled and selected at once (selection and the
-   enabled toggle are independent). Without this override, the rule above
-   would win on QSS selector specificity alone (two #id selectors beats
-   [stageEnabled="false"]'s one), so a disabled+selected row would show
-   highlighted text -- reading as "active" when it's actually the
-   opposite. Disabled should trump selected here: dimmed gray, but still
-   bold, so selection still registers as a secondary cue. */
-QFrame#stackStageRow[stageSelected="true"] QLabel#stageLabel[stageEnabled="false"] {{
-    color: {_HINT_TEXT};
-    font-weight: 600;
-}}
-
 /* Deliberately a different glyph/style from stageEnabledToggle's
    checkmark/cross (see _StageRowWidget) so the two aren't confusable --
    muted by default, palette(highlight) on hover as the only "this is
@@ -1008,6 +1083,33 @@ QToolButton#stageDeleteButton {{
 
 QToolButton#stageDeleteButton:hover {{
     color: palette(highlight);
+}}
+
+/* Kind badge (_stage_kind_badge_text, e.g. "CDL"/"GP"/"DRT") -- a quick
+   visual "what is this row" cue on full-width rows, added per Tom's
+   "snappier and more interactive" pass. A muted pill rather than an
+   accent color -- it's a label, not a status indicator, so it shouldn't
+   compete with the selection/branch accents above. */
+QLabel#stageKindBadge {{
+    font-size: 9px;
+    font-weight: 700;
+    color: palette(mid);
+    background-color: palette(alternate-base);
+    border-radius: 3px;
+    padding: 1px 4px;
+    min-width: 22px;
+}}
+
+/* Per-row opacity spin (_StageRowWidget.opacity_spin) -- moved in-row
+   next to the stage name per Tom (2026-08-12 round two; the old
+   "Opacity:" control lived below the whole list and only ever acted on
+   whichever stage happened to be selected, which read as confusing).
+   Smaller than the app's default QSpinBox styling (see the QSpinBox
+   rule above) -- this one lives inside an already-busy row, not a
+   dedicated form field. */
+QSpinBox#stageOpacitySpin {{
+    font-size: 10px;
+    padding: 1px 2px;
 }}
 
 /* -- Stack Forking (fork_split/fork_merge rows, the branch table) ----- */

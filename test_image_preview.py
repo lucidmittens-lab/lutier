@@ -248,7 +248,7 @@ def test_render_full_resolution_still_matches_manual_full_res_apply():
     preview array -- confirm the output actually matches applying the LUT
     to a freshly, fully loaded copy, at real (non-downsampled) dimensions,
     using the real uploaded production LUT."""
-    path = _make_test_image(size=(600, 400))  # bigger than PREVIEW_MAX_DIMENSION (480)
+    path = _make_test_image(size=(600, 400))  # a real, non-trivial resolution to confirm against
     lut = colour.read_LUT(str(Path(__file__).parent / "samples" / "roundtrip_check.cube"))
 
     result = render_full_resolution_still(path, lut=lut)

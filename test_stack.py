@@ -18,6 +18,10 @@ from printer_lights import bake_printer_lights_on_lut
 import aces_drt
 import cdl
 import colorspace_convert as csc
+import exposure_contrast
+import grading_primary
+import grading_rgb_curve
+import grading_tone
 
 SAMPLE_LUT_PATH = str(Path(__file__).parent / "samples" / "roundtrip_check.cube")
 
@@ -244,6 +248,164 @@ def test_cdl_stage_matches_direct_apply_cdl():
     assert np.allclose(baked.table, expected, atol=1e-9)
     print("bake_stack_to_lut3d: single 'cdl' stage matches cdl.apply_cdl "
           "directly on the identity grid -- OK")
+
+
+def test_grading_primary_stage_matches_direct_apply():
+    if not grading_primary.OCIO_AVAILABLE:
+        print("SKIPPED test_grading_primary_stage_matches_direct_apply -- PyOpenColorIO not installed")
+        return
+    size = 9
+    brightness, contrast = (0.02, -0.01, 0.03, 0.0), (1.1, 1.05, 0.95, 1.0)
+
+    stack = st.Stack(size=size)
+    stack.add_stage(st.make_grading_primary_stage(brightness=brightness, contrast=contrast))
+    baked = st.bake_stack_to_lut3d(stack)
+
+    identity_grid = colour.LUT3D(size=size).table
+    expected = grading_primary.apply_grading_primary(
+        identity_grid, brightness=brightness, contrast=contrast)
+    assert np.allclose(baked.table, expected, atol=1e-9)
+    print("bake_stack_to_lut3d: single 'grading_primary' stage matches "
+          "grading_primary.apply_grading_primary directly on the identity grid -- OK")
+
+
+def test_grading_primary_stage_composes_after_a_lut_stage():
+    if not grading_primary.OCIO_AVAILABLE:
+        print("SKIPPED test_grading_primary_stage_composes_after_a_lut_stage -- PyOpenColorIO not installed")
+        return
+    size = 9
+    lut = colour.read_LUT(SAMPLE_LUT_PATH)
+    contrast = (1.15, 1.0, 0.9, 1.0)
+
+    stack = st.Stack(size=size)
+    stack.add_stage(st.make_lut_stage(lut))
+    stack.add_stage(st.make_grading_primary_stage(contrast=contrast))
+    baked = st.bake_stack_to_lut3d(stack)
+
+    identity_grid = colour.LUT3D(size=size).table
+    lut_output = lut.apply(identity_grid)
+    expected = grading_primary.apply_grading_primary(lut_output, contrast=contrast)
+    assert np.allclose(baked.table, expected, atol=1e-9)
+    print("bake_stack_to_lut3d: 'grading_primary' stage composes correctly "
+          "after a 'lut' stage -- OK")
+
+
+def test_exposure_contrast_stage_matches_direct_apply():
+    if not exposure_contrast.OCIO_AVAILABLE:
+        print("SKIPPED test_exposure_contrast_stage_matches_direct_apply -- PyOpenColorIO not installed")
+        return
+    size = 9
+    exposure, contrast, gamma = 0.4, 1.15, 1.05
+
+    stack = st.Stack(size=size)
+    stack.add_stage(st.make_exposure_contrast_stage(exposure=exposure, contrast=contrast, gamma=gamma))
+    baked = st.bake_stack_to_lut3d(stack)
+
+    identity_grid = colour.LUT3D(size=size).table
+    expected = exposure_contrast.apply_exposure_contrast(
+        identity_grid, exposure=exposure, contrast=contrast, gamma=gamma)
+    assert np.allclose(baked.table, expected, atol=1e-9)
+    print("bake_stack_to_lut3d: single 'exposure_contrast' stage matches "
+          "exposure_contrast.apply_exposure_contrast directly on the identity grid -- OK")
+
+
+def test_exposure_contrast_stage_composes_after_a_lut_stage():
+    if not exposure_contrast.OCIO_AVAILABLE:
+        print("SKIPPED test_exposure_contrast_stage_composes_after_a_lut_stage -- PyOpenColorIO not installed")
+        return
+    size = 9
+    lut = colour.read_LUT(SAMPLE_LUT_PATH)
+    exposure = 0.3
+
+    stack = st.Stack(size=size)
+    stack.add_stage(st.make_lut_stage(lut))
+    stack.add_stage(st.make_exposure_contrast_stage(exposure=exposure))
+    baked = st.bake_stack_to_lut3d(stack)
+
+    identity_grid = colour.LUT3D(size=size).table
+    lut_output = lut.apply(identity_grid)
+    expected = exposure_contrast.apply_exposure_contrast(lut_output, exposure=exposure)
+    assert np.allclose(baked.table, expected, atol=1e-9)
+    print("bake_stack_to_lut3d: 'exposure_contrast' stage composes correctly "
+          "after a 'lut' stage -- OK")
+
+
+def test_grading_tone_stage_matches_direct_apply():
+    if not grading_tone.OCIO_AVAILABLE:
+        print("SKIPPED test_grading_tone_stage_matches_direct_apply -- PyOpenColorIO not installed")
+        return
+    size = 9
+    midtones = (1.05, 0.98, 1.02, 1.0, 0.4, 0.6)
+
+    stack = st.Stack(size=size)
+    stack.add_stage(st.make_grading_tone_stage(midtones=midtones))
+    baked = st.bake_stack_to_lut3d(stack)
+
+    identity_grid = colour.LUT3D(size=size).table
+    expected = grading_tone.apply_grading_tone(identity_grid, midtones=midtones)
+    assert np.allclose(baked.table, expected, atol=1e-9)
+    print("bake_stack_to_lut3d: single 'grading_tone' stage matches "
+          "grading_tone.apply_grading_tone directly on the identity grid -- OK")
+
+
+def test_grading_tone_stage_composes_after_a_lut_stage():
+    if not grading_tone.OCIO_AVAILABLE:
+        print("SKIPPED test_grading_tone_stage_composes_after_a_lut_stage -- PyOpenColorIO not installed")
+        return
+    size = 9
+    lut = colour.read_LUT(SAMPLE_LUT_PATH)
+    highlights = (1.1, 1.0, 0.95, 1.0, 0.3, 1.0)
+
+    stack = st.Stack(size=size)
+    stack.add_stage(st.make_lut_stage(lut))
+    stack.add_stage(st.make_grading_tone_stage(highlights=highlights))
+    baked = st.bake_stack_to_lut3d(stack)
+
+    identity_grid = colour.LUT3D(size=size).table
+    lut_output = lut.apply(identity_grid)
+    expected = grading_tone.apply_grading_tone(lut_output, highlights=highlights)
+    assert np.allclose(baked.table, expected, atol=1e-9)
+    print("bake_stack_to_lut3d: 'grading_tone' stage composes correctly "
+          "after a 'lut' stage -- OK")
+
+
+def test_grading_rgb_curve_stage_matches_direct_apply():
+    if not grading_rgb_curve.OCIO_AVAILABLE:
+        print("SKIPPED test_grading_rgb_curve_stage_matches_direct_apply -- PyOpenColorIO not installed")
+        return
+    size = 9
+    master = ((0.0, 0.0), (0.5, 0.6), (1.0, 1.0))
+
+    stack = st.Stack(size=size)
+    stack.add_stage(st.make_grading_rgb_curve_stage(master=master))
+    baked = st.bake_stack_to_lut3d(stack)
+
+    identity_grid = colour.LUT3D(size=size).table
+    expected = grading_rgb_curve.apply_grading_rgb_curve(identity_grid, master=master)
+    assert np.allclose(baked.table, expected, atol=1e-9)
+    print("bake_stack_to_lut3d: single 'grading_rgb_curve' stage matches "
+          "grading_rgb_curve.apply_grading_rgb_curve directly on the identity grid -- OK")
+
+
+def test_grading_rgb_curve_stage_composes_after_a_lut_stage():
+    if not grading_rgb_curve.OCIO_AVAILABLE:
+        print("SKIPPED test_grading_rgb_curve_stage_composes_after_a_lut_stage -- PyOpenColorIO not installed")
+        return
+    size = 9
+    lut = colour.read_LUT(SAMPLE_LUT_PATH)
+    red = ((0.0, 0.0), (0.5, 0.4), (1.0, 1.0))
+
+    stack = st.Stack(size=size)
+    stack.add_stage(st.make_lut_stage(lut))
+    stack.add_stage(st.make_grading_rgb_curve_stage(red=red))
+    baked = st.bake_stack_to_lut3d(stack)
+
+    identity_grid = colour.LUT3D(size=size).table
+    lut_output = lut.apply(identity_grid)
+    expected = grading_rgb_curve.apply_grading_rgb_curve(lut_output, red=red)
+    assert np.allclose(baked.table, expected, atol=1e-9)
+    print("bake_stack_to_lut3d: 'grading_rgb_curve' stage composes correctly "
+          "after a 'lut' stage -- OK")
 
 
 def test_cdl_stage_composes_after_a_lut_stage():
@@ -700,7 +862,17 @@ def test_apply_to_image_array_agrees_with_bake_on_identity_grid():
 
 # --- domain metadata / resize (stack-level, not stages) -------------------
 
-def test_domain_metadata_does_not_affect_table():
+def test_domain_min_max_actually_scale_the_baked_table():
+    """A regression test for a real export bug (Tom, 2026-08-12): the
+    table used to always be folded over a plain [0,1] grid regardless of
+    Stack.domain_min/domain_max, with the domain only ever slapped on
+    afterward as metadata -- so an extended-domain export's DOMAIN_MIN/
+    DOMAIN_MAX header described a range the table was never actually
+    computed for. Any domain-aware reader (this app's own re-import,
+    Lattice) that trusted the header then sampled the wrong slice of the
+    table, producing a much-too-dark result. The table must actually be
+    computed from a grid spanning [domain_min, domain_max], NOT be
+    identical to the default-domain bake."""
     size = 5
     stack_default_domain = st.Stack(size=size, stages=[st.make_lut_stage(Gain(1.5))])
     stack_custom_domain = st.Stack(
@@ -710,12 +882,26 @@ def test_domain_metadata_does_not_affect_table():
     baked_default = st.bake_stack_to_lut3d(stack_default_domain)
     baked_custom = st.bake_stack_to_lut3d(stack_custom_domain)
 
-    assert np.array_equal(baked_default.table, baked_custom.table), \
-        "domain_min/domain_max should be metadata only, never affect the computed table"
+    assert not np.array_equal(baked_default.table, baked_custom.table), \
+        "domain_min/domain_max must actually change the computed table, not just its metadata"
     assert np.allclose(np.asarray(baked_custom.domain), [[-0.5, -0.5, -0.5], [2.0, 2.0, 2.0]])
     assert np.allclose(np.asarray(baked_default.domain), [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
-    print("bake_stack_to_lut3d: domain_min/domain_max are metadata-only, "
-          "matching app_logic.set_lut_domain's own always-metadata-only rule -- OK")
+
+    # The real invariant that matters: applying the baked+domain-tagged
+    # LUT (the way any external reader would -- respecting .domain) to
+    # real values across the extended range must agree with running the
+    # same stages directly on those values, same "grid bake agrees with
+    # direct apply" contract as
+    # test_apply_to_image_array_agrees_with_bake_on_identity_grid above.
+    probe = np.array([[-0.5, -0.5, -0.5], [0.0, 0.0, 0.0], [0.75, 0.75, 0.75], [2.0, 2.0, 2.0]])
+    direct = st.apply_stack_to_image_array(stack_custom_domain, probe)
+    via_lut = baked_custom.apply(probe)
+    assert np.allclose(direct, np.clip(via_lut, 0.0, 1.0), atol=1e-6), \
+        "sampling the baked extended-domain LUT via its own .domain must agree with " \
+        "applying the stack's stages directly to the same real values"
+    print("bake_stack_to_lut3d: domain_min/domain_max now actually scale the baked "
+          "grid, and the result agrees with direct stage application across the "
+          "real extended range -- OK")
 
 
 def test_resize_recomputes_natively_more_accurately_than_resampling():
@@ -809,6 +995,49 @@ def test_fork_region_branch_counts_reflects_current_occupancy():
     assert counts == {"a": 1, "b": 0}
     print("fork_region_branch_counts: counts exactly the branch-tagged "
           "stages strictly between a split/merge pair -- OK")
+
+
+# --- find_fork_partner (StackPanel's linked-delete helper) -----------------
+
+def test_find_fork_partner_via_split_id_with_stages_on_both_branches():
+    stack = st.Stack()
+    split = st.make_fork_split_stage()
+    a1 = st.make_lut_stage(create_identity_lut(size=5), label="a1")
+    a1.branch = "a"
+    b1 = st.make_lut_stage(create_identity_lut(size=5), label="b1")
+    b1.branch = "b"
+    merge = st.make_fork_merge_stage()
+    for s in (split, a1, b1, merge):
+        stack.add_stage(s)
+    result = st.find_fork_partner(stack.stages, split.id)
+    assert result == (split.id, merge.id, [a1.id, b1.id])
+    print("find_fork_partner: given the split's id, finds its matching "
+          "merge and every interior stage in stack order -- OK")
+
+
+def test_find_fork_partner_via_merge_id_with_one_branch_empty():
+    stack, before, split, a1, merge, after = _build_fork_stack_for_region_tests()
+    result = st.find_fork_partner(stack.stages, merge.id)
+    assert result == (split.id, merge.id, [a1.id])
+    print("find_fork_partner: given the merge's id (with Branch B empty), "
+          "finds its matching split and just Branch A's stage -- OK")
+
+
+def test_find_fork_partner_returns_none_for_a_non_fork_stage():
+    stack, before, split, a1, merge, after = _build_fork_stack_for_region_tests()
+    assert st.find_fork_partner(stack.stages, before.id) is None
+    assert st.find_fork_partner(stack.stages, a1.id) is None
+    print("find_fork_partner: None for a stage that isn't a fork_split/"
+          "fork_merge marker at all -- OK")
+
+
+def test_find_fork_partner_returns_none_when_no_matching_marker_exists():
+    stack = st.Stack()
+    split = st.make_fork_split_stage()
+    stack.add_stage(split)  # no matching fork_merge anywhere -- corrupted/incomplete
+    assert st.find_fork_partner(stack.stages, split.id) is None
+    print("find_fork_partner: None for an unmatched marker (already-corrupted "
+          "or hand-edited stack) rather than raising -- OK")
 
 
 # --- StageCache -----------------------------------------------------------
@@ -945,6 +1174,14 @@ if __name__ == "__main__":
     test_aces_drt_stage_matches_bake_aces_output_transform_to_lut3d()
     test_cdl_stage_matches_direct_apply_cdl()
     test_cdl_stage_composes_after_a_lut_stage()
+    test_grading_primary_stage_matches_direct_apply()
+    test_grading_primary_stage_composes_after_a_lut_stage()
+    test_exposure_contrast_stage_matches_direct_apply()
+    test_exposure_contrast_stage_composes_after_a_lut_stage()
+    test_grading_tone_stage_matches_direct_apply()
+    test_grading_tone_stage_composes_after_a_lut_stage()
+    test_grading_rgb_curve_stage_matches_direct_apply()
+    test_grading_rgb_curve_stage_composes_after_a_lut_stage()
     test_colorspace_stage_matches_direct_apply_colorspace_conversion()
     test_colorspace_stage_composes_after_a_lut_stage()
     test_opacity_one_is_full_effect()
@@ -969,12 +1206,16 @@ if __name__ == "__main__":
     test_stray_branch_tag_outside_any_fork_region_is_ignored()
     test_stage_copy_preserves_branch_tag()
     test_apply_to_image_array_agrees_with_bake_on_identity_grid()
-    test_domain_metadata_does_not_affect_table()
+    test_domain_min_max_actually_scale_the_baked_table()
     test_resize_recomputes_natively_more_accurately_than_resampling()
     test_find_enclosing_fork_region_before_split_and_after_merge_is_none()
     test_find_enclosing_fork_region_between_split_and_merge_is_inside()
     test_find_enclosing_fork_region_with_no_fork_at_all_is_none()
     test_fork_region_branch_counts_reflects_current_occupancy()
+    test_find_fork_partner_via_split_id_with_stages_on_both_branches()
+    test_find_fork_partner_via_merge_id_with_one_branch_empty()
+    test_find_fork_partner_returns_none_for_a_non_fork_stage()
+    test_find_fork_partner_returns_none_when_no_matching_marker_exists()
     test_stage_cache_matches_uncached_result_across_edits()
     test_stage_cache_skips_recompute_of_untouched_stages()
     test_stage_cache_apply_to_image_array_matches_uncached_and_respects_input_key()

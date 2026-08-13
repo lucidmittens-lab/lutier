@@ -674,10 +674,13 @@ def render_full_resolution_still(source_path, lut=None, lut_chain=None, lut_chai
     keep working unchanged.
 
     Exists specifically so Export Still produces a real, full-quality
-    result instead of reusing the panel's already-downsampled preview
-    array (see PREVIEW_MAX_DIMENSION in sample_image_panel.py, which
-    exists purely for on-screen responsiveness and was never meant to be
-    what actually gets handed to a peer as a deliverable).
+    result instead of reusing whatever the panel's preview happens to be
+    showing at that instant -- Sample/Reference load at native resolution
+    (see sample_image_panel.py's "PREVIEW RESOLUTION" comment), but the
+    preview can transiently be a lower-resolution render mid-edit-burst
+    (see that module's EDIT_DOWNRES_FACTOR), which is exactly the kind of
+    throwaway, intentionally-approximate frame that should never be what
+    actually gets handed to a peer as a deliverable.
     """
     given = [x is not None for x in (lut, lut_chain, lut_chain_stages)]
     if sum(given) != 1:

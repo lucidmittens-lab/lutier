@@ -35,7 +35,9 @@ real fix for both the resolution ceiling and the interaction latency.
   not just "run a LUT."
 - **Only `lut`, `aces_drt`, `cdl`, `colorspace` stages are numerically
   interesting for a GPU port.** `printer_lights` and the fork stages are
-  thin wrappers/compositing logic around the other four.
+  thin wrappers/compositing logic around the other four. (As of this
+  doc's original writing -- `printer_lights` got its own real GPU path in
+  Stage 7 below, once it turned out to need more than a thin wrapper.)
 - **`lut` stages do NOT go through OCIO.** They call `lut.apply(array)`
   (a `colour.LUT3D` object, `colour-science`/numpy-based) or, if
   retargeted, `retarget_io(...)`. OCIO's GPU shader API has no direct
@@ -325,6 +327,129 @@ Two real options to evaluate against each other, not just pick blindly:
 Deliverable: whichever approach is chosen, working and validated against
 CPU `lut.apply()` output the same way Stage 2 validated the OCIO stages.
 
+**DONE (2026-08-09), done AFTER Stage 5 rather than before** (reordered
+per the original plan's own Stage 5 reordering precedent -- a live report
+that a `lut` stage anywhere in a stack was forcing the ENTIRE chain back
+to CPU, silently undoing Stages 2/3/5's work for every OTHER stage in
+that same stack, made this the actual bottleneck once Tier 1's operators
+were also GPU-eligible). **Option 1 (route through OCIO) won**, decisively,
+after validating both against real numbers rather than picking blindly:
+`ocio.Lut3DTransform` with `INTERP_LINEAR` matches `colour.LUT3D.apply()`'s
+own default trilinear interpolator to 1.4e-7 on CPU, and a REAL GPU
+render through OCIO's own generated shader matches `colour.LUT3D.apply()`
+to 5.4e-4 -- OCIO's own codegen already solves the half-texel coordinate
+remap a hand-written `sampler3D` lookup would have needed to get right
+itself (confirmed directly in the generated GLSL: `(color.zyx * (size-1)
++ 0.5) / size`, not a naive `color.rgb`), so Option 2's "hand-write it"
+work was never actually needed.
+
+- **`gpu_lut_shader.py`** (new) -- `Lut3DGpuCache`, fingerprinted on
+  `id(lut)` (not the table's values -- matches `stack._stage_fingerprint`'s
+  own established "loaded/baked LUT objects are never mutated in place"
+  guarantee for `"lut"` stages). Builds an `ocio.Lut3DTransform` from the
+  `colour.LUT3D`'s own grid values, compiles OCIO's generated shader, and
+  uploads the LUT's own values (read back via `GpuShaderDesc.get3DTextures()`
+  rather than re-deriving them) as a real `GL_TEXTURE_3D` with linear
+  filtering. `test_gpu_lut_shader.py` (4 tests) confirms eligibility
+  gating, the GPU-vs-CPU match above, cache identity-reuse, and resource
+  cleanup.
+- **SCOPE LIMIT, documented not silent**: only a plain, default-`[0,1]`-
+  domain `colour.LUT3D` is GPU-eligible -- a `LUT1D`, a non-default
+  domain, or `retarget_from`/`retarget_to` wrapping (a whole separate
+  colorspace-conversion step this doesn't chain in yet) all fall the
+  WHOLE containing stack back to CPU, exactly the behavior every `"lut"`
+  stage already had before this landed -- never a regression, just not
+  yet a widened fast path for those specific cases.
+- **`gpu_stack_renderer.py`** -- `"lut"` added to `GPU_ELIGIBLE_KINDS`;
+  `is_stack_gpu_eligible` grew a `"lut"`-specific extra check (retarget +
+  `gpu_lut_shader.is_lut3d_gpu_eligible`) alongside the general kind
+  check. Unlike every Tier 1 kind, a `"lut"` stage's own table is never
+  live-edited via any UI (only enabled/opacity/retarget are), so there's
+  no per-edit uniform push here at all -- just the cached compiled
+  program + a `GL_TEXTURE_3D` bound to unit 1 (`uInput`'s own 2D texture
+  always takes unit 0). Two new `test_gpu_stack_renderer.py` render
+  tests (single `lut` stage, `lut` -> `cdl` chain) plus eligibility-gating
+  updates (a plain LUT3D is now eligible; the OLD assertion that ANY
+  `"lut"` stage disqualified a stack no longer holds and was updated,
+  not just patched around, since that's the actual, intended behavior
+  change here) -- both chains matched CPU to ~7e-4, consistent with the
+  standalone validation above.
+- Full suite (428 tests) and all 7 standalone GPU test scripts (this
+  Stage's own `test_gpu_lut_shader.py` now included) re-confirmed
+  passing.
+
+**CRITICAL FOLLOW-UP (2026-08-10): "painfully slow" reported right after
+this landed -- NOT a GPU problem.** `sample_image_panel.py`'s CPU
+recompute (for `ScopesPanel` only, unrelated to what the GPU-rendered
+Viewer shows) was still running at up to native resolution on every
+isolated edit and on every burst's settle tick (the 2026-08-09 burst-skip
+fix only covered MID-burst ticks) -- and `colour.LUT3D.apply()`, a `"lut"`
+stage's own CPU path, measured **0.5-3.3 SECONDS** at native/half preview
+resolution (1920x1080 to 3840x2160), multiple real seconds of UI-thread
+stall per edit for any stack with a cube in it, regardless of how fast
+the GPU path itself had become. Fixed in `sample_image_panel.py`: a new
+`SCOPES_MAX_DIMENSION` (512px long edge) tier -- a GPU-eligible stack's
+CPU recompute now ALWAYS runs at this small, fixed, ceil-rounded-down
+size (never native, never even the existing `EDIT_DOWNRES_FACTOR`-halved
+size), for both isolated edits and every burst tick, with no "settle"
+upgrade needed at all (there's no higher-resolution version of this
+array to catch up to, since the Viewer never reads it). `_after_
+recompute_skipped` (the old skip-only-mid-burst flag) is gone entirely,
+replaced by this simpler always-cheap approach. `test_sample_image_panel.py`
+rewritten accordingly (11 tests, including a real regression guard using
+a 2200x100 test image sized specifically so the scopes-capped shape is
+unambiguously different from both full resolution and the
+`EDIT_DOWNRES_FACTOR` shape). Full suite (430 tests) and all 8 standalone
+GPU test scripts re-confirmed passing.
+
+**SECOND FOLLOW-UP (2026-08-10, same day): still "pretty slow" after the
+above -- found two more real, independent bugs by actually profiling
+(temporary `[PERF]` timing added throughout the paint/render/recompute
+path, then removed once both were confirmed fixed) rather than guessing
+further:**
+
+1. **The real remaining bottleneck**: `wipe_compare_widget._SideState.
+   ensure_texture` gated texture re-upload and GPU-chain re-render behind
+   ONE combined `(array_fp, stack_fp)` fingerprint. Since a live slider
+   drag changes the STACK fingerprint on every tick, that combined check
+   was also true every tick -- meaning the completely UNCHANGED native-
+   resolution source array was being deleted and re-uploaded to the GPU
+   from scratch (`glTexImage3D`... `glTexImage2D` -- ~130MB of PCIe
+   traffic for a 4K source) on every single edit, not just re-running the
+   actual (cheap) color chain against the already-uploaded texture. This
+   -- not the color math, not anything CPU-side -- was the dominant
+   remaining cost. Fixed by tracking `uploaded_array_fingerprint` and
+   `applied_stack_fingerprint` as two INDEPENDENT checks: re-upload only
+   when the array itself changes, re-render only when the stack changes.
+   New `test_wipe_compare_widget_gpu_state.py` (3 tests, real GL context)
+   is a direct regression guard: confirms editing the stack reuses the
+   native texture object (verified by pixel content, not GL object ID --
+   a freed ID can be recycled by the driver, a real gotcha hit while
+   writing these tests) while still producing different graded output.
+2. **A LogC-range grading cube fell back to CPU entirely**: found via a
+   temporary diagnostic print in `is_stack_gpu_eligible` explaining
+   exactly why a stack was ineligible (removed once diagnosed) -- a real
+   test cube (`LogC_VisionLook2_v170.cube`) had domain `[[0,0,0],
+   [1.79,1.79,1.79]]`, not `[0,1]`, hitting Stage 4's own documented
+   (but, it turned out, unnecessarily narrow) SCOPE LIMIT. LogC-range
+   domains are common for grading cubes, not an edge case -- widened
+   `gpu_lut_shader.py` to support any IMPLICIT domain (any `[min, max]`
+   pair, per `colour.LUT3D.is_domain_explicit()`), by wrapping OCIO's own
+   generated `Lut3DTransform` shader in one extra function that does the
+   same per-channel linear remap into `[0,1]` `colour.LUT3D.apply()`
+   itself does before indexing -- baked as GLSL literal constants (a
+   different domain always means a different `lut` object, hence a
+   different cache entry, anyway). Validated the same way as everything
+   else in this project: a real GPU render through the wrapped shader
+   matched `colour.LUT3D.apply()` with this exact domain to 4.7e-4 (same
+   tolerance as the default-domain case). Only a genuinely EXPLICIT
+   (per-sample) domain remains excluded now, a much narrower real gap
+   than "anything but [0,1]."
+
+Full suite (430 tests) and all 9 standalone GPU/widget test scripts
+(`test_wipe_compare_widget_gpu_state.py` now included) re-confirmed
+passing after both fixes, temporary diagnostics fully removed.
+
 ### Stage 5 -- Wire it into the live Viewer
 
 Combine Stages 1+3+4: `SampleImagePanel`'s live preview path switches
@@ -340,6 +465,97 @@ with interaction latency low enough that the zoom-resolution band-aid
 unnecessary at typical preview sizes -- worth explicitly re-measuring
 whether it's still needed at all once this lands, rather than assuming.
 
+**DONE (2026-08-09), reordered ahead of Stage 4 per Tom** (a live
+performance complaint -- "adjusting a CDL behind an ACES DRT" was still
+slow even after Stage 3's caching -- made clear the CPU path itself, not
+compile cost, was the remaining bottleneck for the actual Viewer). Tom's
+explicit choice: true GPU-resident rendering directly on the Viewer's own
+GL surface (not "GPU-compute then hand back to the existing CPU-pixmap
+pipeline"), plus Lanczos scaling instead of bilinear, plus keeping
+scale-to-screen a single concatenated operation regardless of zoom. The
+band-aid mentioned above (zoom-triggered resolution upgrade) was removed
+entirely as part of this -- superseded by loading natively at all times
+and letting `WipeCompositor`'s own Lanczos resample handle scale-to-
+screen, see "What does NOT change" below for what that band-aid's removal
+did and didn't touch.
+
+- **`gpu_stack_renderer.py`** (new) -- `GpuStackRenderer.render_chain`
+  runs an entire eligible `Stack` (see `is_stack_gpu_eligible`: no
+  fork_split/fork_merge at all, every enabled stage's kind in `{cdl,
+  aces_drt, colorspace}`) as a linear ping-pong chain of Stage 3's
+  compiled programs, one pass per enabled stage, at native resolution,
+  never touching the CPU.
+- **`gpu_lanczos_compositor.py`** (new) -- a separable 2-pass Lanczos-3
+  resampler (`LanczosResampler`) plus `WipeCompositor`, which resamples
+  each side of the wipe independently into widget space and composites
+  wipe divider / gutter background / placeholder text entirely on the
+  GPU. Validated against a hand-written float64 numpy reference of the
+  same algorithm (not PIL -- PIL's uint8 pipeline clips Lanczos ringing,
+  causing a false ~0.32 divergence that was investigated and ruled out
+  as a real bug).
+- **`wipe_compare_widget.py`** rewritten onto `QOpenGLWidget`'s real
+  `paintGL`, owning one `GpuStackRenderer` + one `WipeCompositor` per
+  widget; `sample_image_panel.py` now hands arrays (+ an optional
+  GPU-eligible `Stack` to grade) instead of pre-rendered `QPixmap`s.
+- **Known, accepted limitation**: the Lanczos resampler uses a fixed
+  6-tap kernel support per axis, correct for magnification/mild
+  minification but aliasing under heavy downscale (small-in-viewer,
+  zoomed-out case) -- a proper minification filter needs to widen its
+  support by roughly `1/scale`, not yet implemented. Confirmed as a real,
+  user-visible artifact in practice (color remains correct, only spatial
+  aliasing), not just a theoretical gap. Left as an open follow-up below.
+- **Real hardware GLSL version conflict, found and fixed**: the app's
+  actual (unforced) `QOpenGLWidget` context on macOS is OpenGL 2.1
+  Compatibility Profile / GLSL 1.20 (confirmed via direct `GL_VERSION`/
+  `GL_SHADING_LANGUAGE_VERSION` query on Apple M1: `2.1 Metal - 88` /
+  `1.20`) -- Stage 2/3's `#version 400`/Core-Profile-shaped shaders
+  failed outright against it, and forcing Core Profile 4.1 (per-widget or
+  app-wide) broke `pyqtgraph`'s Graph panel (`AA_ShareOpenGLContexts`
+  context-sharing failure, then `ShaderValidationError: No vertex array
+  object bound` -- `pyqtgraph`'s own GL code doesn't bind a VAO, which
+  Compatibility Profile tolerates but Core Profile doesn't). Tom's
+  decision: rewrite the entire pipeline to GLSL 1.20/Compatibility
+  Profile rather than fight the platform default -- done across
+  `gpu_shader_prototype.py`/`gpu_lanczos_compositor.py` (real VBOs
+  instead of the `gl_VertexID`-only fullscreen-triangle trick, `varying`/
+  `texture2D()`/`gl_FragColor` instead of `in`/`out`/`texture()`, an
+  explicit `uTargetSize` uniform instead of `textureSize()`), verified
+  against every existing GPU test afterward with no regressions.
+- **A real, reproduced `GL_INVALID_FRAMEBUFFER_OPERATION` bug, found via
+  the live app's own log rather than guessing**: several GL helper
+  functions (`GpuStackRenderer._render_stage_pass`,
+  `LanczosResampler.resample_into`,
+  `gpu_shader_prototype.create_rgba32f_render_target`) unconditionally
+  rebound framebuffer `0` as an assumed-safe "reset" when done -- but
+  inside a `QOpenGLWidget`'s `paintGL`, framebuffer `0` is NOT Qt's real
+  render target (Qt manages its own internal FBO invisibly), so this
+  corrupted the ambient GL state for whatever ran next, surfacing to Tom
+  as "the image goes black often when I make a change to a stack entry."
+  Fixed by capturing the ambient framebuffer binding
+  (`glGetIntegerv(GL_FRAMEBUFFER_BINDING)`) once at each entry point and
+  restoring THAT instead of `0`. Confirmed fixed against the live app's
+  own log (`/tmp/lutier_launch.log`), not just the isolated unit tests
+  (which used their own explicit offscreen render targets and so never
+  exercised the real bug).
+- **A second, separate performance bug, found and fixed**: even after the
+  Viewer itself went GPU-resident, `sample_image_panel.py`'s
+  `refresh_preview()` was still running the full CPU/OCIO recompute
+  (`apply_stack_to_image_array`) on every single edit tick, for
+  `ScopesPanel`'s benefit -- meaning a GPU-eligible stack's Viewer got
+  faster but the UI thread was still paying the old CPU cost regardless,
+  explaining "the performance isn't improved much." Fixed: a GPU-eligible
+  stack's burst ticks (`_editing_settle_timer.isActive()`) now skip the
+  CPU recompute entirely (tracked via the new `_after_recompute_skipped`
+  flag) rather than merely downres-ing it -- Scopes goes stale for the
+  duration of a burst and catches up with one real, full-resolution
+  recompute once `_on_editing_settled` fires. The existing CPU-side
+  downres path (`EDIT_DOWNRES_FACTOR`) is unchanged and still applies to
+  GPU-INeligible stacks (e.g. any stack with a fork, a `lut` stage with a
+  non-default domain, or -- as of Stage 7 -- a `printer_lights` stage
+  whose working_colourspace has no unambiguous native-linear sibling),
+  which still need a real CPU-computed "after" array for the Viewer
+  itself.
+
 ### Stage 6 -- Fork regions on GPU
 
 `fork_split`/`fork_merge` (two independent branches blended back
@@ -348,6 +564,107 @@ targets (one per branch) and a blend pass, rather than a single linear
 shader chain. Deliberately last, since it's the one structurally
 different case in `_run_stages` and shouldn't block the common
 single-chain case from shipping first.
+
+### Stage 7 (2026-08-11) -- `printer_lights` GPU path -- DONE
+
+`printer_lights.py`'s own math (decode to linear -> per-channel R/G/B
+gain -> encode from linear, see that module's docstring) has no single
+OCIO transform with a live-editable gain: `ocio.MatrixTransform` (the
+natural fit for a diagonal per-channel gain) has NO dynamic-property
+support at all, confirmed by probing `PyOpenColorIO` directly (unlike
+GradingPrimary/GradingRGBCurve/ExposureContrast/GradingTone, which all
+expose `makeXDynamic()`). So `gpu_printer_lights_shader.py` composes TWO
+separately-extracted OCIO shaders (decode: working_colourspace -> its
+native-linear sibling; encode: the reverse) with a small hand-written
+GLSL wrapper in between that multiplies by a real `uPrinterLightsGain`
+uniform -- same "OCIO for the reference math, a hand-written uniform for
+the continuously-live-edited part" split `gpu_cdl_shader.py` already
+established for CDL.
+
+Composing two independently-extracted OCIO shaders into one GLSL program
+needed `GpuShaderDesc.setResourcePrefix` (confirmed present in
+`PyOpenColorIO`, added as an optional param to
+`gpu_shader_prototype._extract_ocio_glsl`) to keep each half's internal
+symbols from colliding -- probed directly that neither half needs a
+texture (0 textures, 0 uniforms on both sides for a real ACEScct<->ACEScg
+pair), so this module's own texture-binding gap (it doesn't wire one up)
+never triggers for any working space in this app's builtin configs today,
+but `is_printer_lights_gpu_eligible` checks for it anyway and falls back
+to CPU rather than assume.
+
+Fingerprinted on `(config_name, working_colourspace)` ONLY -- same
+"shader STRUCTURE doesn't change when a slider moves" reasoning
+`gpu_ocio_dynamic.py` uses for the dynamic-property kinds, just via a
+plain uniform instead. GPU eligibility requires PyOpenColorIO (no GPU
+equivalent of `printer_lights.py`'s own colour-science CPU fallback) and
+an unambiguous native-linear sibling for the working space
+(`aces_drt._find_native_linear_colourspace`'s own "raise rather than
+silently guess wrong" rule) -- either gap falls the whole stack back to
+CPU, same as any other GPU-ineligible case.
+
+**Real bug found and fixed during this work:** the first version of
+`is_printer_lights_gpu_eligible` called `gsp.compile_ocio_program` (a
+real `glCreateShader`/`glCompileShader` call) to answer the eligibility
+question, and was called from `is_stack_gpu_eligible` with no guarantee
+of a current OpenGL context -- a real, reproduced SIGSEGV (exit code 139)
+when exercised standalone with no context set up first, the same class of
+"uncontexted GL call" crash this app already hit once elsewhere this
+session (see `WipeCompareWidget.paintGL`'s own docstring on the Shiboken
+crash). Fixed by splitting the GL-context-FREE half (config/native-linear
+lookup, OCIO's own shader-info codegen -- pure string generation, no real
+GL driver call) from the GL-COMPILE half, and having
+`is_printer_lights_gpu_eligible` call only the former.
+
+Validated (`test_gpu_printer_lights_shader.py`, `test_gpu_stack_renderer.py`):
+GPU vs CPU max|delta| 6e-6 for a single `printer_lights` stage (ACEScct),
+7.1e-5 chained with an ACES DRT stage, 0.0 exact for zero points (a pure
+decode/encode round trip) -- both a log working space (ACEScct) and an
+already-linear one (ACEScg, where decode/encode is a same-space no-op
+conversion) covered.
+
+### Stage 9 (2026-08-11) -- Task #31: HDR `aces_drt` Viewer milkiness -- FIXED
+
+Reported symptom: "HDR output color spaces in ACES DRT operator broken.
+very milky in viewer. scope seems correct" -- later clarified as "almost
+1 uniform gray with no details," not a monitor/EDR-hardware color-
+management issue.
+
+**Root cause, confirmed directly:** every SDR display/view this app's own
+GPU tests happened to exercise needs ZERO GPU textures from OCIO's own
+codegen (pure baked-constant curve/matrix math). Every HDR display/view
+(`ST2084-P3-D65 - Display`, `Rec.2100-PQ - Display`, `Rec.2100-HLG -
+Display` -- confirmed directly, all three) needs ONE real GPU texture: a
+4096x17 single-channel 2D texture OCIO packs its internal 1D shaper LUT
+into. `gpu_stack_renderer.py`'s `aces_drt` handling (shared with
+`colorspace` via `gpu_shader_cache.OcioGpuStageCache`, which has no
+texture concept at all) never bound ANY texture for this stage kind, for
+ANY display/view -- so an HDR view's shader silently sampled an unbound
+(all-zero) texture, producing severely compressed, nearly-uniform-gray
+output. Confirmed on a real image: GPU min/max/mean 0.204/0.518/0.467 vs.
+CPU's correct 0.0/0.694/0.329 for the exact same stack -- exactly the
+reported symptom, and exactly why Scopes (CPU-computed) looked correct
+while the Viewer (GPU-rendered) didn't: two entirely separate code paths,
+only one of them missing this bind.
+
+**Fix:** a new, dedicated `gpu_aces_drt_shader.AcesDrtGpuCache` (NOT
+sharing `OcioGpuStageCache` with `colorspace` anymore, which stays
+exactly as it was -- colorspace transforms have never been observed to
+need a texture) that extracts and uploads whatever 2D textures (zero or
+more) a given `(config, working_colourspace, display, view)` fingerprint
+actually needs, via a new `gpu_shader_prototype.
+_extract_ocio_glsl_with_2d_textures` (returns real texture values/
+dimensions/sampler names, not just counts). `gpu_stack_renderer.py`'s own
+`_set_uniforms_for_stage` now has a real `"aces_drt"` branch binding each
+texture starting at `GL_TEXTURE1` (unit 0 is always `uInput`) -- a no-op
+loop for every SDR display/view, so this fix costs nothing for the
+common case.
+
+Validated (`test_gpu_aces_drt_shader.py`): all three HDR displays match
+CPU exactly (max|delta| 7.7e-5 for ST2084-P3-D65, 2e-6/4e-6 for
+Rec.2100-PQ/HLG on a real image), and an explicit dynamic-range assertion
+(not just a pixel-delta check) guards against a regression that happens
+to average out back to a small delta while still being visually
+compressed.
 
 ## Risks / open questions to revisit as stages land
 
@@ -389,6 +706,16 @@ single-chain case from shipping first.
   well-known formula. Out of scope for the GPU project itself (this is
   an app feature addition, not an acceleration technique) -- worth its
   own task whenever there's room for it.
+- **Proper Lanczos minification filtering** -- `gpu_lanczos_compositor.py`'s
+  `LanczosResampler` uses a fixed 6-tap kernel support per axis regardless
+  of scale, which is correct for magnification/mild minification but
+  aliases under heavy downscale. Confirmed by Tom in practice: "when the
+  image is very small in the viewer and not zoomed in it's very crunchy
+  and there are lots of scaling artifacts" (color remained correct --
+  purely a spatial-filtering gap). A real fix widens the kernel's support
+  by roughly `1/scale` when `scale < 1` (i.e. sample more source texels
+  per output pixel, proportionally to how much the image is being shrunk)
+  -- not yet implemented.
 
 ## What does NOT change
 

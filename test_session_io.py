@@ -16,6 +16,11 @@ import numpy as np
 import colour
 from PIL import Image
 
+import custom_drt
+import exposure_contrast
+import grading_primary
+import grading_rgb_curve
+import grading_tone
 import session_io
 import stack as st
 from lut_library import LUTLibraryEntry, LUTLibrary
@@ -151,6 +156,166 @@ def test_fork_split_and_merge_round_trip_with_branch_tagged_stages():
           "fork_merge region with a branch-tagged stage on each side "
           "round-trips through plain JSON as an ordinary flat stage list, "
           "and bakes identically to the original -- OK")
+
+
+def test_grading_primary_stage_round_trips():
+    if not grading_primary.OCIO_AVAILABLE:
+        print("SKIPPED test_grading_primary_stage_round_trips -- PyOpenColorIO not installed")
+        return
+    stage = st.make_grading_primary_stage(
+        style="video", brightness=(0.0, 0.0, 0.0, 0.0), contrast=(1.0, 1.0, 1.0, 1.0),
+        gamma=(1.0, 1.0, 1.0, 1.0), lift=(0.01, -0.02, 0.0, 0.0), gain=(1.1, 0.95, 1.0, 1.0),
+        pivot=-0.15, saturation=1.05, label="My Grade", opacity=0.8,
+    )
+    stack = st.Stack(stages=[stage])
+
+    data = stack_to_session_dict_round_trip_via_json(stack)
+    rebuilt_stack, warnings = session_io.stack_from_session_dict(data)
+
+    assert warnings == []
+    assert len(rebuilt_stack.stages) == 1
+    r = rebuilt_stack.stages[0]
+    assert r.kind == "grading_primary" and r.label == "My Grade" and r.opacity == 0.8
+    assert r.params["style"] == "video"
+    assert tuple(r.params["lift"]) == (0.01, -0.02, 0.0, 0.0)
+    assert tuple(r.params["gain"]) == (1.1, 0.95, 1.0, 1.0)
+    assert r.params["pivot"] == -0.15
+    assert r.params["saturation"] == 1.05
+
+    original_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=stack.stages))
+    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=rebuilt_stack.stages))
+    assert np.allclose(original_baked.table, rebuilt_baked.table, atol=1e-9)
+    print("stack_to_session_dict/stack_from_session_dict: a 'grading_primary' "
+          "stage round-trips through plain JSON and bakes identically -- OK")
+
+
+def test_exposure_contrast_stage_round_trips():
+    if not exposure_contrast.OCIO_AVAILABLE:
+        print("SKIPPED test_exposure_contrast_stage_round_trips -- PyOpenColorIO not installed")
+        return
+    stage = st.make_exposure_contrast_stage(
+        style="log", exposure=0.4, contrast=1.15, gamma=1.05, label="My EC", opacity=0.8)
+    stack = st.Stack(stages=[stage])
+
+    data = stack_to_session_dict_round_trip_via_json(stack)
+    rebuilt_stack, warnings = session_io.stack_from_session_dict(data)
+
+    assert warnings == []
+    assert len(rebuilt_stack.stages) == 1
+    r = rebuilt_stack.stages[0]
+    assert r.kind == "exposure_contrast" and r.label == "My EC" and r.opacity == 0.8
+    assert r.params["style"] == "log"
+    assert r.params["exposure"] == 0.4
+    assert r.params["contrast"] == 1.15
+    assert r.params["gamma"] == 1.05
+
+    original_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=stack.stages))
+    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=rebuilt_stack.stages))
+    assert np.allclose(original_baked.table, rebuilt_baked.table, atol=1e-9)
+    print("stack_to_session_dict/stack_from_session_dict: an 'exposure_contrast' "
+          "stage round-trips through plain JSON and bakes identically -- OK")
+
+
+def test_custom_drt_stage_round_trips():
+    """Regression test: an earlier version had no save-path branch for
+    'custom_drt' at all, so saving a session with a CAMier stage raised
+    (Tom, 2026-08-13, "if you try to save session with this op, it
+    cannot")."""
+    if not custom_drt.aces_drt.OCIO_AVAILABLE:
+        print("SKIPPED test_custom_drt_stage_round_trips -- PyOpenColorIO not installed")
+        return
+    stage = st.make_custom_drt_stage(
+        "ARRI LogC4", contrast=0.96, headroom=0.6, blend_percentile=0.95,
+        tail_width=0.5, desat_start=0.87, desat_end=1.0, identity_zone=0.8,
+        transition_softness=0.3, fullness_r=0.1, fullness_g=0.0, fullness_b=0.04,
+        mastering_display="HDR", final_target="P3-D65", mastering_brightness=1000,
+        label="My CAMier", opacity=0.9)
+    stack = st.Stack(stages=[stage])
+
+    data = stack_to_session_dict_round_trip_via_json(stack)
+    rebuilt_stack, warnings = session_io.stack_from_session_dict(data)
+
+    assert warnings == []
+    assert len(rebuilt_stack.stages) == 1
+    r = rebuilt_stack.stages[0]
+    assert r.kind == "custom_drt" and r.label == "My CAMier" and r.opacity == 0.9
+    assert r.params["working_colourspace"] == "ARRI LogC4"
+    assert r.params["contrast"] == 0.96
+    assert r.params["headroom"] == 0.6
+    assert r.params["blend_percentile"] == 0.95
+    assert r.params["tail_width"] == 0.5
+    assert r.params["desat_start"] == 0.87
+    assert r.params["identity_zone"] == 0.8
+    assert r.params["transition_softness"] == 0.3
+    assert r.params["fullness_r"] == 0.1
+    assert r.params["fullness_g"] == 0.0
+    assert r.params["fullness_b"] == 0.04
+    assert r.params["mastering_display"] == "HDR"
+    assert r.params["final_target"] == "P3-D65"
+    assert r.params["mastering_brightness"] == 1000
+
+    original_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=stack.stages))
+    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=rebuilt_stack.stages))
+    assert np.allclose(original_baked.table, rebuilt_baked.table, atol=1e-9)
+    print("stack_to_session_dict/stack_from_session_dict: a 'custom_drt' "
+          "stage round-trips through plain JSON and bakes identically -- OK")
+
+
+def test_grading_tone_stage_round_trips():
+    if not grading_tone.OCIO_AVAILABLE:
+        print("SKIPPED test_grading_tone_stage_round_trips -- PyOpenColorIO not installed")
+        return
+    midtones = (1.05, 0.98, 1.02, 1.0, 0.4, 0.6)
+    stage = st.make_grading_tone_stage(
+        style="video", midtones=midtones, scontrast=1.2, label="My Tone", opacity=0.8)
+    stack = st.Stack(stages=[stage])
+
+    data = stack_to_session_dict_round_trip_via_json(stack)
+    rebuilt_stack, warnings = session_io.stack_from_session_dict(data)
+
+    assert warnings == []
+    assert len(rebuilt_stack.stages) == 1
+    r = rebuilt_stack.stages[0]
+    assert r.kind == "grading_tone" and r.label == "My Tone" and r.opacity == 0.8
+    assert r.params["style"] == "video"
+    assert tuple(r.params["midtones"]) == midtones
+    assert tuple(r.params["blacks"]) == grading_tone.DEFAULT_RANGE_VALUES["blacks"]
+    assert r.params["scontrast"] == 1.2
+
+    original_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=stack.stages))
+    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=rebuilt_stack.stages))
+    assert np.allclose(original_baked.table, rebuilt_baked.table, atol=1e-9)
+    print("stack_to_session_dict/stack_from_session_dict: a 'grading_tone' "
+          "stage round-trips through plain JSON and bakes identically -- OK")
+
+
+def test_grading_rgb_curve_stage_round_trips():
+    if not grading_rgb_curve.OCIO_AVAILABLE:
+        print("SKIPPED test_grading_rgb_curve_stage_round_trips -- PyOpenColorIO not installed")
+        return
+    master = ((0.0, 0.0), (0.5, 0.62), (1.0, 1.0))
+    red = ((0.0, 0.0), (0.3, 0.25), (1.0, 1.0))
+    stage = st.make_grading_rgb_curve_stage(
+        style="video", master=master, red=red, label="My Curve", opacity=0.8)
+    stack = st.Stack(stages=[stage])
+
+    data = stack_to_session_dict_round_trip_via_json(stack)
+    rebuilt_stack, warnings = session_io.stack_from_session_dict(data)
+
+    assert warnings == []
+    assert len(rebuilt_stack.stages) == 1
+    r = rebuilt_stack.stages[0]
+    assert r.kind == "grading_rgb_curve" and r.label == "My Curve" and r.opacity == 0.8
+    assert r.params["style"] == "video"
+    assert tuple(tuple(p) for p in r.params["master"]) == master
+    assert tuple(tuple(p) for p in r.params["red"]) == red
+    assert tuple(tuple(p) for p in r.params["green"]) == grading_rgb_curve.DEFAULT_CONTROL_POINTS
+
+    original_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=stack.stages))
+    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=rebuilt_stack.stages))
+    assert np.allclose(original_baked.table, rebuilt_baked.table, atol=1e-9)
+    print("stack_to_session_dict/stack_from_session_dict: a 'grading_rgb_curve' "
+          "stage round-trips through plain JSON and bakes identically -- OK")
 
 
 def test_branch_tagged_stage_skipped_individually_when_it_cant_reconstruct():
@@ -518,6 +683,11 @@ if __name__ == "__main__":
     test_embedded_dict_distinguishes_1d_from_3d_by_table_ndim()
     test_embedded_lut_stage_round_trips_without_any_file()
     test_fork_split_and_merge_round_trip_with_branch_tagged_stages()
+    test_grading_primary_stage_round_trips()
+    test_exposure_contrast_stage_round_trips()
+    test_custom_drt_stage_round_trips()
+    test_grading_tone_stage_round_trips()
+    test_grading_rgb_curve_stage_round_trips()
     test_branch_tagged_stage_skipped_individually_when_it_cant_reconstruct()
     test_stack_to_session_dict_raises_loudly_for_unreconstructable_lut_stage()
     test_load_session_with_unknown_future_stage_kind_still_loads_others()

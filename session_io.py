@@ -158,6 +158,11 @@ import colour
 from app_logic import load_lut_any_format, create_identity_lut, load_image_as_array
 import stack as st
 import cdl
+import custom_drt
+import exposure_contrast
+import grading_primary
+import grading_rgb_curve
+import grading_tone
 from stack_memory import StackMemory, StackMemoryLibrary
 from cdl_library import CDLEntry, CDLLibrary
 from lut_library import LUTLibraryEntry, LUTLibrary
@@ -281,6 +286,27 @@ def stage_to_session_dict(stage):
         entry["display"] = stage.params.get("display")
         entry["view"] = stage.params.get("view")
         entry["config_name"] = stage.params.get("config_name")
+    elif stage.kind == "custom_drt":
+        entry["working_colourspace"] = stage.params.get("working_colourspace")
+        entry["contrast"] = stage.params.get("contrast", custom_drt.DEFAULT_CONTRAST)
+        entry["headroom"] = stage.params.get("headroom", custom_drt.DEFAULT_HEADROOM)
+        entry["blend_percentile"] = stage.params.get(
+            "blend_percentile", custom_drt.DEFAULT_BLEND_PERCENTILE)
+        entry["tail_width"] = stage.params.get("tail_width", custom_drt.DEFAULT_TAIL_WIDTH)
+        entry["desat_start"] = stage.params.get("desat_start", custom_drt.DEFAULT_DESAT_START)
+        entry["desat_end"] = stage.params.get("desat_end", custom_drt.DEFAULT_DESAT_END)
+        entry["identity_zone"] = stage.params.get("identity_zone", custom_drt.DEFAULT_IDENTITY_ZONE)
+        entry["transition_softness"] = stage.params.get(
+            "transition_softness", custom_drt.DEFAULT_TRANSITION_SOFTNESS)
+        entry["fullness_r"] = stage.params.get("fullness_r", custom_drt.DEFAULT_FULLNESS_R)
+        entry["fullness_g"] = stage.params.get("fullness_g", custom_drt.DEFAULT_FULLNESS_G)
+        entry["fullness_b"] = stage.params.get("fullness_b", custom_drt.DEFAULT_FULLNESS_B)
+        entry["mastering_display"] = stage.params.get(
+            "mastering_display", custom_drt.DEFAULT_MASTERING_DISPLAY)
+        entry["final_target"] = stage.params.get("final_target")
+        entry["mastering_brightness"] = stage.params.get(
+            "mastering_brightness", custom_drt.DEFAULT_MASTERING_BRIGHTNESS)
+        entry["config_name"] = stage.params.get("config_name")
     elif stage.kind == "cdl":
         entry["slope"] = list(stage.params.get("slope", cdl.IDENTITY_SLOPE))
         entry["offset"] = list(stage.params.get("offset", cdl.IDENTITY_OFFSET))
@@ -293,6 +319,33 @@ def stage_to_session_dict(stage):
         entry["src"] = stage.params.get("src")
         entry["dst"] = stage.params.get("dst")
         entry["config_name"] = stage.params.get("config_name")
+    elif stage.kind == "grading_primary":
+        entry["style"] = stage.params.get("style", grading_primary.DEFAULT_STYLE)
+        entry["brightness"] = list(stage.params.get("brightness", grading_primary.IDENTITY_ADD))
+        entry["contrast"] = list(stage.params.get("contrast", grading_primary.IDENTITY_MULT))
+        entry["gamma"] = list(stage.params.get("gamma", grading_primary.IDENTITY_MULT))
+        entry["offset"] = list(stage.params.get("offset", grading_primary.IDENTITY_ADD))
+        entry["exposure"] = list(stage.params.get("exposure", grading_primary.IDENTITY_ADD))
+        entry["lift"] = list(stage.params.get("lift", grading_primary.IDENTITY_ADD))
+        entry["gain"] = list(stage.params.get("gain", grading_primary.IDENTITY_MULT))
+        entry["pivot"] = stage.params.get("pivot", grading_primary.DEFAULT_PIVOT)
+        entry["saturation"] = stage.params.get("saturation", grading_primary.DEFAULT_SATURATION)
+    elif stage.kind == "exposure_contrast":
+        entry["style"] = stage.params.get("style", exposure_contrast.DEFAULT_STYLE)
+        entry["exposure"] = stage.params.get("exposure", exposure_contrast.IDENTITY_EXPOSURE)
+        entry["contrast"] = stage.params.get("contrast", exposure_contrast.IDENTITY_CONTRAST)
+        entry["gamma"] = stage.params.get("gamma", exposure_contrast.IDENTITY_GAMMA)
+    elif stage.kind == "grading_tone":
+        entry["style"] = stage.params.get("style", grading_tone.DEFAULT_STYLE)
+        for range_key in grading_tone.RANGE_KEYS:
+            entry[range_key] = list(
+                stage.params.get(range_key) or grading_tone.DEFAULT_RANGE_VALUES[range_key])
+        entry["scontrast"] = stage.params.get("scontrast", grading_tone.DEFAULT_SCONTRAST)
+    elif stage.kind == "grading_rgb_curve":
+        entry["style"] = stage.params.get("style", grading_rgb_curve.DEFAULT_STYLE)
+        for channel in grading_rgb_curve.RGB_CHANNELS:
+            points = stage.params.get(channel) or grading_rgb_curve.DEFAULT_CONTROL_POINTS
+            entry[channel] = [list(point) for point in points]
     elif stage.kind == "fork_split":
         pass  # no extra fields -- see module docstring, STACK FORKING
     elif stage.kind == "fork_merge":
@@ -387,6 +440,31 @@ def stage_from_session_dict(entry):
             enabled=entry.get("enabled", True),
             opacity=entry.get("opacity", 1.0),
         )
+    elif kind == "custom_drt":
+        stage = st.make_custom_drt_stage(
+            entry.get("working_colourspace"),
+            contrast=entry.get("contrast", custom_drt.DEFAULT_CONTRAST),
+            headroom=entry.get("headroom", custom_drt.DEFAULT_HEADROOM),
+            blend_percentile=entry.get("blend_percentile", custom_drt.DEFAULT_BLEND_PERCENTILE),
+            tail_width=entry.get("tail_width", custom_drt.DEFAULT_TAIL_WIDTH),
+            desat_start=entry.get("desat_start", custom_drt.DEFAULT_DESAT_START),
+            desat_end=entry.get("desat_end", custom_drt.DEFAULT_DESAT_END),
+            identity_zone=entry.get("identity_zone", custom_drt.DEFAULT_IDENTITY_ZONE),
+            transition_softness=entry.get(
+                "transition_softness", custom_drt.DEFAULT_TRANSITION_SOFTNESS),
+            fullness_r=entry.get("fullness_r", custom_drt.DEFAULT_FULLNESS_R),
+            fullness_g=entry.get("fullness_g", custom_drt.DEFAULT_FULLNESS_G),
+            fullness_b=entry.get("fullness_b", custom_drt.DEFAULT_FULLNESS_B),
+            mastering_display=entry.get(
+                "mastering_display", custom_drt.DEFAULT_MASTERING_DISPLAY),
+            final_target=entry.get("final_target"),
+            mastering_brightness=entry.get(
+                "mastering_brightness", custom_drt.DEFAULT_MASTERING_BRIGHTNESS),
+            config_name=entry.get("config_name"),
+            label=label,
+            enabled=entry.get("enabled", True),
+            opacity=entry.get("opacity", 1.0),
+        )
     elif kind == "cdl":
         stage = st.make_cdl_stage(
             slope=entry.get("slope", cdl.IDENTITY_SLOPE),
@@ -404,6 +482,52 @@ def stage_from_session_dict(entry):
         stage = st.make_colorspace_stage(
             entry.get("src"), entry.get("dst"),
             config_name=entry.get("config_name"),
+            label=label,
+            enabled=entry.get("enabled", True),
+            opacity=entry.get("opacity", 1.0),
+        )
+    elif kind == "grading_primary":
+        stage = st.make_grading_primary_stage(
+            style=entry.get("style", grading_primary.DEFAULT_STYLE),
+            brightness=entry.get("brightness", grading_primary.IDENTITY_ADD),
+            contrast=entry.get("contrast", grading_primary.IDENTITY_MULT),
+            gamma=entry.get("gamma", grading_primary.IDENTITY_MULT),
+            offset=entry.get("offset", grading_primary.IDENTITY_ADD),
+            exposure=entry.get("exposure", grading_primary.IDENTITY_ADD),
+            lift=entry.get("lift", grading_primary.IDENTITY_ADD),
+            gain=entry.get("gain", grading_primary.IDENTITY_MULT),
+            pivot=entry.get("pivot", grading_primary.DEFAULT_PIVOT),
+            saturation=entry.get("saturation", grading_primary.DEFAULT_SATURATION),
+            label=label,
+            enabled=entry.get("enabled", True),
+            opacity=entry.get("opacity", 1.0),
+        )
+    elif kind == "exposure_contrast":
+        stage = st.make_exposure_contrast_stage(
+            style=entry.get("style", exposure_contrast.DEFAULT_STYLE),
+            exposure=entry.get("exposure", exposure_contrast.IDENTITY_EXPOSURE),
+            contrast=entry.get("contrast", exposure_contrast.IDENTITY_CONTRAST),
+            gamma=entry.get("gamma", exposure_contrast.IDENTITY_GAMMA),
+            label=label,
+            enabled=entry.get("enabled", True),
+            opacity=entry.get("opacity", 1.0),
+        )
+    elif kind == "grading_tone":
+        stage = st.make_grading_tone_stage(
+            style=entry.get("style", grading_tone.DEFAULT_STYLE),
+            blacks=entry.get("blacks"), shadows=entry.get("shadows"),
+            midtones=entry.get("midtones"), highlights=entry.get("highlights"),
+            whites=entry.get("whites"),
+            scontrast=entry.get("scontrast", grading_tone.DEFAULT_SCONTRAST),
+            label=label,
+            enabled=entry.get("enabled", True),
+            opacity=entry.get("opacity", 1.0),
+        )
+    elif kind == "grading_rgb_curve":
+        stage = st.make_grading_rgb_curve_stage(
+            style=entry.get("style", grading_rgb_curve.DEFAULT_STYLE),
+            red=entry.get("red"), green=entry.get("green"),
+            blue=entry.get("blue"), master=entry.get("master"),
             label=label,
             enabled=entry.get("enabled", True),
             opacity=entry.get("opacity", 1.0),

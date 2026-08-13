@@ -6,3 +6,8 @@ __pycache__/
 dist/
 build/
 .DS_Store
+diag_hover*.py
+camier.cube
+camier4.cube
+camier.png
+default_sample_image_acescct_ap1_graded.png
