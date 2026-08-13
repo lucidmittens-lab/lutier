@@ -212,9 +212,15 @@ class SampleImagePanel(QWidget):
     "after" result is (re)computed -- ScopesPanel subscribes to this so its
     histogram/waveform/vectorscope always reflect whatever's currently
     shown in the wipe compare, without duplicating any of the stack
-    resolution logic that already lives here."""
+    resolution logic that already lives here.
+
+    Emits image_loaded(width, height) once per successful SAMPLE (not
+    Reference) load -- MainWindow uses this to seed Canvas Settings from
+    the first thing loaded in a session, see canvas.py's docstring and
+    MainWindow._on_sample_image_loaded."""
 
     after_image_changed = Signal(object)
+    image_loaded = Signal(int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -776,6 +782,14 @@ class SampleImagePanel(QWidget):
         self.load_default_image(
             str(path), declared_source_colourspace=DEFAULT_SAMPLE_IMAGE_SOURCE_COLOURSPACE)
 
+    def set_canvas_aspect_ratio(self, ratio):
+        """Passthrough to WipeCompareWidget.set_canvas_aspect_ratio -- the
+        panel boundary MainWindow calls through (see canvas.py's docstring
+        and MainWindow._apply_canvas_settings/_on_sample_image_loaded/
+        _new_session/_open_session, every place self._canvas can change)
+        rather than reaching into self.compare directly."""
+        self.compare.set_canvas_aspect_ratio(ratio)
+
     def _load_image_core(self, path):
         try:
             array = load_image_as_array(path, max_dimension=None)  # native res -- see this module's "PREVIEW RESOLUTION" comment
@@ -798,6 +812,7 @@ class SampleImagePanel(QWidget):
         self._recompute_sample_after()
         self._render_wipe()
         self._casting_controller.on_stack_or_image_changed()
+        self.image_loaded.emit(array.shape[1], array.shape[0])
         return True
 
     def import_reference_image(self):

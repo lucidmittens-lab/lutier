@@ -112,6 +112,82 @@ def test_gutter_outside_image_rect_shows_background_color():
           "background color, the image area shows the actual content -- OK")
 
 
+def test_canvas_rect_paints_a_distinct_color_between_canvas_and_image():
+    """Regression test for a real, confirmed bug (Tom, 2026-08-13):
+    before canvas_rect_qt existed, the region between the canvas box and
+    the (smaller) image inside it fell through to background_color --
+    visually indistinguishable from the region OUTSIDE the canvas box
+    entirely, so Canvas Settings' letterboxing had no visible effect.
+    Three concentric regions here, each a different color: background
+    (outside the canvas box), canvas_color (inside the canvas box, outside
+    the image), and the actual image content."""
+    _app, context, surface = gsp._make_offscreen_gl_context()
+    widget_w, widget_h = 100, 100
+    src = np.full((20, 20, 3), 0.9, dtype=np.float32)  # bright image content
+    tex, w, h = gsp.upload_rgba32f_texture(src)
+
+    canvas_rect = (10, 10, 80, 80)  # a canvas box well inside the widget
+    image_rect = (40, 40, 20, 20)  # a smaller image box well inside the canvas
+    background = (0.1, 0.1, 0.6)
+    canvas_color = (0.0, 0.0, 0.0)
+
+    compositor = glc.WipeCompositor()
+    result = _render_and_read_back(
+        compositor, widget_w, widget_h,
+        before_texture=None, before_size=None,
+        after_texture=tex, after_size=(w, h),
+        image_rect_qt=image_rect,
+        wipe_enabled=False, divider_fraction=0.5,
+        background_color=background, placeholder_color=(0.2, 0.2, 0.2),
+        canvas_rect_qt=canvas_rect, canvas_color=canvas_color)
+    compositor.clear_gl_resources()
+    gl.glDeleteTextures([tex])
+    context.doneCurrent()
+
+    outside_canvas = result[0:5, 0:5]  # corner -- outside the canvas box entirely
+    np.testing.assert_allclose(outside_canvas.mean(axis=(0, 1)), background, atol=0.01)
+
+    inside_canvas_outside_image = result[15:20, 15:20]  # inside canvas_rect, well clear of image_rect
+    np.testing.assert_allclose(inside_canvas_outside_image.mean(axis=(0, 1)), canvas_color, atol=0.01)
+    assert not np.allclose(inside_canvas_outside_image.mean(axis=(0, 1)), background, atol=0.05), (
+        "the canvas letterbox area must NOT match the background color, or it's invisible as a canvas at all")
+
+    inside_image = result[45:55, 45:55]
+    assert inside_image.mean() > 0.8, "the image area itself should show the bright source"
+    print("WipeCompositor: canvas_rect_qt paints a real, distinct color between "
+          "the canvas box and the image, separate from the outer background -- OK")
+
+
+def test_canvas_rect_qt_none_leaves_original_behavior_unchanged():
+    """canvas_rect_qt=None (the default -- every call site before Canvas
+    Settings existed) must produce byte-identical output to before this
+    parameter was added: the whole gutter outside image_rect is
+    background_color, no distinct canvas-color region at all."""
+    _app, context, surface = gsp._make_offscreen_gl_context()
+    widget_w, widget_h = 80, 80
+    src = np.full((30, 30, 3), 0.9, dtype=np.float32)
+    tex, w, h = gsp.upload_rgba32f_texture(src)
+    rect = (25, 25, 30, 30)
+    background = (0.1, 0.1, 0.6)
+
+    compositor = glc.WipeCompositor()
+    result = _render_and_read_back(
+        compositor, widget_w, widget_h,
+        before_texture=None, before_size=None,
+        after_texture=tex, after_size=(w, h),
+        image_rect_qt=rect,
+        wipe_enabled=False, divider_fraction=0.5,
+        background_color=background, placeholder_color=(0.2, 0.2, 0.2))
+    compositor.clear_gl_resources()
+    gl.glDeleteTextures([tex])
+    context.doneCurrent()
+
+    corner = result[0:5, 0:5]
+    np.testing.assert_allclose(corner.mean(axis=(0, 1)), background, atol=0.01)
+    print("WipeCompositor: canvas_rect_qt=None (the default) leaves the "
+          "original background-everywhere-outside-image behavior unchanged -- OK")
+
+
 def test_wipe_divider_splits_before_and_after_at_the_right_screen_x():
     _app, context, surface = gsp._make_offscreen_gl_context()
     widget_w, widget_h = 60, 40
@@ -146,6 +222,8 @@ def test_wipe_divider_splits_before_and_after_at_the_right_screen_x():
 if __name__ == "__main__":
     test_after_only_renders_right_side_up_filling_the_widget()
     test_gutter_outside_image_rect_shows_background_color()
+    test_canvas_rect_paints_a_distinct_color_between_canvas_and_image()
+    test_canvas_rect_qt_none_leaves_original_behavior_unchanged()
     test_wipe_divider_splits_before_and_after_at_the_right_screen_x()
     print()
     print("All gpu_wipe_compositor tests passed.")

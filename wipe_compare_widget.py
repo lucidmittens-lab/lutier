@@ -318,6 +318,12 @@ class WipeCompareWidget(QOpenGLWidget):
         self._panning = False
         self._pan_start_mouse = None
         self._pan_start_offset = None
+        # None (default) -- _image_rect fits the image directly into the
+        # widget, exactly as before Canvas Settings existed. When set (see
+        # set_canvas_aspect_ratio), the image instead fits into a
+        # canvas-aspect-ratio box that's ITSELF letterboxed/pillarboxed
+        # into the widget first -- see _image_rect's own docstring.
+        self._canvas_aspect_ratio = None
         self.setMinimumHeight(220)
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -560,6 +566,114 @@ class WipeCompareWidget(QOpenGLWidget):
             return None
         return w, h
 
+    def set_canvas_aspect_ratio(self, ratio):
+        """`ratio` (width/height, already including any pixel_aspect_ratio
+        -- see canvas.py) or None to go back to fitting the image directly
+        into the widget (this widget's own original, canvas-agnostic
+        behavior). Called by SampleImagePanel.set_canvas_aspect_ratio
+        whenever MainWindow's Canvas Settings change -- see
+        _image_rect's own docstring for what this actually does to
+        layout."""
+        if ratio == self._canvas_aspect_ratio:
+            return
+        self._canvas_aspect_ratio = ratio
+        self.update()
+
+    def _canvas_box(self, widget_rect):
+        """The centered, canvas-aspect-ratio box fit into `widget_rect`
+        (letterboxed/pillarboxed to preserve self._canvas_aspect_ratio) --
+        shared by _image_rect (which fits the actual image INTO this,
+        a nested fit) and _canvas_rect (which exposes this same box to
+        the GPU compositor so it can paint it -- see that method's own
+        docstring for why _image_rect's nesting alone wasn't enough).
+        Returns `widget_rect` unchanged when self._canvas_aspect_ratio is
+        None (no distinct canvas box at all)."""
+        if not self._canvas_aspect_ratio:
+            return widget_rect
+        base_w = widget_rect.width()
+        base_h = base_w / self._canvas_aspect_ratio
+        if base_h > widget_rect.height():
+            base_h = widget_rect.height()
+            base_w = base_h * self._canvas_aspect_ratio
+        base_x = (widget_rect.width() - base_w) / 2
+        base_y = (widget_rect.height() - base_h) / 2
+        return QRectF(base_x, base_y, base_w, base_h)
+
+    def _zoomed_canvas_and_image_rects(self):
+        """The real computation behind BOTH _canvas_rect and _image_rect
+        -- returns (canvas_rect_or_None, image_rect_or_None). Kept as one
+        method because the two rects are NOT independent: self._zoom/
+        self._pan apply to the canvas and the image TOGETHER, as one
+        rigid composed unit, not to the image alone while the canvas
+        stays pinned to the widget -- a real, reported bug (Tom,
+        2026-08-13): "when i move the image around or zoom in and out
+        the black stays pinned to its location in the panel while the
+        image moves around". A zoomed-in image with its canvas frame
+        fixed in place makes no sense -- the canvas IS the frame the
+        image lives in, so zooming/panning has to move both together,
+        exactly like scaling a single photo-in-a-mat: the mat scales
+        with the photo, it doesn't stay put while the photo grows
+        underneath it.
+
+        `canvas_base` is the canvas's own fit-into-widget box at
+        zoom=1/pan=0 (see _canvas_box) -- or the widget's own rect
+        itself when self._canvas_aspect_ratio is None, which is what
+        makes this whole method collapse to the ORIGINAL pre-canvas
+        _image_rect formula exactly in that case (verified algebraically,
+        not just by inspection): scale the "canvas" (== widget) by zoom,
+        recenter in the widget, offset by pan -- same as before Canvas
+        Settings existed, since there's no separate canvas to distinguish
+        it from. With a real canvas_aspect_ratio set, the image's
+        position/size is first computed as a FIXED proportion of
+        canvas_base (fit-into-canvas at zoom=1, centered) -- that
+        proportion, not the image's own raw pixel size, is what actually
+        scales/moves with zoom/pan, since the image's relationship to
+        its own canvas frame must stay constant."""
+        size = self._reference_array_size()
+        if size is None:
+            return None, None
+        img_w, img_h = size
+        widget_rect = QRectF(self.rect())
+        canvas_base = self._canvas_box(widget_rect)
+
+        # Image's fixed position/size AS A FRACTION of canvas_base, at
+        # zoom=1/pan=0 -- this relationship never changes; only the
+        # canvas's own on-screen scale/position does, below.
+        fit_scale = min(canvas_base.width() / img_w, canvas_base.height() / img_h)
+        base_img_w, base_img_h = img_w * fit_scale, img_h * fit_scale
+        base_img_offset_x = (canvas_base.width() - base_img_w) / 2
+        base_img_offset_y = (canvas_base.height() - base_img_h) / 2
+
+        # The canvas itself scales by zoom and recenters in the widget,
+        # offset by pan -- exactly the shape the ORIGINAL image-only
+        # formula used, just applied to canvas_base's own dimensions
+        # instead of the image's.
+        draw_canvas_w = canvas_base.width() * self._zoom
+        draw_canvas_h = canvas_base.height() * self._zoom
+        canvas_x = (widget_rect.width() - draw_canvas_w) / 2 + self._pan.x()
+        canvas_y = (widget_rect.height() - draw_canvas_h) / 2 + self._pan.y()
+        canvas_rect = QRectF(canvas_x, canvas_y, draw_canvas_w, draw_canvas_h)
+
+        image_rect = QRectF(
+            canvas_x + base_img_offset_x * self._zoom, canvas_y + base_img_offset_y * self._zoom,
+            base_img_w * self._zoom, base_img_h * self._zoom)
+
+        return (canvas_rect if self._canvas_aspect_ratio else None), image_rect
+
+    def _canvas_rect(self):
+        """The canvas letterbox box in WIDGET coordinates, already
+        scaled/positioned by the current zoom/pan (see
+        _zoomed_canvas_and_image_rects) -- None when
+        self._canvas_aspect_ratio isn't set. Passed to WipeCompositor.
+        render as canvas_rect_qt so the GPU compositor can paint it a
+        real, distinct color (black, by convention) instead of just
+        leaving it as whatever _image_rect's own nesting happens to NOT
+        cover, which fell through to the app's own panel background
+        color and was invisible as a "canvas" at all (confirmed directly:
+        "didn't actually render black in the space outside of the image
+        in the canvas, just shines thru to bg")."""
+        return self._zoomed_canvas_and_image_rects()[0]
+
     def _image_rect(self):
         """Centered, aspect-preserved rect both sides are drawn into,
         sized off whichever array is available. self._zoom (1.0 = fit,
@@ -570,18 +684,17 @@ class WipeCompareWidget(QOpenGLWidget):
         returns a rect LARGER than the widget's own -- the GPU compositor
         (see gpu_lanczos_compositor.WipeCompositor) only ever renders the
         portion that actually falls within the widget, same as any other
-        image viewer's zoomed-in view."""
-        size = self._reference_array_size()
-        if size is None:
-            return None
-        img_w, img_h = size
-        widget_rect = QRectF(self.rect())
-        fit_scale = min(widget_rect.width() / img_w, widget_rect.height() / img_h)
-        scale = fit_scale * self._zoom
-        draw_w, draw_h = img_w * scale, img_h * scale
-        x = (widget_rect.width() - draw_w) / 2 + self._pan.x()
-        y = (widget_rect.height() - draw_h) / 2 + self._pan.y()
-        return QRectF(x, y, draw_w, draw_h)
+        image viewer's zoomed-in view.
+
+        CANVAS LETTERBOXING (per Tom, 2026-08-13): when
+        self._canvas_aspect_ratio is set, the image's position/size is a
+        fixed proportion of the CANVAS's own box rather than the widget's
+        -- see _zoomed_canvas_and_image_rects's own docstring for the
+        full mechanics, including why zoom/pan apply to the canvas+image
+        as one rigid unit. When _canvas_aspect_ratio is None (the
+        default, and every call site before Canvas Settings existed),
+        this is byte-for-byte the original behavior."""
+        return self._zoomed_canvas_and_image_rects()[1]
 
     # ---- GPU rendering --------------------------------------------------
 
@@ -645,6 +758,11 @@ class WipeCompareWidget(QOpenGLWidget):
         before_texture, before_size = self._before_state.ensure_texture(self._gpu_stack_renderer)
         after_texture, after_size = self._after_state.ensure_texture(self._gpu_stack_renderer)
 
+        canvas_rect = self._canvas_rect()
+        canvas_rect_qt = (
+            (canvas_rect.left(), canvas_rect.top(), canvas_rect.width(), canvas_rect.height())
+            if canvas_rect is not None else None)
+
         widget_w = max(1, self.width())
         widget_h = max(1, self.height())
         self._wipe_compositor.render(
@@ -653,7 +771,8 @@ class WipeCompareWidget(QOpenGLWidget):
             widget_w=widget_w, widget_h=widget_h,
             image_rect_qt=(image_rect.left(), image_rect.top(), image_rect.width(), image_rect.height()),
             wipe_enabled=self._wipe_enabled, divider_fraction=self._wipe_fraction,
-            background_color=background_color, placeholder_color=placeholder_color)
+            background_color=background_color, placeholder_color=placeholder_color,
+            canvas_rect_qt=canvas_rect_qt)
 
     def paintEvent(self, event):
         """Runs the real GL rendering (via Qt's own internal FBO

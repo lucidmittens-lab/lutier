@@ -217,6 +217,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDockWidget, QVBoxLayout, QHBoxLayout,
     QComboBox, QFileDialog, QMessageBox, QLabel, QCheckBox,
     QDialog, QTextBrowser, QDialogButtonBox, QToolButton, QColorDialog,
+    QSpinBox, QDoubleSpinBox,
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtGui import QAction, QKeySequence, QColor
@@ -239,6 +240,7 @@ from app_logic import export_image_array_to_file
 import session_io
 import workspace_io
 import stack as st
+import canvas as cv
 from stack_memory import StackMemoryLibrary
 from cdl_library import CDLLibrary
 from lut_library import LUTLibrary
@@ -246,6 +248,7 @@ from image_library import ImageLibrary
 from undo_history import UndoHistory
 from help_text import USER_MANUAL_MARKDOWN
 from floating_dialog import make_floating_tool_window, show_floating
+from spinbox_scrub import enable_drag_to_scrub
 
 import colour
 import colour_clf_io as clf
@@ -844,6 +847,16 @@ class MainWindow(QMainWindow):
 
         # ---- center column: Viewer (top) / Stack (main area) -----------
         self.sample_image = SampleImagePanel()
+        # Canvas Settings (per Tom, 2026-08-13) -- must be set up and
+        # connected BEFORE restore_default_image() below, not after: that
+        # call is what loads this app's very first image (the bundled
+        # default), and it needs image_loaded already wired so THAT load
+        # gets the same "seed once, while still untouched" treatment as
+        # any later one (see canvas.py's docstring and
+        # _on_sample_image_loaded).
+        self._canvas = cv.DEFAULT_CANVAS
+        self.sample_image.image_loaded.connect(self._on_sample_image_loaded)
+        self._apply_canvas_to_viewer()
         # corner_widget=self.sample_image.menu_button -- the "..." menu now
         # sits on the SAME row as the "Viewer" title (per Tom) instead of
         # its own row underneath; see panel_frame.py / sample_image_panel.py.
@@ -1031,6 +1044,12 @@ class MainWindow(QMainWindow):
         save_as_action = file_menu.addAction("Save Session As...", self._save_session_as)
         save_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
         file_menu.addSeparator()
+        # Canvas Settings... (per Tom, 2026-08-13) -- the project-level
+        # Resolution/Bit Depth/Pixel Aspect/Frame Rate target, see
+        # canvas.py's docstring. Lives right before Export since it's the
+        # OTHER file-level setting that shapes what gets produced.
+        file_menu.addAction("Canvas Settings...", self._show_canvas_settings_dialog)
+        file_menu.addSeparator()
         # Export... (⌘E, per Tom) -- opens _show_export_dialog rather than
         # exporting straight away, same "menu entry, not an inline action"
         # shape as everything else in this menu; see that method's
@@ -1179,6 +1198,29 @@ class MainWindow(QMainWindow):
             self._manual_dialog = dialog
         show_floating(self._manual_dialog)
 
+    def _on_sample_image_loaded(self, width, height):
+        """The one auto-sync carve-out canvas.py's docstring documents:
+        seed width/height from the FIRST still/video loaded this session,
+        but only while the canvas is still untouched (`== DEFAULT_CANVAS`)
+        -- after that, Canvas Settings is fully independent and this is a
+        no-op for the rest of the session, even across further loads."""
+        if self._canvas == cv.DEFAULT_CANVAS:
+            self._canvas = cv.canvas_from_first_media(width, height)
+            self._apply_canvas_to_viewer()
+
+    def _apply_canvas_to_viewer(self):
+        """Pushes self._canvas's own aspect ratio (width * pixel_aspect_
+        ratio / height -- PAR folded in so an anamorphic canvas letterboxes
+        correctly too, not just square-pixel ones) into the Viewer, so it
+        letterboxes/pillarboxes to the CANVAS's shape rather than whatever
+        image happens to be loaded (Tom, 2026-08-13: confirmed this is
+        the desired visible effect of a Canvas Settings change). Called
+        after every single place self._canvas is reassigned -- see this
+        method's call sites (init, _on_sample_image_loaded, _new_session,
+        _open_session, _apply_canvas_settings)."""
+        c = self._canvas
+        self.sample_image.set_canvas_aspect_ratio((c.width * c.pixel_aspect_ratio) / c.height)
+
     def _new_session(self):
         if (self.stack_panel.get_stack().stages
                 or self.stack_memories_panel.get_library().memories
@@ -1219,6 +1261,16 @@ class MainWindow(QMainWindow):
         self.cdl_library_panel.load_library(CDLLibrary())
         self.lut_library_panel.load_library(LUTLibrary())
         self.image_library_panel.load_library(ImageLibrary())
+        # Reset BEFORE restore_default_image() below, not after -- that
+        # call itself fires image_loaded, and it should be free to seed
+        # the fresh canvas from the default image's own dimensions the
+        # same as any other first-load-of-a-session would (see
+        # _on_sample_image_loaded). Explicit _apply_canvas_to_viewer here
+        # too (not just relying on that reseed) so the Viewer still resets
+        # to the default aspect ratio even if the default asset is
+        # missing and restore_default_image bails out early.
+        self._canvas = cv.DEFAULT_CANVAS
+        self._apply_canvas_to_viewer()
         self.sample_image.restore_default_image()
         self._session_path = None
 
@@ -1231,7 +1283,7 @@ class MainWindow(QMainWindow):
             return
         try:
             (new_stack, sample_image_state, memory_library, cdl_library,
-             lut_library, image_library, undo_history_state,
+             lut_library, image_library, undo_history_state, loaded_canvas,
              warnings) = session_io.load_session(path)
         except Exception as e:  # noqa: BLE001 -- surface any read/parse failure to the user
             QMessageBox.critical(self, "Failed to open session", str(e))
@@ -1265,6 +1317,13 @@ class MainWindow(QMainWindow):
         self.image_library_panel.load_library(image_library)
         if sample_image_state is not None:
             self.sample_image.load_session_state(sample_image_state)
+        # Set AFTER load_session_state above, not before -- reloading the
+        # sample image fires image_loaded too, and this session's own
+        # saved canvas (whatever it is) must win outright over any
+        # incidental reseed-from-image-dimensions side effect of that
+        # reload (see _on_sample_image_loaded).
+        self._canvas = loaded_canvas
+        self._apply_canvas_to_viewer()
         # No workspace-layout step here anymore (see session_io.py's
         # VERSION 7 note) -- opening a session no longer touches panel
         # visibility/floating/splitter sizes/window size at all, only the
@@ -1306,7 +1365,7 @@ class MainWindow(QMainWindow):
                 cdl_library=self.cdl_library_panel.get_library(),
                 lut_library=self.lut_library_panel.get_library(),
                 image_library=self.image_library_panel.get_library(),
-                undo_history=self._undo_history)
+                undo_history=self._undo_history, canvas=self._canvas)
         except Exception as e:  # noqa: BLE001 -- surface any write failure to the user
             QMessageBox.critical(self, "Failed to save session", str(e))
             return
@@ -2092,6 +2151,117 @@ class MainWindow(QMainWindow):
             self._export_dialog = dialog
         self.export_specs_label.setText(self._export_specs_text())
         show_floating(self._export_dialog)
+
+    def _show_canvas_settings_dialog(self):
+        """File > Canvas Settings... (per Tom, 2026-08-13) -- same lazy-
+        built-cached-QDialog shape as _show_export_dialog. Widgets are
+        built once; every open re-populates them FROM self._canvas (not
+        the other way around -- Apply is the only thing that writes back),
+        so switching stages/sessions between opens never leaves stale
+        values on screen. Width/height/pixel_aspect_ratio use
+        enable_drag_to_scrub, matching every other numeric field in this
+        app (see stack_panel.py)."""
+        if getattr(self, "_canvas_settings_dialog", None) is None:
+            dialog = QDialog(self)
+            make_floating_tool_window(dialog)
+            dialog.setWindowTitle("Canvas Settings")
+
+            outer = QVBoxLayout(dialog)
+
+            width_row = QHBoxLayout()
+            width_row.addWidget(QLabel("Width"))
+            self.canvas_width_spin = QSpinBox()
+            self.canvas_width_spin.setRange(1, 33000)
+            self.canvas_width_spin.setSuffix(" px")
+            enable_drag_to_scrub(self.canvas_width_spin)
+            width_row.addWidget(self.canvas_width_spin, stretch=1)
+            outer.addLayout(width_row)
+
+            height_row = QHBoxLayout()
+            height_row.addWidget(QLabel("Height"))
+            self.canvas_height_spin = QSpinBox()
+            self.canvas_height_spin.setRange(1, 33000)
+            self.canvas_height_spin.setSuffix(" px")
+            enable_drag_to_scrub(self.canvas_height_spin)
+            height_row.addWidget(self.canvas_height_spin, stretch=1)
+            outer.addLayout(height_row)
+
+            depth_row = QHBoxLayout()
+            depth_row.addWidget(QLabel("Bit Depth"))
+            self.canvas_bit_depth_combo = QComboBox()
+            for depth in cv.BIT_DEPTHS:
+                self.canvas_bit_depth_combo.addItem(cv.BIT_DEPTH_LABELS[depth], depth)
+            depth_row.addWidget(self.canvas_bit_depth_combo, stretch=1)
+            outer.addLayout(depth_row)
+
+            par_row = QHBoxLayout()
+            par_row.addWidget(QLabel("Pixel Aspect Ratio"))
+            self.canvas_par_spin = QDoubleSpinBox()
+            self.canvas_par_spin.setRange(0.01, 10.0)
+            self.canvas_par_spin.setDecimals(4)
+            self.canvas_par_spin.setSingleStep(0.01)
+            enable_drag_to_scrub(self.canvas_par_spin)
+            par_row.addWidget(self.canvas_par_spin, stretch=1)
+            outer.addLayout(par_row)
+
+            # Editable combo (per the approved plan) -- FRAME_RATE_PRESETS
+            # back the dropdown, but any positive rate can be typed in
+            # directly (odd/custom rates are real, e.g. 47.952).
+            rate_row = QHBoxLayout()
+            rate_row.addWidget(QLabel("Frame Rate"))
+            self.canvas_frame_rate_combo = QComboBox()
+            self.canvas_frame_rate_combo.setEditable(True)
+            for rate in cv.FRAME_RATE_PRESETS:
+                self.canvas_frame_rate_combo.addItem(str(rate))
+            rate_row.addWidget(self.canvas_frame_rate_combo, stretch=1)
+            outer.addLayout(rate_row)
+
+            button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+            apply_button = button_box.addButton(
+                "Apply", QDialogButtonBox.ButtonRole.AcceptRole)
+            apply_button.clicked.connect(self._apply_canvas_settings)
+            button_box.rejected.connect(dialog.close)
+            outer.addWidget(button_box)
+
+            self._canvas_settings_dialog = dialog
+
+        c = self._canvas
+        self.canvas_width_spin.setValue(c.width)
+        self.canvas_height_spin.setValue(c.height)
+        idx = self.canvas_bit_depth_combo.findData(c.bit_depth)
+        if idx >= 0:
+            self.canvas_bit_depth_combo.setCurrentIndex(idx)
+        self.canvas_par_spin.setValue(c.pixel_aspect_ratio)
+        self.canvas_frame_rate_combo.setCurrentText(str(c.frame_rate))
+        show_floating(self._canvas_settings_dialog)
+
+    def _apply_canvas_settings(self):
+        """Canvas Settings' own "Apply" button -- the ONLY place
+        self._canvas is ever reassigned from user input (see canvas.py's
+        docstring on why it's otherwise independent of whatever media is
+        loaded). A bad frame-rate entry (unparseable text in the editable
+        combo) reports an error and leaves self._canvas untouched rather
+        than half-applying the other fields."""
+        try:
+            frame_rate = float(self.canvas_frame_rate_combo.currentText())
+        except ValueError:
+            QMessageBox.critical(
+                self, "Invalid frame rate",
+                f"{self.canvas_frame_rate_combo.currentText()!r} isn't a valid frame rate.")
+            return
+        try:
+            self._canvas = cv.CanvasSettings(
+                width=self.canvas_width_spin.value(),
+                height=self.canvas_height_spin.value(),
+                bit_depth=self.canvas_bit_depth_combo.currentData(),
+                pixel_aspect_ratio=self.canvas_par_spin.value(),
+                frame_rate=frame_rate,
+            )
+        except ValueError as e:
+            QMessageBox.critical(self, "Invalid canvas settings", str(e))
+            return
+        self._apply_canvas_to_viewer()
+        self._canvas_settings_dialog.close()
 
     def _on_export_still_toggled(self, checked):
         """export_still_to_library_checkbox only makes sense alongside

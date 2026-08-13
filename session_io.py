@@ -157,6 +157,7 @@ import colour
 
 from app_logic import load_lut_any_format, create_identity_lut, load_image_as_array
 import stack as st
+import canvas as cv
 import cdl
 import custom_drt
 import exposure_contrast
@@ -170,7 +171,15 @@ from image_library import ImageLibraryEntry, ImageLibrary
 from atomic_write import atomic_open
 
 SESSION_FORMAT = "lutier-session"
-SESSION_VERSION = 8
+SESSION_VERSION = 9
+
+# VERSION 9 adds "canvas" (see canvas.py -- Tom, 2026-08-13: "Canvas
+# settings (Resolution / Bit Depth / Pixel Aspect)"): the project-level
+# CanvasSettings MainWindow now owns alongside the Stack/undo history. A
+# file with no "canvas" key (version < 9, or a version 9+ file saved
+# with canvas=None) loads with canvas.DEFAULT_CANVAS, same "old file
+# loads fine, just without the newer feature" convention every prior
+# version bump in this module already follows.
 
 # VERSION 8 adds "undo_history" (per Tom, "reset on new/open session but
 # keep undo history inside of project data if possible"): MainWindow now
@@ -780,7 +789,7 @@ def image_library_from_session_list(entries_data):
 
 def save_session(path, stack, sample_image_state, stack_memory_library=None,
                   cdl_library=None, lut_library=None, image_library=None,
-                  undo_history=None):
+                  undo_history=None, canvas=None):
     """sample_image_state: whatever SampleImagePanel.get_session_state()
     returned (a dict, or None if no image is currently loaded).
     stack_memory_library: whatever StackMemoriesPanel.get_library()
@@ -795,7 +804,9 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
     MainWindow's undo_history.UndoHistory for the working Stack, or None
     to save with no persisted undo history (e.g. for callers -- tests,
     Stack Memory export -- that have no undo history of their own; see
-    this module's VERSION 8 note).
+    this module's VERSION 8 note). canvas: a canvas.CanvasSettings, or
+    None to save with no canvas section at all (loads back as
+    canvas.DEFAULT_CANVAS -- see VERSION 9 note).
 
     No `workspace` parameter as of VERSION 7 (see this module's docstring)
     -- workspace layout is saved/loaded independently now, via
@@ -825,6 +836,10 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
             undo_history_to_session_list(undo_history)
             if undo_history is not None else None
         ),
+        "canvas": (
+            cv.canvas_to_session_dict(canvas)
+            if canvas is not None else None
+        ),
     }
     with atomic_open(path, "w") as f:
         json.dump(data, f, indent=2)
@@ -832,7 +847,8 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
 
 def load_session(path):
     """Returns (stack, sample_image_state_or_None, stack_memory_library,
-    cdl_library, lut_library, image_library, undo_history_state, warnings).
+    cdl_library, lut_library, image_library, undo_history_state, canvas,
+    warnings).
     Raises ValueError if `path` isn't a LUTier session file at all (wrong
     format/not JSON) -- that's a hard failure, unlike a single
     unreconstructable stage/memory/LUT Library/Image Library entry. Files
@@ -854,7 +870,12 @@ def load_session(path):
     No `workspace` element as of VERSION 7 (see this module's docstring)
     -- a VERSION 6 file's leftover "workspace" key, if present, is simply
     never read here; see workspace_io.py for where workspace layout
-    actually lives now."""
+    actually lives now.
+
+    canvas is a canvas.CanvasSettings -- canvas.DEFAULT_CANVAS for any
+    file with no "canvas" key (version < 9, or a version 9+ file saved
+    with canvas=None), same convention every prior version bump follows
+    (see VERSION 9 note above)."""
     with open(path, "r") as f:
         data = json.load(f)
     if data.get("format") != SESSION_FORMAT:
@@ -880,5 +901,7 @@ def load_session(path):
         if undo_states is not None:
             undo_history_state = (undo_states, undo_pointer)
 
+    canvas = cv.canvas_from_session_dict(data.get("canvas"))
+
     return (stack, sample_image_state, memory_library, cdl_library,
-            lut_library, image_library, undo_history_state, warnings)
+            lut_library, image_library, undo_history_state, canvas, warnings)

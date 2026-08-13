@@ -319,13 +319,29 @@ uniform vec4 uImageRect;  // left, bottom, width, height -- GL space, screen pix
 uniform vec2 uTargetSize;  // widget_w, widget_h -- both resampled textures are always this size
 uniform vec3 uBackgroundColor;
 uniform vec3 uPlaceholderColor;
+// Canvas Settings letterboxing (per Tom, 2026-08-13): the region inside
+// the canvas box but outside the actual image gets uCanvasColor (a real,
+// distinct fill -- black by convention, same as any pro NLE/compositor's
+// canvas bounds) instead of just falling through to uBackgroundColor,
+// which is the app's own panel background and was making the canvas
+// box invisible -- confirmed directly ("didn't actually render black in
+// the space outside of the image in the canvas, just shines thru to
+// bg"). uCanvasRectEnabled is false whenever WipeCompareWidget has no
+// canvas aspect ratio set at all (see set_canvas_aspect_ratio), in which
+// case behavior is unchanged from before this existed.
+uniform bool uCanvasRectEnabled;
+uniform vec4 uCanvasRect;  // left, bottom, width, height -- GL space, same convention as uImageRect
+uniform vec3 uCanvasColor;
 
 void main() {
     vec2 fragXY = gl_FragCoord.xy;
     bool insideImage = fragXY.x >= uImageRect.x && fragXY.x < uImageRect.x + uImageRect.z &&
                         fragXY.y >= uImageRect.y && fragXY.y < uImageRect.y + uImageRect.w;
     if (!insideImage) {
-        gl_FragColor = vec4(uBackgroundColor, 1.0);
+        bool insideCanvas = uCanvasRectEnabled &&
+            fragXY.x >= uCanvasRect.x && fragXY.x < uCanvasRect.x + uCanvasRect.z &&
+            fragXY.y >= uCanvasRect.y && fragXY.y < uCanvasRect.y + uCanvasRect.w;
+        gl_FragColor = insideCanvas ? vec4(uCanvasColor, 1.0) : vec4(uBackgroundColor, 1.0);
         return;
     }
 
@@ -385,7 +401,8 @@ class WipeCompositor:
 
     def render(self, before_texture, before_size, after_texture, after_size,
                widget_w, widget_h, image_rect_qt,
-               wipe_enabled, divider_fraction, background_color, placeholder_color):
+               wipe_enabled, divider_fraction, background_color, placeholder_color,
+               canvas_rect_qt=None, canvas_color=(0.0, 0.0, 0.0)):
         """Renders the final composited frame directly into whatever
         framebuffer is currently bound (the widget's own default
         framebuffer, when called from paintGL) -- no return value.
@@ -404,7 +421,13 @@ class WipeCompositor:
         and after can have different native sizes (e.g. Reference vs.
         Sample) yet still need to land in the exact same on-screen rect.
         `divider_fraction` is in [0,1] across image_rect's width,
-        matching WipeCompareWidget._wipe_fraction."""
+        matching WipeCompareWidget._wipe_fraction.
+
+        `canvas_rect_qt` (same (left, top, width, height) Qt convention
+        as image_rect_qt, or None) is Canvas Settings' own letterbox box
+        -- see WipeCompareWidget._canvas_rect and the fragment shader's
+        own docstring above. None (the default) disables it entirely,
+        same visual result as before this parameter existed."""
         self._ensure_composite_program()
         # resample_into (below) binds/unbinds several FBOs of its own and
         # explicitly rebinds framebuffer 0 at its own end -- capture the
@@ -454,6 +477,15 @@ class WipeCompositor:
         gl.glUniform2f(gl.glGetUniformLocation(p, "uTargetSize"), float(widget_w), float(widget_h))
         gl.glUniform3f(gl.glGetUniformLocation(p, "uBackgroundColor"), *background_color)
         gl.glUniform3f(gl.glGetUniformLocation(p, "uPlaceholderColor"), *placeholder_color)
+
+        gl.glUniform1i(gl.glGetUniformLocation(p, "uCanvasRectEnabled"), 1 if canvas_rect_qt is not None else 0)
+        if canvas_rect_qt is not None:
+            canvas_left, canvas_top, canvas_w, canvas_h = canvas_rect_qt
+            # Same Qt (Y-down) -> GL (Y-up) conversion as image_rect above.
+            canvas_bottom = widget_h - (canvas_top + canvas_h)
+            gl.glUniform4f(gl.glGetUniformLocation(p, "uCanvasRect"),
+                            canvas_left, canvas_bottom, canvas_w, canvas_h)
+        gl.glUniform3f(gl.glGetUniformLocation(p, "uCanvasColor"), *canvas_color)
 
         gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self._after_texture if after_texture is not None else 0)

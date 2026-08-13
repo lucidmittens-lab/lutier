@@ -94,6 +94,118 @@ def test_zoom_scales_the_image_rect_relative_to_fit():
           "scale -- OK")
 
 
+def test_canvas_aspect_ratio_letterboxes_a_square_canvas_into_a_wider_widget():
+    """Widget is 400x300 (4:3, aspect 1.333). A square (1:1) canvas
+    letterboxes top/bottom into a 300x300 box first (per _image_rect's
+    own nested-fit docstring); the 200x100 (2:1) image then fits WITHIN
+    that 300x300 box, not the raw widget -- pillarboxed inside it too."""
+    w = _widget()
+    w.set_canvas_aspect_ratio(1.0)
+    rect = w._image_rect()
+    assert abs(rect.width() - 300) < 1e-6
+    assert abs(rect.height() - 150) < 1e-6
+    assert abs(rect.left() - 50) < 1e-6
+    assert abs(rect.top() - 75) < 1e-6
+    print("WipeCompareWidget._image_rect: a square canvas letterboxes into "
+          "a wider widget, and the image nests inside THAT box -- OK")
+
+
+def test_canvas_aspect_ratio_pillarboxes_a_wider_canvas_into_the_widget():
+    """A canvas wider than the widget itself (aspect 3.0 vs. the widget's
+    own 1.333) letterboxes top/bottom instead; the image (aspect 2.0,
+    narrower than the canvas box's 3.0) then pillarboxes left/right
+    within THAT box -- confirms both letterbox directions nest
+    correctly, not just the one the first test exercises."""
+    w = _widget()
+    w.set_canvas_aspect_ratio(3.0)
+    rect = w._image_rect()
+    assert abs(rect.width() - (800.0 / 3.0)) < 1e-3
+    assert abs(rect.height() - (400.0 / 3.0)) < 1e-3
+    assert abs(rect.top() - (250.0 / 3.0)) < 1e-3
+    print("WipeCompareWidget._image_rect: a canvas wider than the widget "
+          "letterboxes it, and the image pillarboxes inside THAT box -- OK")
+
+
+def test_canvas_rect_matches_the_box_image_rect_nests_inside():
+    """_canvas_rect() (fed to the GPU compositor as canvas_rect_qt, see
+    gpu_lanczos_compositor.py) must be the SAME box _image_rect() nests
+    the image inside -- if these ever drifted apart, the letterbox bars
+    painted black by the compositor wouldn't line up with where the
+    image actually sits."""
+    w = _widget()
+    w.set_canvas_aspect_ratio(1.0)
+    canvas_rect = w._canvas_rect()
+    # Widget is 400x300 -- a square canvas fits as a centered 300x300 box.
+    assert abs(canvas_rect.width() - 300) < 1e-6
+    assert abs(canvas_rect.height() - 300) < 1e-6
+    assert abs(canvas_rect.left() - 50) < 1e-6
+    assert abs(canvas_rect.top() - 0) < 1e-6
+    image_rect = w._image_rect()
+    assert canvas_rect.left() <= image_rect.left()
+    assert canvas_rect.top() <= image_rect.top()
+    assert canvas_rect.right() >= image_rect.right()
+    assert canvas_rect.bottom() >= image_rect.bottom()
+    print("WipeCompareWidget._canvas_rect: matches the box _image_rect nests "
+          "the image inside -- OK")
+
+
+def test_canvas_rect_is_none_when_no_canvas_aspect_ratio_is_set():
+    w = _widget()
+    assert w._canvas_rect() is None
+    print("WipeCompareWidget._canvas_rect: None when no canvas aspect ratio is set -- OK")
+
+
+def test_canvas_rect_scales_and_moves_together_with_the_image_on_zoom_and_pan():
+    """Regression test for a real, confirmed bug (Tom, 2026-08-13): "when
+    i move the image around or zoom in and out the black stays pinned to
+    its location in the panel while the image moves around". The canvas
+    box and the image inside it must scale/move as ONE rigid unit --
+    their relative position/size to each other must stay constant across
+    any zoom/pan."""
+    w = _widget()
+    w.set_canvas_aspect_ratio(1.0)
+    canvas_before = w._canvas_rect()
+    image_before = w._image_rect()
+    offset_x_before = image_before.left() - canvas_before.left()
+    offset_y_before = image_before.top() - canvas_before.top()
+    width_ratio_before = image_before.width() / canvas_before.width()
+
+    w._zoom = 2.0
+    w._pan = QPointF(15.0, -8.0)
+    canvas_after = w._canvas_rect()
+    image_after = w._image_rect()
+
+    # The canvas itself must have actually moved/grown (otherwise this
+    # test would trivially pass by both staying pinned).
+    assert abs(canvas_after.width() - canvas_before.width() * 2.0) < 1e-6
+    assert canvas_after.left() != canvas_before.left()
+
+    offset_x_after = image_after.left() - canvas_after.left()
+    offset_y_after = image_after.top() - canvas_after.top()
+    width_ratio_after = image_after.width() / canvas_after.width()
+    # The image's offset from the canvas's own top-left scales WITH zoom
+    # (2x zoom -> 2x offset in canvas-relative pixels), and its size
+    # relative to the canvas stays exactly constant -- i.e. the image
+    # never drifts relative to its own canvas frame.
+    assert abs(offset_x_after - offset_x_before * 2.0) < 1e-6
+    assert abs(offset_y_after - offset_y_before * 2.0) < 1e-6
+    assert abs(width_ratio_after - width_ratio_before) < 1e-6
+    print("WipeCompareWidget: the canvas box and the image inside it scale/move "
+          "together as one rigid unit across zoom and pan -- OK")
+
+
+def test_canvas_aspect_ratio_none_restores_original_fit_behavior():
+    w = _widget()
+    w.set_canvas_aspect_ratio(2.5)
+    w.set_canvas_aspect_ratio(None)
+    rect = w._image_rect()
+    assert abs(rect.width() - 400) < 1e-6
+    assert abs(rect.height() - 200) < 1e-6
+    assert abs(rect.top() - 50) < 1e-6
+    print("WipeCompareWidget.set_canvas_aspect_ratio(None): restores the "
+          "original fit-to-widget behavior exactly -- OK")
+
+
 def test_wheel_up_zooms_in_wheel_down_zooms_out():
     w = _widget()
     _wheel(w, (200, 150), notches=1)
@@ -270,6 +382,12 @@ def test_left_drag_still_moves_the_wipe_divider_not_pan():
 if __name__ == "__main__":
     test_default_zoom_matches_original_fit_behavior()
     test_zoom_scales_the_image_rect_relative_to_fit()
+    test_canvas_aspect_ratio_letterboxes_a_square_canvas_into_a_wider_widget()
+    test_canvas_aspect_ratio_pillarboxes_a_wider_canvas_into_the_widget()
+    test_canvas_rect_matches_the_box_image_rect_nests_inside()
+    test_canvas_rect_is_none_when_no_canvas_aspect_ratio_is_set()
+    test_canvas_rect_scales_and_moves_together_with_the_image_on_zoom_and_pan()
+    test_canvas_aspect_ratio_none_restores_original_fit_behavior()
     test_wheel_up_zooms_in_wheel_down_zooms_out()
     test_wheel_zoom_clamps_to_min_and_max()
     test_zoom_getter_matches_internal_state()
