@@ -447,6 +447,62 @@ class WipeCompareWidget(QOpenGLWidget):
 
         return np.frombuffer(pixels, dtype=np.float32).reshape(h, w, 4)[..., :3].copy()
 
+    def render_and_read_back_after_frame(self):
+        """Like read_back_after_frame, but FORCES the GPU color chain to
+        run for whatever set_after was just called with FIRST, rather
+        than reading back whatever the LAST real Qt-driven paintGL cycle
+        already left cached (which may not be THIS content at all).
+
+        Exists because of a real, reproduced bug (Phase D GPU video
+        export follow-up): QWidget.repaint() does NOT reliably guarantee
+        its own paintGL callback has actually finished executing (GL
+        commands submitted, ping-pong FBO populated) by the time it
+        RETURNS to the caller, at least in this environment. The
+        original video export GPU runner called set_after() + repaint()
+        + read_back_after_frame() once per frame in a tight per-tick
+        loop -- every exported frame came out showing the PREVIOUS
+        frame's grade, one full frame late, confirmed by a per-frame
+        diff against the CPU export path (frame N's GPU output exactly
+        matched frame N-1's CPU output, every single frame after the
+        first). repaint()'s own synchronous-paint guarantee evidently
+        doesn't hold up under back-to-back calls with no real event-loop
+        idle time between them the way normal interactive use always
+        has.
+
+        This method sidesteps Qt's paint-event scheduling for the
+        grading step entirely: it calls _SideState.ensure_texture
+        DIRECTLY, bracketed by makeCurrent()/doneCurrent() -- the same
+        bracketing read_back_after_frame's own docstring already
+        established as correct for touching this widget's GL state from
+        OUTSIDE its normal paintGL callback. glReadPixels (inside
+        read_back_after_frame, called at the end here) itself forces the
+        GPU to finish any pending draws before it returns actual pixel
+        data, so by the time THIS method returns, the render is
+        genuinely, unambiguously complete -- no reliance on repaint()'s
+        own timing at all.
+
+        The normal interactive editing path is completely unaffected --
+        it still goes through Qt's own paint scheduling exactly as
+        before; only a caller needing a synchronous, deterministic
+        "render THIS exact frame and hand me its pixels right now"
+        contract (video_export.py's GPU export path, see main_window.
+        _GpuVideoExportRunner) needs this method at all."""
+        if not getattr(self, "_constructed", False) or not self.isValid():
+            return None
+        if self._after_state.array is None:
+            return None
+        if self._gpu_stack_renderer is None:
+            # initializeGL hasn't run yet (widget never actually painted
+            # once) -- nothing to render through. Same "nothing to read
+            # back yet" contract as every other None-return above.
+            return None
+        self.makeCurrent()
+        try:
+            self._after_state.ensure_texture(self._gpu_stack_renderer)
+        finally:
+            self.doneCurrent()
+        return self.read_back_after_frame()
+
     def clear(self):
         self._before_state.set(None, None)
         self._after_state.set(None, None)

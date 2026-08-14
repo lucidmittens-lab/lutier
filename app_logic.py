@@ -487,31 +487,6 @@ def load_image_as_array(path, max_dimension=480):
     return array
 
 
-def resample_image_array(image_array, max_dimension):
-    """Downsample an already-decoded (H,W,3) float array (domain [0,1], the
-    same convention load_image_as_array's own return value uses) to at most
-    max_dimension on its longer side, aspect-preserving Lanczos -- same
-    algorithm and precision profile as load_image_as_array's own
-    downsampling, just operating on pixels already in memory (e.g. an
-    image_library.ImageLibraryEntry's full-resolution array) instead of
-    re-reading a file from disk. Round-trips through 8-bit via PIL to reuse
-    Image.resize's Lanczos filter, same precision loss load_image_as_array
-    itself already has -- fine for a preview array, which this always is.
-    max_dimension=None returns the array unchanged (same convention as
-    load_image_as_array)."""
-    array = np.asarray(image_array, dtype=np.float32)
-    if max_dimension is None:
-        return array
-    h, w = array.shape[:2]
-    scale = max_dimension / max(w, h)
-    if scale >= 1.0:
-        return array
-    new_size = (max(1, round(w * scale)), max(1, round(h * scale)))
-    as_uint8 = np.clip(array * 255.0, 0, 255).astype(np.uint8)
-    img = Image.fromarray(as_uint8, mode="RGB").resize(new_size, Image.LANCZOS)
-    return np.asarray(img, dtype=np.float32) / 255.0
-
-
 def apply_lut_to_image_array(lut, image_array):
     """Apply lut.apply() to an (H,W,3) image array, clipped to [0,1] for
     display. Uses the LUT's own .apply() -- the same verified path used

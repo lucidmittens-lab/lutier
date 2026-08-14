@@ -245,6 +245,7 @@ import canvas as cv
 import image_io
 import video_export
 import video_source
+import gpu_stack_renderer
 from stack_memory import StackMemoryLibrary, GalleryStillLibrary
 from cdl_library import CDLLibrary
 from lut_library import LUTLibrary
@@ -546,6 +547,137 @@ class _VideoExportWorker(QObject):
         self.finished.emit()
 
 
+class _GpuVideoExportRunner(QObject):
+    """Drives GPU-accelerated video export -- the fast path video_export.
+    py's own module docstring already anticipated ("the GPU path instead
+    drives VideoEncoder.write_frame directly from a UI-thread-chunked
+    loop, bypassing export_video_cpu entirely since GPU-graded frames
+    never go through stack.apply_stack_to_image_array at all"), deferred
+    at the time and built here.
+
+    ALWAYS runs on the UI THREAD -- unlike _VideoExportWorker's CPU path,
+    this can NEVER move to a background QThread: it drives the live
+    Viewer's own WipeCompareWidget (`panel.compare`) through set_after +
+    render_and_read_back_after_frame (see that method's own docstring on
+    why a plain repaint()+read_back_after_frame() -- casting_controller.
+    py's own pattern for a DIFFERENT purpose -- doesn't work for THIS
+    back-to-back-ticks use, and produced a real, reproduced one-frame-
+    lag bug here before that method existed). A QOpenGLWidget's GL
+    context is only ever safe to touch from the UI thread it lives on --
+    reusing that already-proven surface instead of standing up a
+    brand-new offscreen
+    QOffscreenSurface/QOpenGLContext (never attempted anywhere in this
+    app) is a deliberate risk-reduction choice, not an oversight.
+
+    VISIBLE SIDE EFFECT, by design: driving the Viewer this way means the
+    user sees each export frame flash through their own Viewer panel
+    while a GPU export runs, the same "the Viewer IS the shared
+    rendering surface" model realtime playback (video_playback_
+    controller.py) already uses, not a separate hidden render target.
+    _restore_viewer() re-parks the Viewer back to whatever it was
+    actually showing once export finishes/fails/is cancelled, same
+    "always clean up, even on the unhappy path" discipline
+    VideoPlaybackController.pause() already follows.
+
+    CONCURRENT-EDIT HAZARD: nothing here stops some OTHER code path from
+    also calling panel.compare.set_after() while this runner is mid-
+    export (a Stack edit would do exactly that via refresh_preview) --
+    that would silently corrupt in-flight frames. Deliberately NOT solved
+    with a new lock/flag here: MainWindow._start_video_export_gpu reuses
+    the exact same WindowModal QProgressDialog the CPU path already sets
+    up, which blocks user input to the whole MainWindow for the export's
+    duration -- since a Stack edit can only ever originate from user
+    input in this app, that already closes the hole with an existing,
+    already-tested mechanism rather than a new one.
+
+    CHUNKED via a zero-delay QTimer (one frame per tick) rather than one
+    tight synchronous loop over the whole clip -- keeps the UI thread's
+    own event loop pumping BETWEEN frames, so the progress dialog
+    actually repaints and its Cancel button stays responsive throughout,
+    without needing a second thread at all."""
+
+    progress = Signal(int, int)
+    finished = Signal()
+    failed = Signal(str)
+
+    def __init__(self, panel, source, stack, encoder, canvas, parent=None):
+        super().__init__(parent)
+        self._panel = panel
+        self._source = source
+        self._stack = stack
+        self._encoder = encoder
+        self._canvas = canvas
+        self._frame_index = 0
+        self._total = source.frame_count
+        self._cancel_requested = False
+        self._timer = QTimer(self)
+        self._timer.setInterval(0)
+        self._timer.timeout.connect(self._tick)
+
+    def start(self):
+        self._timer.start()
+
+    def request_cancel(self):
+        """Safe to call directly -- everything here already lives on the
+        UI thread, no cross-thread flag-passing needed the way
+        _VideoExportWorker.request_cancel's own docstring explains for
+        its background-QThread case."""
+        self._cancel_requested = True
+
+    def _stop(self):
+        self._timer.stop()
+        self._restore_viewer()
+
+    def _restore_viewer(self):
+        """Re-parks the Viewer on whatever it was ACTUALLY showing before
+        this export hijacked it -- mirrors VideoPlaybackController.
+        pause()'s own "always re-park on the way out" discipline.
+        refresh_preview() re-runs the normal Sample-After pipeline from
+        the panel's own still-intact underlying state (this runner only
+        ever pushed frames into panel.compare directly, it never touched
+        SampleImagePanel's own tracked Sample/Reference state at all) --
+        exactly the same "something external touched the shared
+        rendering surface, please redraw yourself accurately" contract
+        StackPanel.stack_changed already relies on this method for."""
+        self._panel.refresh_preview()
+
+    def _tick(self):
+        if self._cancel_requested or self._frame_index >= self._total:
+            self._stop()
+            self.finished.emit()
+            return
+        try:
+            array = (self._source.seek_to_frame(0) if self._frame_index == 0
+                     else self._source.decode_next_frame())
+            if array is None:
+                self._stop()
+                self.finished.emit()
+                return
+            if array.shape[1] != self._canvas.width or array.shape[0] != self._canvas.height:
+                array = image_io.resize_array(array, self._canvas.width, self._canvas.height)
+            self._panel.compare.set_after(array, gpu_stack=self._stack)
+            # render_and_read_back_after_frame, NOT repaint()+
+            # read_back_after_frame -- see that method's own docstring
+            # for the real, reproduced bug this replaced (repaint()
+            # doesn't reliably guarantee paintGL has actually finished
+            # by the time it returns under this runner's own back-to-
+            # back-ticks-with-no-idle-time usage pattern, which made
+            # every exported frame show the PREVIOUS frame's grade).
+            graded = self._panel.compare.render_and_read_back_after_frame()
+            if graded is None:
+                raise RuntimeError(
+                    "GPU readback failed -- the Viewer panel isn't currently "
+                    "paintable (hidden, minimized, or not yet shown once). "
+                    "Make sure the Viewer panel is visible and try again.")
+            self._encoder.write_frame(graded)
+        except Exception as e:  # noqa: BLE001 -- surface any failure, stop cleanly
+            self._stop()
+            self.failed.emit(str(e))
+            return
+        self._frame_index += 1
+        self.progress.emit(self._frame_index, self._total)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -556,9 +688,15 @@ class MainWindow(QMainWindow):
         self._session_path = None  # currently open .ltr file, or None (unsaved) -- see _save_session
 
         # Video export state -- all None except during an active export
-        # (see _start_video_export/_video_export_cleanup).
+        # (see _start_video_export/_video_export_cleanup). _video_export_
+        # thread/_worker are only ever set for a GPU-INELIGIBLE stack's
+        # CPU/background-QThread path; _video_export_gpu_runner is only
+        # ever set for a GPU-eligible stack's UI-thread path -- exactly
+        # one of the two is non-None during any single export, never both
+        # (see _start_video_export's own dispatch).
         self._video_export_thread = None
         self._video_export_worker = None
+        self._video_export_gpu_runner = None
         self._video_export_encoder = None
         self._video_export_source = None
         self._video_export_progress = None
@@ -2605,6 +2743,16 @@ class MainWindow(QMainWindow):
         self._video_export_progress.setMinimumDuration(0)
         self._video_export_progress.setValue(0)
 
+        # GPU-eligible stack -- see _GpuVideoExportRunner's own docstring
+        # for why this branches to an entirely different (UI-thread,
+        # no QThread) execution shape rather than reusing
+        # _VideoExportWorker with a GPU flag.
+        if gpu_stack_renderer.is_stack_gpu_eligible(stack):
+            self._start_video_export_gpu(export_source, stack, encoder, canvas)
+        else:
+            self._start_video_export_cpu(export_source, stack, encoder, canvas)
+
+    def _start_video_export_cpu(self, export_source, stack, encoder, canvas):
         self._video_export_thread = QThread(self)
         self._video_export_worker = _VideoExportWorker(export_source, stack, encoder, canvas)
         self._video_export_worker.moveToThread(self._video_export_thread)
@@ -2631,6 +2779,24 @@ class MainWindow(QMainWindow):
 
         self._video_export_thread.start()
 
+    def _start_video_export_gpu(self, export_source, stack, encoder, canvas):
+        """GPU-eligible stack -- see _GpuVideoExportRunner's own
+        docstring for the full reasoning (UI-thread only, drives the
+        live Viewer directly). The WindowModal progress dialog set up by
+        the caller does double duty here: besides showing progress, it
+        blocks user input to this MainWindow for the export's whole
+        duration, which is what stops a concurrent Stack edit from
+        hijacking the Viewer's shared rendering surface mid-export (see
+        the runner's own docstring on that hazard)."""
+        self._video_export_gpu_runner = _GpuVideoExportRunner(
+            self.sample_image, export_source, stack, encoder, canvas, parent=self)
+        self._video_export_gpu_runner.progress.connect(self._on_video_export_progress)
+        self._video_export_gpu_runner.finished.connect(self._on_video_export_finished)
+        self._video_export_gpu_runner.failed.connect(self._on_video_export_failed)
+        self._video_export_progress.canceled.connect(self._video_export_gpu_runner.request_cancel)
+
+        self._video_export_gpu_runner.start()
+
     def _on_video_export_progress(self, done, _total):
         self._video_export_progress.setValue(done)
 
@@ -2646,11 +2812,20 @@ class MainWindow(QMainWindow):
         signal connection (see _start_video_export's own comment on why
         that matters for correct cross-thread delivery) so this always
         actually runs on the UI thread, safe to touch self._video_export_
-        progress/QMessageBox/etc. directly."""
+        progress/QMessageBox/etc. directly. Handles BOTH the CPU
+        (background QThread) and GPU (UI-thread runner) shapes -- exactly
+        one of self._video_export_thread/self._video_export_gpu_runner is
+        set for any given export (see __init__'s own comment), so only
+        that one's teardown actually runs; the GPU runner has already
+        stopped its own QTimer and re-parked the Viewer (see
+        _GpuVideoExportRunner._stop) by the time finished/failed fires,
+        so there's nothing further to do for it here beyond dropping the
+        reference below."""
         self._video_export_encoder.close()
         self._video_export_source.close()
-        self._video_export_thread.quit()
-        self._video_export_thread.wait()
+        if self._video_export_thread is not None:
+            self._video_export_thread.quit()
+            self._video_export_thread.wait()
         self._video_export_progress.close()
         if error_message:
             QMessageBox.critical(self, "Video export failed", error_message)
@@ -2665,6 +2840,7 @@ class MainWindow(QMainWindow):
         # whole duration.
         self._video_export_thread = None
         self._video_export_worker = None
+        self._video_export_gpu_runner = None
         self._video_export_encoder = None
         self._video_export_source = None
         self._video_export_progress = None
