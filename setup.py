@@ -113,8 +113,8 @@ OPTIONS = {
     # this list had drifted: it still named 'collapsible_section' (a
     # dead file, deleted this same pass -- see CLEANUP_AND_PERF_
     # OBSERVATIONS_2026-07-25.md) and was missing 13 modules the app
-    # genuinely imports transitively (cdl/cdl_file_io/cdl_library/
-    # cdl_library_panel, color_balance/color_wheel_widget,
+    # genuinely imports transitively (cdl/cdl_file_io/cdl_library,
+    # color_balance/color_wheel_widget,
     # colorspace_convert, floating_dialog, lut_library/
     # lut_library_panel, stack_memory_file_io, undo_history,
     # workspace_io). py2app's own modulegraph scan usually catches plain
@@ -144,7 +144,6 @@ OPTIONS = {
         'cdl',
         'cdl_file_io',
         'cdl_library',
-        'cdl_library_panel',
         'clf_adapter',
         'color_balance',
         'color_wheel_widget',

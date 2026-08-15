@@ -19,15 +19,19 @@ so this is a test-only requirement, not something the class itself needs.
 """
 import sys
 
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QDragLeaveEvent
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMainWindow
 
 import stack as st
 from stack_panel import (
     _ElidingLabel, _StackListWidget, StackPanel, _stage_kind_badge_text,
-    _ForkBranchGridRowWidget, _StageRowWidget,
+    _ForkBranchGridRowWidget, _StageRowWidget, _ParamLabel, GRADING_TONE_RANGE_LABELS,
+    GRADING_PRIMARY_FIELD_SPECS,
 )
+from stack_memory import StackMemory
+from cdl_library import CDLEntry
 
 
 def _app():
@@ -245,6 +249,33 @@ def _panel_with_one_cdl_stage():
     return panel, stage
 
 
+def _panel_with_one_printer_lights_stage():
+    _app()
+    panel = StackPanel()
+    panel._on_add_printer_lights_clicked()
+    stage = panel.stack.stages[0]
+    panel._on_row_clicked(stage.id)
+    return panel, stage
+
+
+def _panel_with_one_grading_primary_stage():
+    _app()
+    panel = StackPanel()
+    panel._on_add_grading_primary_clicked()
+    stage = panel.stack.stages[0]
+    panel._on_row_clicked(stage.id)
+    return panel, stage
+
+
+def _panel_with_one_grading_tone_stage():
+    _app()
+    panel = StackPanel()
+    panel._on_add_grading_tone_clicked()
+    stage = panel.stack.stages[0]
+    panel._on_row_clicked(stage.id)
+    return panel, stage
+
+
 def test_cdl_live_edit_updates_the_existing_row_widget_in_place():
     panel, stage = _panel_with_one_cdl_stage()
     widget_before = panel._stage_row_widgets[stage.id]
@@ -295,6 +326,324 @@ def test_enabled_toggle_updates_the_existing_row_widget_in_place():
     assert widget_after.enabled_button.text() == "○"
     print("StackPanel._on_row_enabled_clicked: updates the existing row "
           "widget in place instead of rebuilding the whole list -- OK")
+
+
+def test_insert_entry_in_stack_with_a_stack_memory_adds_all_its_stages_below_selected():
+    """Per Tom: "insert in stack" adds all of a saved stack's operators
+    into the existing stack below the selected entry."""
+    panel, first_cdl = _panel_with_one_cdl_stage()
+    panel._on_row_clicked(first_cdl.id)  # select the pre-existing stage
+
+    memory_stack = st.Stack(stages=[
+        st.make_lut_stage(st.colour.LUT3D(size=3), label="Saved LUT"),
+        st.make_cdl_stage(slope=(1.2, 1.0, 0.9), label="Saved CDL"),
+    ])
+    memory = StackMemory("My Look", memory_stack)
+
+    panel.insert_entry_in_stack(memory)
+
+    kinds = [s.kind for s in panel.stack.stages]
+    labels = [s.label for s in panel.stack.stages]
+    assert kinds == ["cdl", "lut", "cdl"]
+    assert labels == [first_cdl.label, "Saved LUT", "Saved CDL"]
+    print("StackPanel.insert_entry_in_stack: a StackMemory's stages land, "
+          "in order, immediately after the selected stage -- OK")
+
+
+def test_insert_entry_in_stack_with_a_stack_memory_uses_fresh_ids():
+    """Stage.copy() (used elsewhere for Recall's non-destructive
+    semantics) keeps the SAME id -- wrong here, since Insert ADDS onto an
+    existing stack rather than replacing it, so a fresh id is required to
+    avoid colliding with an already-live stage (or with itself, on a
+    second insert of the same memory)."""
+    panel = StackPanel()
+    _app()
+    memory_stack = st.Stack(stages=[st.make_cdl_stage(label="Saved CDL")])
+    original_id = memory_stack.stages[0].id
+    memory = StackMemory("My Look", memory_stack)
+
+    panel.insert_entry_in_stack(memory)
+    panel.insert_entry_in_stack(memory)  # insert the SAME memory twice
+
+    ids = [s.id for s in panel.stack.stages]
+    assert len(ids) == 2
+    assert len(set(ids)) == 2, "inserting the same memory twice must not produce colliding stage ids"
+    assert original_id not in ids
+    print("StackPanel.insert_entry_in_stack: gives every inserted stage a "
+          "fresh id, even across two inserts of the same memory -- OK")
+
+
+def test_insert_entry_in_stack_with_a_cdl_entry_adds_one_new_stage():
+    panel, first_cdl = _panel_with_one_cdl_stage()
+    panel._on_row_clicked(first_cdl.id)
+
+    entry = CDLEntry("My CDL", slope=(1.3, 1.0, 0.9), offset=(0.0, 0.0, 0.0), power=(1.0, 1.0, 1.0), sat=1.1)
+    panel.insert_entry_in_stack(entry)
+
+    assert len(panel.stack.stages) == 2
+    new_stage = panel.stack.stages[1]
+    assert new_stage.kind == "cdl"
+    assert new_stage.params["slope"] == (1.3, 1.0, 0.9)
+    print("StackPanel.insert_entry_in_stack: a CDLEntry adds one new 'cdl' "
+          "stage -- OK")
+
+
+def test_insert_entry_in_stack_never_overwrites_a_selected_cdl_stage():
+    """Distinct from apply_cdl_entry, which overwrites an already-
+    selected 'cdl' stage in place -- Insert in Stack is unconditionally
+    an ADD, even when a 'cdl' stage happens to be selected."""
+    panel, first_cdl = _panel_with_one_cdl_stage()
+    panel._on_row_clicked(first_cdl.id)
+    original_slope = first_cdl.params["slope"]
+
+    entry = CDLEntry("My CDL", slope=(1.3, 1.0, 0.9), offset=(0.0, 0.0, 0.0), power=(1.0, 1.0, 1.0), sat=1.1)
+    panel.insert_entry_in_stack(entry)
+
+    assert len(panel.stack.stages) == 2
+    assert panel.stack.stages[0].params["slope"] == original_slope, (
+        "the already-selected cdl stage must be untouched, not overwritten")
+    print("StackPanel.insert_entry_in_stack: never overwrites an already-"
+          "selected 'cdl' stage, unlike apply_cdl_entry -- OK")
+
+
+def test_printer_lights_inspector_uses_spinboxes_not_sliders():
+    """Per Tom: "printer lights shouldn't use system sliders, move to
+    sliding spinboxes." """
+    from PySide6.QtWidgets import QSlider, QSpinBox
+    panel, stage = _panel_with_one_printer_lights_stage()
+    inspector = panel.inspector_stack.widget(panel._printer_lights_inspector_index)
+    assert not inspector.findChildren(QSlider), (
+        "printer lights inspector must not contain any QSlider")
+    for channel in ("R", "G", "B"):
+        assert isinstance(panel._pl_spins[channel], QSpinBox)
+    print("StackPanel printer lights inspector: R/G/B are QSpinBox, no "
+          "QSlider involved -- OK")
+
+
+def test_printer_lights_spins_have_drag_to_scrub_enabled():
+    from PySide6.QtCore import Qt as _Qt
+    panel, stage = _panel_with_one_printer_lights_stage()
+    for channel in ("R", "G", "B"):
+        cursor_shape = panel._pl_spins[channel].lineEdit().cursor().shape()
+        assert cursor_shape == _Qt.CursorShape.SizeHorCursor, (
+            f"{channel} spin doesn't look like enable_drag_to_scrub ran on it")
+    print("StackPanel printer lights inspector: R/G/B spinboxes have "
+          "drag-to-scrub enabled (SizeHorCursor) -- OK")
+
+
+def test_printer_lights_spin_change_applies_live():
+    panel, stage = _panel_with_one_printer_lights_stage()
+    panel._pl_spins["R"].setValue(12)
+    assert stage.params["r_points"] == 12
+    print("StackPanel printer lights inspector: editing the R spinbox "
+          "applies to the selected stage live -- OK")
+
+
+def test_printer_lights_gang_mirrors_r_to_g_and_b():
+    panel, stage = _panel_with_one_printer_lights_stage()
+    panel.pl_gang_checkbox.setChecked(True)
+    panel._pl_spins["R"].setValue(20)
+    assert panel._pl_spins["G"].value() == 20
+    assert panel._pl_spins["B"].value() == 20
+    assert stage.params["g_points"] == 20
+    assert stage.params["b_points"] == 20
+    print("StackPanel printer lights inspector: Gang R/G/B mirrors an R "
+          "spinbox edit onto G/B -- OK")
+
+
+def test_printer_lights_reset_zeroes_all_three_spins():
+    panel, stage = _panel_with_one_printer_lights_stage()
+    panel._pl_spins["R"].setValue(30)
+    panel._pl_spins["G"].setValue(-10)
+    panel._on_pl_reset_clicked()
+    assert panel._pl_spins["R"].value() == 0
+    assert panel._pl_spins["G"].value() == 0
+    assert panel._pl_spins["B"].value() == 0
+    assert stage.params["r_points"] == 0
+    print("StackPanel printer lights inspector: Reset to 0 zeroes all "
+          "three spinboxes and the stage's params -- OK")
+
+
+def test_grading_primary_field_has_a_color_balance_wheel():
+    """Per Tom: "adding ... color wheels to operators that dont have
+    them" -- Grading Primary didn't have one before."""
+    from color_wheel_widget import ColorBalanceWheel
+    panel, stage = _panel_with_one_grading_primary_stage()
+    assert isinstance(panel._gpr_wheels["gamma"], ColorBalanceWheel)
+    print("StackPanel Grading Primary inspector: each field has its own "
+          "ColorBalanceWheel -- OK")
+
+
+def test_grading_primary_wheel_drag_shifts_rgb_leaves_master_alone():
+    panel, stage = _panel_with_one_grading_primary_stage()
+    spins = panel._gpr_field_spins["gamma"]
+    spins["M"].setValue(1.2)  # a non-default master, so we can tell it's untouched
+
+    # (0, 1) is R's own axis (see color_balance.py: R at 90 degrees) --
+    # set_balance (not calling the handler directly) so the wheel WIDGET's
+    # own internal position actually updates too, same as a real drag.
+    panel._gpr_wheels["gamma"].set_balance(0.0, 1.0)
+
+    assert spins["M"].value() == 1.2, "wheel drag must not touch master"
+    assert spins["R"].value() != spins["G"].value(), "wheel drag must fan R/G/B apart"
+    assert abs(spins["G"].value() - spins["B"].value()) < 1e-9, "G and B move together for a pure R tilt"
+    assert stage.params["gamma"][3] == 1.2  # M unchanged in the applied params too
+    print("StackPanel Grading Primary: dragging the wheel fans R/G/B "
+          "apart around M, without moving M itself -- OK")
+
+
+def test_grading_primary_master_edit_shifts_rgb_preserves_wheel_position():
+    """Editing M directly should behave like CDL's own master spin: the
+    wheel's tint (relative spread) stays put, R/G/B all shift together to
+    the new master."""
+    panel, stage = _panel_with_one_grading_primary_stage()
+    spins = panel._gpr_field_spins["gamma"]
+    panel._gpr_wheels["gamma"].set_balance(0.5, 0.0)  # establish a real tint
+    r_before, g_before, b_before = spins["R"].value(), spins["G"].value(), spins["B"].value()
+    wheel_before = panel._gpr_wheels["gamma"].balance()
+
+    spins["M"].setValue(2.0)
+
+    wheel_after = panel._gpr_wheels["gamma"].balance()
+    assert abs(wheel_after[0] - wheel_before[0]) < 1e-9
+    assert abs(wheel_after[1] - wheel_before[1]) < 1e-9
+    # Each channel should have shifted by the same delta as the master did.
+    delta_m = 2.0 - 1.0
+    assert abs(spins["R"].value() - (r_before + delta_m)) < 1e-6
+    assert abs(spins["G"].value() - (g_before + delta_m)) < 1e-6
+    assert abs(spins["B"].value() - (b_before + delta_m)) < 1e-6
+    print("StackPanel Grading Primary: editing M shifts R/G/B together, "
+          "keeping the wheel's own tint position unchanged -- OK")
+
+
+def test_grading_primary_channel_spin_edit_moves_wheel_leaves_master_alone():
+    """Typing an exact R/G/B value directly must NOT touch M -- unlike
+    CDL's fine-spin handler, which recomputes master as mean(R,G,B) (see
+    GRADING_WHEEL_STRENGTH's own comment on why that's wrong here)."""
+    panel, stage = _panel_with_one_grading_primary_stage()
+    spins = panel._gpr_field_spins["gamma"]
+    spins["M"].setValue(1.3)
+
+    spins["R"].setValue(1.8)
+
+    assert spins["M"].value() == 1.3, "typing R directly must not touch M"
+    x, y = panel._gpr_wheels["gamma"].balance()
+    assert abs(x) > 1e-9 or abs(y) > 1e-9, "wheel should have moved off-center"
+    assert stage.params["gamma"][0] == 1.8
+    assert stage.params["gamma"][3] == 1.3
+    print("StackPanel Grading Primary: typing a fine R/G/B value directly "
+          "moves the wheel, leaves M completely alone -- OK")
+
+
+def test_grading_primary_reset_zeroes_wheel_and_all_fields():
+    panel, stage = _panel_with_one_grading_primary_stage()
+    spins = panel._gpr_field_spins["gamma"]
+    panel._gpr_wheels["gamma"].set_balance(0.7, 0.3)
+    spins["M"].setValue(2.5)
+
+    panel._on_gpr_reset_clicked()
+
+    assert spins["R"].value() == spins["G"].value() == spins["B"].value() == spins["M"].value() == 1.0
+    x, y = panel._gpr_wheels["gamma"].balance()
+    assert abs(x) < 1e-9 and abs(y) < 1e-9
+    assert stage.params["gamma"] == (1.0, 1.0, 1.0, 1.0)
+    print("StackPanel Grading Primary: Reset to Identity zeroes every "
+          "field's spinboxes AND its wheel -- OK")
+
+
+def test_grading_primary_refresh_on_select_does_not_corrupt_stored_values():
+    """The real bug this needs to guard against: refreshing the inspector
+    for a stage whose R/G/B/M genuinely don't sum to a wheel-consistent
+    shape (i.e. M != mean(R,G,B), the normal case for independently-set
+    values) must display them EXACTLY as stored, not silently mutate them
+    via cascading sync handlers."""
+    panel = StackPanel()
+    stage1 = st.make_grading_primary_stage()
+    stage1.params["gamma"] = (1.9, 1.1, 1.0, 1.3)  # M deliberately != mean(R,G,B)
+    stage2 = st.make_grading_primary_stage()
+    panel.stack.add_stage(stage1)
+    panel.stack.add_stage(stage2)
+    panel._refresh_list()
+
+    panel._on_row_clicked(stage1.id)  # select stage1, populating the inspector
+    panel._on_row_clicked(stage2.id)  # select stage2 (a different stage)
+    panel._on_row_clicked(stage1.id)  # back to stage1 -- inspector repopulates again
+
+    assert stage1.params["gamma"] == (1.9, 1.1, 1.0, 1.3), (
+        "selecting away and back must not have mutated stage1's stored values")
+    spins = panel._gpr_field_spins["gamma"]
+    assert (spins["R"].value(), spins["G"].value(), spins["B"].value(), spins["M"].value()) == (1.9, 1.1, 1.0, 1.3)
+    print("StackPanel Grading Primary: switching stage selection away and "
+          "back never mutates a stage's own stored R/G/B/M values -- OK")
+
+
+def test_grading_tone_range_has_a_color_balance_wheel():
+    from color_wheel_widget import ColorBalanceWheel
+    panel, stage = _panel_with_one_grading_tone_stage()
+    assert isinstance(panel._gtn_wheels["midtones"], ColorBalanceWheel)
+    print("StackPanel Grading Tone inspector: each range has its own "
+          "ColorBalanceWheel -- OK")
+
+
+def test_grading_tone_wheel_drag_shifts_rgb_leaves_master_alone():
+    panel, stage = _panel_with_one_grading_tone_stage()
+    spins = panel._gtn_range_spins["midtones"]
+    spins["M"].setValue(1.2)
+
+    # (0, 1) is R's own axis (see color_balance.py) -- set_balance so the
+    # wheel WIDGET's own internal position actually updates, same as a
+    # real drag.
+    panel._gtn_wheels["midtones"].set_balance(0.0, 1.0)
+
+    assert spins["M"].value() == 1.2
+    assert spins["R"].value() != spins["G"].value()
+    assert stage.params["midtones"][3] == 1.2
+    print("StackPanel Grading Tone: dragging a range's wheel fans R/G/B "
+          "apart around M, without moving M itself -- OK")
+
+
+def test_grading_tone_channel_spin_edit_moves_wheel_leaves_master_alone():
+    panel, stage = _panel_with_one_grading_tone_stage()
+    spins = panel._gtn_range_spins["midtones"]
+    spins["M"].setValue(1.1)
+
+    spins["G"].setValue(1.5)
+
+    assert spins["M"].value() == 1.1
+    x, y = panel._gtn_wheels["midtones"].balance()
+    assert abs(x) > 1e-9 or abs(y) > 1e-9
+    assert stage.params["midtones"][1] == 1.5
+    print("StackPanel Grading Tone: typing a fine R/G/B value directly "
+          "moves the wheel, leaves M completely alone -- OK")
+
+
+def test_grading_tone_reset_zeroes_wheel_and_all_ranges():
+    panel, stage = _panel_with_one_grading_tone_stage()
+    spins = panel._gtn_range_spins["midtones"]
+    panel._gtn_wheels["midtones"].set_balance(0.4, -0.2)
+    spins["M"].setValue(1.6)
+
+    panel._on_gtn_reset_clicked()
+
+    assert spins["R"].value() == spins["G"].value() == spins["B"].value() == spins["M"].value() == 1.0
+    x, y = panel._gtn_wheels["midtones"].balance()
+    assert abs(x) < 1e-9 and abs(y) < 1e-9
+    print("StackPanel Grading Tone: Reset to Identity zeroes every "
+          "range's spinboxes AND its wheel -- OK")
+
+
+def test_grading_tone_start_width_are_unaffected_by_wheel_sync():
+    """Start/Width aren't part of the R/G/B/M wheel model at all -- must
+    keep working exactly as before (plain apply-on-change, no wheel
+    involvement)."""
+    panel, stage = _panel_with_one_grading_tone_stage()
+    spins = panel._gtn_range_spins["midtones"]
+    spins["Start"].setValue(0.1)
+    spins["Width"].setValue(0.9)
+    assert stage.params["midtones"][4] == 0.1
+    assert stage.params["midtones"][5] == 0.9
+    print("StackPanel Grading Tone: Start/Width still apply directly, "
+          "untouched by the new wheel sync -- OK")
 
 
 def test_stage_kind_badge_text_known_and_unknown_kinds():
@@ -736,6 +1085,180 @@ def test_drop_indicator_spans_the_full_width_for_an_ordinary_row():
           "the FULL row width for an ordinary (non-fork) target row -- OK")
 
 
+def _find_param_label(inspector, text):
+    matches = [w for w in inspector.findChildren(_ParamLabel) if w.text() == text]
+    assert len(matches) == 1, f"expected exactly one _ParamLabel with text {text!r}, found {len(matches)}"
+    return matches[0]
+
+
+def test_param_label_double_click_calls_its_reset_callback():
+    """Isolated test of the reusable widget itself (per Tom: "add the
+    ability to double click the name of a parameter to reset it
+    individually") -- every per-operator test below just confirms this
+    class is actually WIRED to the right control(s); this confirms the
+    class's own double-click handling works at all."""
+    _app()
+    calls = []
+    label = _ParamLabel("Brightness:", lambda: calls.append(True))
+    label.show()
+    QTest.mouseDClick(label, Qt.MouseButton.LeftButton)
+    assert calls == [True]
+    print("_ParamLabel: double-click fires the reset callback exactly "
+          "once -- OK")
+
+
+def test_printer_lights_channel_label_double_click_resets_just_that_channel():
+    panel, stage = _panel_with_one_printer_lights_stage()
+    panel._pl_spins["R"].setValue(30)
+    panel._pl_spins["G"].setValue(-10)
+    inspector = panel.inspector_stack.widget(panel._printer_lights_inspector_index)
+    label = _find_param_label(inspector, "R:")
+    label.show()
+    QTest.mouseDClick(label, Qt.MouseButton.LeftButton)
+    assert panel._pl_spins["R"].value() == 0
+    assert panel._pl_spins["G"].value() == -10, "G must be untouched by resetting R alone"
+    print("StackPanel printer lights inspector: double-clicking the 'R:' "
+          "label resets only R, leaves G/B alone -- OK")
+
+
+def test_cdl_field_label_double_click_resets_whole_field_to_identity():
+    panel, stage = _panel_with_one_cdl_stage()
+    panel._cdl_sop_spins["slope"]["R"].setValue(2.0)
+    panel._cdl_sop_spins["slope"]["G"].setValue(0.5)
+    panel._cdl_sop_spins["offset"]["R"].setValue(0.3)  # a different field -- must be untouched
+    inspector = panel.inspector_stack.widget(panel._cdl_inspector_index)
+    label = _find_param_label(inspector, "Slope (Master):")
+    label.show()
+    QTest.mouseDClick(label, Qt.MouseButton.LeftButton)
+    for channel in ("R", "G", "B"):
+        assert panel._cdl_sop_spins["slope"][channel].value() == 1.0
+    assert panel._cdl_sop_spins["offset"]["R"].value() == 0.3, "offset must be untouched by resetting slope alone"
+    print("StackPanel CDL inspector: double-clicking 'Slope (Master):' "
+          "resets the whole Slope field to identity, leaves Offset alone -- OK")
+
+
+def test_cdl_channel_label_double_click_resets_just_that_channel():
+    panel, stage = _panel_with_one_cdl_stage()
+    panel._cdl_sop_spins["slope"]["R"].setValue(2.0)
+    panel._cdl_sop_spins["slope"]["G"].setValue(0.5)
+    inspector = panel.inspector_stack.widget(panel._cdl_inspector_index)
+    labels_r = [w for w in inspector.findChildren(_ParamLabel) if w.text() == "R"]
+    assert len(labels_r) == 3  # one per SOP field (slope/offset/power)
+    labels_r[0].show()  # CDL_SOP_FIELD_SPECS' first entry is "slope"
+    QTest.mouseDClick(labels_r[0], Qt.MouseButton.LeftButton)
+    assert panel._cdl_sop_spins["slope"]["R"].value() == 1.0
+    assert panel._cdl_sop_spins["slope"]["G"].value() == 0.5, "G must be untouched by resetting R alone"
+    print("StackPanel CDL inspector: double-clicking a fine 'R' label "
+          "resets just that channel, leaves G/B alone -- OK")
+
+
+def test_grading_primary_field_label_double_click_resets_whole_field_to_identity():
+    panel, stage = _panel_with_one_grading_primary_stage()
+    spins = panel._gpr_field_spins["brightness"]
+    for channel in ("R", "G", "B", "M"):
+        spins[channel].setValue(0.5)
+    inspector = panel.inspector_stack.widget(panel._grading_primary_inspector_index)
+    label = _find_param_label(inspector, "Brightness:")
+    label.show()
+    QTest.mouseDClick(label, Qt.MouseButton.LeftButton)
+    for channel in ("R", "G", "B", "M"):
+        assert spins[channel].value() == 0.0
+    wheel_x, wheel_y = panel._gpr_wheels["brightness"].balance()
+    assert wheel_x == 0.0 and wheel_y == 0.0
+    print("StackPanel Grading Primary inspector: double-clicking "
+          "'Brightness:' resets that field's R/G/B/M and wheel to "
+          "identity -- OK")
+
+
+def test_grading_primary_channel_label_double_click_resets_just_that_channel():
+    panel, stage = _panel_with_one_grading_primary_stage()
+    spins = panel._gpr_field_spins["brightness"]
+    spins["R"].setValue(0.4)
+    spins["M"].setValue(0.3)
+    inspector = panel.inspector_stack.widget(panel._grading_primary_inspector_index)
+    labels_r = [w for w in inspector.findChildren(_ParamLabel) if w.text() == "R"]
+    assert len(labels_r) == len(GRADING_PRIMARY_FIELD_SPECS)
+    labels_r[0].show()  # GRADING_PRIMARY_FIELD_SPECS' first entry is "brightness"
+    QTest.mouseDClick(labels_r[0], Qt.MouseButton.LeftButton)
+    assert spins["R"].value() == 0.0
+    assert spins["M"].value() == 0.3, "M must be untouched by resetting R alone"
+    print("StackPanel Grading Primary inspector: double-clicking a "
+          "channel's own 'R' label resets just that channel, leaves M "
+          "alone -- OK")
+
+
+def test_grading_tone_range_label_double_click_resets_whole_range_to_identity():
+    panel, stage = _panel_with_one_grading_tone_stage()
+    import grading_tone as gtn
+    spins = panel._gtn_range_spins["blacks"]
+    for channel in ("R", "G", "B", "M", "Start", "Width"):
+        spins[channel].setValue(spins[channel].value() + 0.2)
+    inspector = panel.inspector_stack.widget(panel._grading_tone_inspector_index)
+    label = _find_param_label(inspector, GRADING_TONE_RANGE_LABELS["blacks"])
+    label.show()
+    QTest.mouseDClick(label, Qt.MouseButton.LeftButton)
+    r, g, b, m, start, width = gtn.DEFAULT_RANGE_VALUES["blacks"]
+    for channel, expected in zip(("R", "G", "B", "M", "Start", "Width"), (r, g, b, m, start, width)):
+        assert abs(spins[channel].value() - expected) < 1e-9, channel
+    print("StackPanel Grading Tone inspector: double-clicking a range's "
+          "own name resets that whole range to identity -- OK")
+
+
+def test_grading_tone_start_width_labels_reset_individually():
+    panel, stage = _panel_with_one_grading_tone_stage()
+    spins = panel._gtn_range_spins["blacks"]
+    spins["Start"].setValue(spins["Start"].value() + 0.5)
+    spins["Width"].setValue(spins["Width"].value() + 0.5)
+    r_before = spins["R"].value()
+    inspector = panel.inspector_stack.widget(panel._grading_tone_inspector_index)
+    labels = [w for w in inspector.findChildren(_ParamLabel) if w.text() == "Start"]
+    assert len(labels) == 5  # one per range
+    labels[0].show()
+    QTest.mouseDClick(labels[0], Qt.MouseButton.LeftButton)
+    import grading_tone as gtn
+    _r, _g, _b, _m, default_start, _width = gtn.DEFAULT_RANGE_VALUES["blacks"]
+    assert abs(spins["Start"].value() - default_start) < 1e-9
+    assert spins["R"].value() == r_before, "R must be untouched by resetting Start alone"
+    print("StackPanel Grading Tone inspector: 'Start'/'Width' labels "
+          "reset just that one field, not the whole range -- OK")
+
+
+def test_grading_tone_channel_label_double_click_resets_just_that_channel():
+    panel, stage = _panel_with_one_grading_tone_stage()
+    spins = panel._gtn_range_spins["blacks"]
+    spins["R"].setValue(spins["R"].value() + 0.3)
+    spins["G"].setValue(spins["G"].value() + 0.3)
+    inspector = panel.inspector_stack.widget(panel._grading_tone_inspector_index)
+    labels_r = [w for w in inspector.findChildren(_ParamLabel) if w.text() == "R"]
+    assert len(labels_r) == 5  # one per range
+    labels_r[0].show()  # gtn.RANGE_KEYS' first entry is "blacks"
+    QTest.mouseDClick(labels_r[0], Qt.MouseButton.LeftButton)
+    import grading_tone as gtn
+    r_default, _g, _b, _m, _start, _width = gtn.DEFAULT_RANGE_VALUES["blacks"]
+    assert abs(spins["R"].value() - r_default) < 1e-9
+    print("StackPanel Grading Tone inspector: double-clicking a range's "
+          "own 'R' label resets just that channel -- OK")
+
+
+def test_exposure_contrast_field_label_double_click_resets_that_field():
+    import exposure_contrast as ec
+    _app()
+    panel = StackPanel()
+    panel._on_add_exposure_contrast_clicked()
+    stage = panel.stack.stages[0]
+    panel._on_row_clicked(stage.id)
+    panel._ec_field_spins["exposure"].setValue(2.5)
+    panel._ec_field_spins["contrast"].setValue(1.5)  # untouched control
+    inspector = panel.inspector_stack.widget(panel._exposure_contrast_inspector_index)
+    label = _find_param_label(inspector, "Exposure:")
+    label.show()
+    QTest.mouseDClick(label, Qt.MouseButton.LeftButton)
+    assert panel._ec_field_spins["exposure"].value() == ec.IDENTITY_EXPOSURE
+    assert panel._ec_field_spins["contrast"].value() == 1.5, "contrast must be untouched"
+    print("StackPanel Exposure/Contrast inspector: double-clicking "
+          "'Exposure:' resets just that field -- OK")
+
+
 if __name__ == "__main__":
     test_short_text_that_fits_is_not_elided_and_has_no_tooltip()
     test_long_text_at_narrow_width_is_elided_with_ellipsis_and_gets_a_tooltip()
@@ -751,6 +1274,26 @@ if __name__ == "__main__":
     test_cdl_live_edit_updates_the_existing_row_widget_in_place()
     test_opacity_spin_lives_on_the_row_and_edits_that_stage_in_place()
     test_enabled_toggle_updates_the_existing_row_widget_in_place()
+    test_insert_entry_in_stack_with_a_stack_memory_adds_all_its_stages_below_selected()
+    test_insert_entry_in_stack_with_a_stack_memory_uses_fresh_ids()
+    test_insert_entry_in_stack_with_a_cdl_entry_adds_one_new_stage()
+    test_insert_entry_in_stack_never_overwrites_a_selected_cdl_stage()
+    test_printer_lights_inspector_uses_spinboxes_not_sliders()
+    test_printer_lights_spins_have_drag_to_scrub_enabled()
+    test_printer_lights_spin_change_applies_live()
+    test_printer_lights_gang_mirrors_r_to_g_and_b()
+    test_printer_lights_reset_zeroes_all_three_spins()
+    test_grading_primary_field_has_a_color_balance_wheel()
+    test_grading_primary_wheel_drag_shifts_rgb_leaves_master_alone()
+    test_grading_primary_master_edit_shifts_rgb_preserves_wheel_position()
+    test_grading_primary_channel_spin_edit_moves_wheel_leaves_master_alone()
+    test_grading_primary_reset_zeroes_wheel_and_all_fields()
+    test_grading_primary_refresh_on_select_does_not_corrupt_stored_values()
+    test_grading_tone_range_has_a_color_balance_wheel()
+    test_grading_tone_wheel_drag_shifts_rgb_leaves_master_alone()
+    test_grading_tone_channel_spin_edit_moves_wheel_leaves_master_alone()
+    test_grading_tone_reset_zeroes_wheel_and_all_ranges()
+    test_grading_tone_start_width_are_unaffected_by_wheel_sync()
     test_stage_kind_badge_text_known_and_unknown_kinds()
     test_cdl_row_widget_shows_the_cdl_badge()
     test_row_label_has_no_leading_stage_number_prefix()
@@ -771,5 +1314,15 @@ if __name__ == "__main__":
     test_fork_grid_cell_shows_its_kind_badge_too()
     test_drop_indicator_spans_only_the_target_column_inside_a_fork()
     test_drop_indicator_spans_the_full_width_for_an_ordinary_row()
+    test_param_label_double_click_calls_its_reset_callback()
+    test_printer_lights_channel_label_double_click_resets_just_that_channel()
+    test_cdl_field_label_double_click_resets_whole_field_to_identity()
+    test_cdl_channel_label_double_click_resets_just_that_channel()
+    test_grading_primary_field_label_double_click_resets_whole_field_to_identity()
+    test_grading_primary_channel_label_double_click_resets_just_that_channel()
+    test_grading_tone_range_label_double_click_resets_whole_range_to_identity()
+    test_grading_tone_start_width_labels_reset_individually()
+    test_grading_tone_channel_label_double_click_resets_just_that_channel()
+    test_exposure_contrast_field_label_double_click_resets_that_field()
     print()
     print("All stack_panel tests passed.")

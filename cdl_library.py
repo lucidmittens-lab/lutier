@@ -95,8 +95,9 @@ class CDLLibrary:
 
     def add_entry(self, entry):
         """Add an already-built CDLEntry directly -- used by
-        cdl_library_panel.py's import path, which builds one CDLEntry per
-        ColorCorrection found in an imported file (see cdl_file_io.py)."""
+        stack_memories_panel.py's CDL import path, which builds one
+        CDLEntry per ColorCorrection found in an imported file (see
+        cdl_file_io.py)."""
         self.entries.append(entry)
         return entry
 

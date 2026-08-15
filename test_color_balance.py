@@ -93,6 +93,59 @@ def test_rgb_to_master_and_wheel_arbitrary_values_gives_sensible_master():
           "the plain mean exactly -- OK")
 
 
+def test_wheel_from_rgb_given_master_round_trips_when_master_matches_mean():
+    """When the given master happens to equal mean(r,g,b) (i.e. exactly
+    the situation rgb_to_master_and_wheel already handles), the wheel
+    position must match rgb_to_master_and_wheel's own -- same underlying
+    balance math, just with the master supplied rather than derived."""
+    r, g, b = 1.5, 0.8, 1.1
+    master = (r + g + b) / 3.0
+    x, y = cb.wheel_from_rgb_given_master(r, g, b, master, strength=1.0)
+    _m2, x2, y2 = cb.rgb_to_master_and_wheel(r, g, b, strength=1.0)
+    assert abs(x - x2) < 1e-9 and abs(y - y2) < 1e-9
+    print("wheel_from_rgb_given_master: matches rgb_to_master_and_wheel's "
+          "own wheel position when the given master equals mean(r,g,b) -- OK")
+
+
+def test_wheel_from_rgb_given_master_ignores_an_independent_master():
+    """The whole point: master here does NOT have to equal mean(r,g,b) --
+    e.g. GradingRGBM's M really can differ from the plain average of R/G/B
+    (both are independently stored). The wheel position must reflect the
+    spread around the GIVEN master, not silently recompute a different
+    one."""
+    r, g, b = 1.0, 1.0, 1.0  # R=G=B, so ANY spread relative to a master != 1.0 is uniform
+    master = 1.5  # independently set, does NOT equal mean(r,g,b) == 1.0
+    x, y = cb.wheel_from_rgb_given_master(r, g, b, master, strength=1.0)
+    # A uniform (r-master) shift on all three channels is a pure master
+    # move, not a balance -- so the best-fit wheel position is the origin.
+    assert abs(x) < 1e-9 and abs(y) < 1e-9, (x, y)
+    print("wheel_from_rgb_given_master: an independently-set master that "
+          "differs from mean(r,g,b) still gives a sensible (here, "
+          "center-of-wheel) balance position -- OK")
+
+
+def test_wheel_from_rgb_given_master_round_trips_through_rgb_from_master_and_wheel():
+    """Forward/inverse pair, master held fixed throughout (the real usage
+    pattern -- see stack_panel.py's Grading Primary/Tone wheel sync,
+    which never re-derives master from R/G/B the way CDL's does)."""
+    master = 0.7
+    x_in, y_in = 0.4, -0.5
+    strength = 1.0
+    r, g, b = cb.rgb_from_master_and_wheel(master, x_in, y_in, strength=strength)
+    x_out, y_out = cb.wheel_from_rgb_given_master(r, g, b, master, strength=strength)
+    assert abs(x_out - x_in) < 1e-9 and abs(y_out - y_in) < 1e-9
+    print("wheel_from_rgb_given_master: exact inverse of "
+          "rgb_from_master_and_wheel when the SAME master is held fixed "
+          "on both sides -- OK")
+
+
+def test_wheel_from_rgb_given_master_zero_strength():
+    x, y = cb.wheel_from_rgb_given_master(2.0, 0.5, 1.0, master=1.0, strength=0)
+    assert (x, y) == (0.0, 0.0)
+    print("wheel_from_rgb_given_master: strength=0 returns the wheel "
+          "center rather than dividing by zero -- OK")
+
+
 def test_clamp_to_unit_circle():
     assert cb.clamp_to_unit_circle(0.0, 0.0) == (0.0, 0.0)
     x, y = cb.clamp_to_unit_circle(3.0, 4.0)  # radius 5
@@ -123,6 +176,10 @@ if __name__ == "__main__":
     test_rgb_from_master_and_wheel_preserves_master_average()
     test_rgb_to_master_and_wheel_round_trips()
     test_rgb_to_master_and_wheel_arbitrary_values_gives_sensible_master()
+    test_wheel_from_rgb_given_master_round_trips_when_master_matches_mean()
+    test_wheel_from_rgb_given_master_ignores_an_independent_master()
+    test_wheel_from_rgb_given_master_round_trips_through_rgb_from_master_and_wheel()
+    test_wheel_from_rgb_given_master_zero_strength()
     test_clamp_to_unit_circle()
     test_strength_scales_balance_magnitude_linearly()
     print()

@@ -3,9 +3,10 @@ hover_inspector.py -- a general-purpose "Alt+hover" info card (per Tom,
 "like Flame"): holding Alt while hovering over an item in a supported
 list-based panel shows a floating card near the cursor with that item's
 full details, without needing to click/select it first. Several panels
-(Stack Memories, LUT Library, CDL Library, Image Library, the Stack
-itself) have entries with more detail than fits in a compact row label,
-and some (Stack Memories) have no per-item detail view at all otherwise.
+(Browser, Stack Memories, LUT Library, CDL Library, Image Library, the
+Stack itself) have entries with more detail than fits in a compact row
+label, and some (Stack Memories) have no per-item detail view at all
+otherwise.
 
 ONE shared mechanism, not five different per-panel implementations: each
 panel calls `register(list_widget, info_for_item)` once, where

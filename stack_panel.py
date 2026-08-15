@@ -1,8 +1,8 @@
 """
 stack_panel.py -- the single, unified operation stack: build an ordered
 list of stages (a Printer Lights trim, an ACES DRT output transform, or an
-ASC CDL SOP/SAT grade; LUT/Identity stages are added via the Browser panel
--- see add_lut_stage_from_path/add_identity_stage below), reorder them,
+ASC CDL SOP/SAT grade; LUT stages are added via the Browser panel
+-- see add_lut_stage_from_path below), reorder them,
 toggle any stage on/off or give it its own opacity, tweak a selected
 stage's own parameters in place, and the whole thing re-bakes live into
 one combined LUT feeding the 3D viewer / sample image preview / scopes /
@@ -126,12 +126,14 @@ import grading_tone as gtn
 import color_balance as cb
 from color_wheel_widget import ColorBalanceWheel
 from curve_editor_widget import CurveEditorWidget, CHANNEL_ORDER, CHANNEL_COLORS, CHANNEL_LABELS
-from app_logic import load_lut_any_format, create_identity_lut, list_available_colourspaces
+from app_logic import load_lut_any_format, list_available_colourspaces
 from printer_lights import POINTS_PER_STOP, DEFAULT_WORKING_COLOURSPACE
 import hover_inspector
 from spinbox_scrub import enable_drag_to_scrub
 from browser_panel import LUT_PATH_MIME
 from floating_dialog import make_floating_tool_window, show_floating
+from stack_memory import StackMemory
+from cdl_library import CDLEntry
 # style.HINT_TEXT_HEX -- see style.py's FOURTEENTH PASS docstring: hint
 # text is a literal hex now, not palette(placeholder-text) (doesn't
 # reliably survive Qt's style-polish pass on this Qt build).
@@ -182,6 +184,7 @@ CDL_SOP_FIELD_SPECS = [
 ]
 CDL_WHEEL_DIAMETER = 90
 CDL_SAT_RANGE = 400  # slider units -> /100 -> 0.0-4.0, matching the spin range
+CDL_SOP_FIELD_DEFAULTS = {fk: default for fk, _l, _lo, _hi, default, _s, _st in CDL_SOP_FIELD_SPECS}
 
 # Which of GradingPrimary's RGBM fields are actually meaningful per style
 # (see grading_primary.py's own docstring) -- _build_grading_primary_
@@ -197,12 +200,22 @@ GRADING_PRIMARY_STYLE_FIELDS = {
 # (field_key, label, is_additive) -- additive fields (identity 0.0, e.g.
 # brightness) get a different range/step than multiplicative ones
 # (identity 1.0, e.g. contrast/gamma/gain) -- same "own spin range around
-# identity" reasoning as CDL_SOP_FIELD_SPECS above, just without that
-# spec's wheel-specific "strength" column since these fields use plain
-# R/G/B/M spinboxes, no color-balance wheel (GradingRGBM's 4th "master"
-# component is a REAL, independently stored value here, unlike CDL's
-# wheel-computed master, which is a UI-only convenience -- see
-# grading_primary.py's docstring).
+# identity" reasoning as CDL_SOP_FIELD_SPECS above. UNLIKE CDL, these
+# fields' R/G/B/M spinboxes now ALSO get a color-balance wheel (per Tom:
+# "adding ... color wheels to operators that dont have them") -- but
+# GradingRGBM's 4th "master" (M) component is a REAL, independently
+# stored value here, unlike CDL's wheel-computed master, which is a
+# UI-only convenience derived from mean(R,G,B) and never itself stored
+# (see grading_primary.py's docstring, and color_balance.
+# wheel_from_rgb_given_master's own docstring for why that difference
+# means this wheel's sync math can't just reuse CDL's rgb_to_master_and_
+# wheel unchanged -- see _on_gpr_wheel_changed/_on_gpr_master_changed/
+# _on_gpr_channel_spin_changed below). One shared strength for every
+# field (unlike CDL_SOP_FIELD_SPECS' per-field column) -- simplicity over
+# per-field tuning, matching how every field here already shares just two
+# ranges (additive/multiplicative) rather than its own bespoke one.
+GRADING_WHEEL_STRENGTH = 1.0
+GRADING_PRIMARY_WHEEL_DIAMETER = 90
 GRADING_PRIMARY_FIELD_SPECS = [
     ("brightness", "Brightness", True),
     ("contrast", "Contrast", False),
@@ -212,12 +225,20 @@ GRADING_PRIMARY_FIELD_SPECS = [
     ("lift", "Lift", True),
     ("gain", "Gain", False),
 ]
+GRADING_PRIMARY_FIELD_DEFAULTS = {
+    fk: (0.0 if is_additive else 1.0) for fk, _l, is_additive in GRADING_PRIMARY_FIELD_SPECS}
 GRADING_PRIMARY_ADDITIVE_RANGE = (-2.0, 2.0, 0.01)  # lo, hi, step
 # Floor is 0.01, not 0.0 -- ocio.GradingPrimary.validate() requires
 # contrast/gamma to stay strictly positive (confirmed via probing, see
 # grading_primary.py's own _POSITIVE_FIELD_FLOOR comment); gain doesn't
 # strictly need this floor but shares this range constant for simplicity.
 GRADING_PRIMARY_MULT_RANGE = (0.01, 4.0, 0.01)
+GRADING_TONE_WHEEL_DIAMETER = 60  # smaller than CDL/Grading Primary's 90 --
+# 5 ranges here (vs CDL's 3, Grading Primary's 3-visible-at-once) means 5
+# wheels stacked vertically at 90px each would meaningfully bloat this
+# already-the-largest inspector (see _build_grading_tone_inspector's own
+# docstring on "largest of the four Tier 1 inspectors"); 60px keeps the
+# per-range row compact while still being genuinely drag-usable.
 
 
 def _format_grading_primary_label(params):
@@ -1227,6 +1248,68 @@ class _StackListWidget(QListWidget):
         super().keyPressEvent(event)
 
 
+class _ParamLabel(QLabel):
+    """A parameter's own name label -- double-click resets it to default
+    (per Tom: "add the ability to double click the name of a parameter
+    to reset it individually"). `reset_callback` does the actual reset,
+    almost always one or more setValue() calls on the control(s) this
+    label names -- setValue already fires that control's normal
+    valueChanged handler, so a reset applies live exactly the same way
+    a manual edit would, no separate apply call needed at any call
+    site. Used both for a single scalar control (Printer Lights'
+    R/G/B, Exposure/Contrast's fields, Custom DRT's fields, CDL's Sat,
+    Grading Primary's Pivot/Saturation, Grading Tone's S-Contrast) and
+    for a whole wheel+spins field/range group at once (CDL's Slope/
+    Offset/Power, Grading Primary's 7 fields, Grading Tone's 5 ranges)
+    -- see each _reset_one_*_field helper for the latter."""
+
+    def __init__(self, text, reset_callback, parent=None):
+        super().__init__(text, parent)
+        self._reset_callback = reset_callback
+        self.setToolTip(f"Double-click to reset {text.rstrip(':')} to its default.")
+        # Deliberately NOT PointingHandCursor -- Qt has no built-in
+        # "reset" cursor, and the hand reads as a hyperlink/navigation
+        # affordance (per Tom, "the gloved hand with finger icon"),
+        # which is the wrong signal for a reset action. Left at the
+        # default arrow; the tooltip carries the double-click hint.
+
+    def mouseDoubleClickEvent(self, event):
+        self._reset_callback()
+        super().mouseDoubleClickEvent(event)
+
+
+class _CurrentPageStackedWidget(QStackedWidget):
+    """Plain QStackedWidget reports sizeHint()/minimumSizeHint() as the
+    MAX across every page it holds, not just the one currently shown --
+    confirmed via a live repro (a 2-page stack's minimumSizeHint stayed
+    pinned to its tallest page's height even with the shortest page
+    selected). That floor propagates up through this panel's own
+    layout to the surrounding dock/splitter, so the Parameters dock
+    can never be dragged shorter than the tallest operator (Grading
+    Tone) even while a much sparser operator (e.g. Printer Lights) is
+    selected -- the "stuck" panel height Tom flagged. Overriding both
+    hints to delegate to currentWidget() (each page already wrapped by
+    _wrap_inspector_page, so currentWidget() reports its own real
+    content height) lets the dock's floor track whichever operator is
+    actually showing."""
+
+    def sizeHint(self):
+        page = self.currentWidget()
+        return page.sizeHint() if page is not None else super().sizeHint()
+
+    def minimumSizeHint(self):
+        page = self.currentWidget()
+        return page.minimumSizeHint() if page is not None else super().minimumSizeHint()
+
+    def setCurrentIndex(self, index):
+        super().setCurrentIndex(index)
+        self.updateGeometry()
+
+    def setCurrentWidget(self, widget):
+        super().setCurrentWidget(widget)
+        self.updateGeometry()
+
+
 class StackPanel(QObject):
     """Emits stack_changed() after any mutation -- add/remove/reorder/
     enable-toggle/opacity change/param update/grid size/domain -- so
@@ -1243,10 +1326,12 @@ class StackPanel(QObject):
     stack_changed = Signal()
     # (name, params dict) -- emitted by the CDL inspector's "Save to CDL
     # Library" button (see _on_cdl_save_to_library_clicked). This panel has
-    # no idea a CDL Library exists; MainWindow routes this into
-    # CDLLibraryPanel.save_entry, same "panels don't know about each other,
-    # MainWindow bridges" architecture as StackMemoriesPanel.recall_requested
-    # -> StackPanel.set_stack. `object` (not `dict`) as the second signal
+    # no idea the Gallery exists; MainWindow routes this into
+    # StackMemoriesPanel.save_cdl_entry (CDL Library was folded into the
+    # Gallery, per Tom -- see stack_memories_panel.py's own docstring),
+    # same "panels don't know about each other, MainWindow bridges"
+    # architecture as StackMemoriesPanel.recall_requested ->
+    # StackPanel.set_stack. `object` (not `dict`) as the second signal
     # type for safety across PySide6 versions -- Qt's signal machinery
     # handles a plain Python dict fine as an "object" payload either way.
     cdl_save_requested = Signal(str, object)
@@ -1451,7 +1536,7 @@ class StackPanel(QObject):
         layout = QVBoxLayout(self.params_widget_area)
         layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
 
-        self.inspector_stack = QStackedWidget()
+        self.inspector_stack = _CurrentPageStackedWidget()
         self._build_empty_inspector()
         self._build_lut_inspector()
         self._build_printer_lights_inspector()
@@ -2205,12 +2290,18 @@ class StackPanel(QObject):
 
     # ---- add stage ----------------------------------------------------
     #
-    # LUT File / Identity LUT no longer have their own buttons here -- the
-    # Browser panel already has an identical "load a file" (double-click)
-    # / "New Identity LUT" entry point, and MainWindow routes both of
-    # those signals into the two public methods below instead of setting
-    # "the current LUT" directly, so there's no need for a second,
-    # duplicate way to do the same thing inside the Stack panel itself.
+    # LUT File doesn't have its own button here -- the Browser panel
+    # already has an identical "load a file" (double-click) entry point,
+    # and MainWindow routes that signal into the public method below
+    # instead of setting "the current LUT" directly, so there's no need
+    # for a second, duplicate way to do the same thing inside the Stack
+    # panel itself. "New Identity LUT..." (the Browser's other entry
+    # point, and this panel's own add_identity_stage) were both removed
+    # (per Tom) -- the Viewer already previews an empty stack directly
+    # now (see sample_image_panel.py's _recompute_sample_after), which
+    # made "start from an identity cube just to have something to grade"
+    # redundant: an empty stack IS that starting point, with no synthetic
+    # LUT stage sitting in the list to delete once a real one's added.
 
     def add_lut_stage_from_path(self, path, index=None, branch=_UNSPECIFIED_BRANCH):
         """Public entry point -- used by MainWindow to route Browser's
@@ -2234,18 +2325,6 @@ class StackPanel(QObject):
         stage.params["source_kind"] = "file"
         stage.params["source_path"] = str(path)
         self._add_stage(stage, index=index, branch=branch)
-
-    def add_identity_stage(self, size, index=None):
-        """Public entry point -- used by MainWindow to route Browser's
-        identity_lut_requested signal here."""
-        lut = create_identity_lut(size=size, name=f"Identity_{size}")
-        stage = st.make_lut_stage(lut, label=f"Identity ({size}³)")
-        # See add_lut_stage_from_path above -- same provenance tagging,
-        # but an identity LUT is regenerated from its size, not reloaded
-        # from a file.
-        stage.params["source_kind"] = "identity"
-        stage.params["identity_size"] = size
-        self._add_stage(stage, index=index)
 
     def add_lut_stage_from_library_entry(self, entry, index=None):
         """Public entry point -- used by MainWindow to route
@@ -2473,11 +2552,31 @@ class StackPanel(QObject):
 
     # ---- inspector: empty ----------------------------------------------
 
+    def _wrap_inspector_page(self, page):
+        # QStackedWidget force-resizes its CURRENT page to its own full
+        # geometry regardless of that page's sizeHint (confirmed via a
+        # live repro: a QGroupBox with sizeHint (74, 57) was resized to
+        # fill a 400x600 stack when shown directly). Adding a bordered
+        # QGroupBox straight to the stack means the leftover space still
+        # ends up INSIDE the box's visible border -- reads as "one big
+        # empty box" rather than genuinely blank space below a compact
+        # panel. Wrapping the page in a plain, borderless container with
+        # its own trailing stretch means the WRAPPER (not the bordered
+        # page) is what gets force-stretched, so the box itself sizes to
+        # its natural content height and the leftover space lands
+        # outside/below it instead.
+        wrapper = QWidget()
+        wrapper_layout = QVBoxLayout(wrapper)
+        wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        wrapper_layout.addWidget(page)
+        wrapper_layout.addStretch(1)
+        return wrapper
+
     def _build_empty_inspector(self):
         widget = QLabel("Select a stage above to see/edit its settings.")
         widget.setWordWrap(True)
         widget.setStyleSheet(f"color: {HINT_TEXT_HEX};")
-        self.inspector_stack.addWidget(widget)
+        self.inspector_stack.addWidget(self._wrap_inspector_page(widget))
         self._empty_inspector_index = 0
 
     # ---- inspector: lut stage (with optional Retarget) -------------------
@@ -2493,7 +2592,7 @@ class StackPanel(QObject):
         # real design pass (retarget_io's signature, what "current"
         # defaults to when the LUT doesn't declare one, session_io schema
         # bump) before touching this -- flagged here so it isn't lost.
-        group = QGroupBox("LUT Stage")
+        group = QGroupBox("LUT")
         outer = QVBoxLayout(group)
 
         self.lut_inspector_name_label = QLabel()
@@ -2527,7 +2626,11 @@ class StackPanel(QObject):
         update_button.clicked.connect(self._on_lut_stage_update_clicked)
         outer.addWidget(update_button)
 
-        self.inspector_stack.addWidget(group)
+        # See _build_printer_lights_inspector's own comment on why every
+        # inspector page needs a trailing vertical stretch.
+        outer.addStretch(1)
+
+        self.inspector_stack.addWidget(self._wrap_inspector_page(group))
         self._lut_inspector_index = 1
 
     def _on_lut_retarget_toggled(self, checked):
@@ -2594,7 +2697,7 @@ class StackPanel(QObject):
     # ---- inspector: printer lights stage ----------------------------------
 
     def _build_printer_lights_inspector(self):
-        group = QGroupBox(f"Printer Lights Stage (points, ~{POINTS_PER_STOP:.0f}/stop)")
+        group = QGroupBox(f"Printer Lights (points, ~{POINTS_PER_STOP:.0f}/stop)")
         outer = QVBoxLayout(group)
 
         space_row = QHBoxLayout()
@@ -2606,7 +2709,7 @@ class StackPanel(QObject):
         else:
             self.pl_space_combo.addItems(list_available_colourspaces())
         # Real-time (per Tom) -- no separate Update Stage button, changing
-        # the working space applies immediately, same as the sliders below.
+        # the working space applies immediately, same as the spinboxes below.
         self.pl_space_combo.currentTextChanged.connect(self._on_pl_space_changed)
         space_row.addWidget(self.pl_space_combo, stretch=1)
         outer.addLayout(space_row)
@@ -2618,28 +2721,32 @@ class StackPanel(QObject):
         gang_row.addStretch(1)
         outer.addLayout(gang_row)
 
-        self._pl_sliders = {}
-        self._pl_value_labels = {}
+        # Sliding spinboxes, not system QSliders (per Tom: "printer lights
+        # shouldn't use system sliders, move to sliding spinboxes") -- same
+        # click-drag-to-scrub treatment (spinbox_scrub.enable_drag_to_scrub)
+        # every other numeric field in this inspector stack already uses
+        # (CDL/Grading Primary/Exposure-Contrast/Grading Tone), so this was
+        # the one inspector still standing out with plain native slider
+        # chrome. Integer-valued (QSpinBox, not QDoubleSpinBox) -- printer
+        # light "points" were always whole numbers here (the old slider's
+        # own int range/int value), unchanged by this swap. One spin per
+        # channel now shows its own value directly, so the separate value
+        # QLabel this used to need alongside each slider is gone too.
+        self._pl_spins = {}
         for channel in ("R", "G", "B"):
             row = QHBoxLayout()
-            row.addWidget(QLabel(f"{channel}:"))
-            slider = QSlider(Qt.Orientation.Horizontal)
-            slider.setRange(-PRINTER_LIGHT_RANGE, PRINTER_LIGHT_RANGE)
-            slider.setValue(0)
-            slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-            slider.setTickInterval(PRINTER_LIGHT_RANGE // 2)
-            row.addWidget(slider, stretch=1)
-            value_label = QLabel("0")
-            value_label.setMinimumWidth(28)
-            row.addWidget(value_label)
-            slider.valueChanged.connect(lambda v, lbl=value_label: lbl.setText(str(v)))
-            slider.valueChanged.connect(lambda v, ch=channel: self._on_pl_slider_changed(ch, v))
-            self._pl_sliders[channel] = slider
-            self._pl_value_labels[channel] = value_label
+            spin = QSpinBox()
+            spin.setRange(-PRINTER_LIGHT_RANGE, PRINTER_LIGHT_RANGE)
+            spin.setValue(0)
+            enable_drag_to_scrub(spin)
+            spin.valueChanged.connect(lambda v, ch=channel: self._on_pl_spin_changed(ch, v))
+            row.addWidget(_ParamLabel(f"{channel}:", lambda s=spin: s.setValue(0)))
+            row.addWidget(spin, stretch=1)
+            self._pl_spins[channel] = spin
             outer.addLayout(row)
 
         # No Update Stage button here (unlike LUT/ACES DRT) -- per Tom,
-        # Printer Lights applies in real time: every slider drag and
+        # Printer Lights applies in real time: every spinbox edit and
         # working-space change writes straight into the selected stage's
         # params and re-bakes immediately, see _apply_printer_lights_live.
         buttons_row = QHBoxLayout()
@@ -2649,54 +2756,67 @@ class StackPanel(QObject):
         buttons_row.addStretch(1)
         outer.addLayout(buttons_row)
 
-        self.inspector_stack.addWidget(group)
+        # Vertical trailing stretch (per Tom: visible empty space between
+        # every row) -- inspector_stack (a QStackedWidget, see _build_
+        # layout) sizes its CURRENT page to fill whatever height it's
+        # been given, which is driven by the TALLEST page among all of
+        # them (Grading Tone's 5-range page). Without a stretch item to
+        # absorb that leftover height, Qt's QVBoxLayout spreads it evenly
+        # across every row instead -- stretching each control's own row
+        # tall rather than leaving the rows at their natural height with
+        # dead space collected at the bottom, which is what actually
+        # looked like "wasted space between fields" for every inspector
+        # sparser than Grading Tone. Applied to every _build_*_inspector
+        # method for the same reason, not just this one.
+        outer.addStretch(1)
+
+        self.inspector_stack.addWidget(self._wrap_inspector_page(group))
         self._printer_lights_inspector_index = 2
 
     def _on_pl_gang_toggled(self, ganged):
         if not ganged:
             return
-        r_value = self._pl_sliders["R"].value()
+        r_value = self._pl_spins["R"].value()
         for channel in ("G", "B"):
-            slider = self._pl_sliders[channel]
-            if slider.value() != r_value:
-                slider.setValue(r_value)
+            spin = self._pl_spins[channel]
+            if spin.value() != r_value:
+                spin.setValue(r_value)
         self._apply_printer_lights_live()
 
-    def _on_pl_slider_changed(self, channel, value):
+    def _on_pl_spin_changed(self, channel, value):
         if self.pl_gang_checkbox.isChecked():
-            for other_channel, other_slider in self._pl_sliders.items():
-                if other_channel == channel or other_slider.value() == value:
+            for other_channel, other_spin in self._pl_spins.items():
+                if other_channel == channel or other_spin.value() == value:
                     continue
-                other_slider.blockSignals(True)
-                other_slider.setValue(value)
-                other_slider.blockSignals(False)
-                self._pl_value_labels[other_channel].setText(str(value))
+                other_spin.blockSignals(True)
+                other_spin.setValue(value)
+                other_spin.blockSignals(False)
         self._apply_printer_lights_live()
 
     def _on_pl_space_changed(self, _text):
         self._apply_printer_lights_live()
 
     def _on_pl_reset_clicked(self):
-        # Each setValue below fires _on_pl_slider_changed (unless already
+        # Each setValue below fires _on_pl_spin_changed (unless already
         # 0), which applies live the same as dragging would -- no separate
         # apply call needed here.
-        for slider in self._pl_sliders.values():
-            slider.setValue(0)
+        for spin in self._pl_spins.values():
+            spin.setValue(0)
 
     def _apply_printer_lights_live(self):
         stage = self._selected_stage()
         if stage is None or stage.kind != "printer_lights":
             return
-        stage.params["r_points"] = self._pl_sliders["R"].value()
-        stage.params["g_points"] = self._pl_sliders["G"].value()
-        stage.params["b_points"] = self._pl_sliders["B"].value()
+        stage.params["r_points"] = self._pl_spins["R"].value()
+        stage.params["g_points"] = self._pl_spins["G"].value()
+        stage.params["b_points"] = self._pl_spins["B"].value()
         stage.params["working_colourspace"] = self.pl_space_combo.currentText()
         self._emit_changed()
 
     # ---- inspector: ACES DRT stage -----------------------------------
 
     def _build_aces_drt_inspector(self):
-        group = QGroupBox("ACES DRT Stage")
+        group = QGroupBox("ACES DRT")
         outer = QVBoxLayout(group)
 
         if not aces_drt.OCIO_AVAILABLE:
@@ -2707,7 +2827,7 @@ class StackPanel(QObject):
             )
             label.setWordWrap(True)
             outer.addWidget(label)
-            self.inspector_stack.addWidget(group)
+            self.inspector_stack.addWidget(self._wrap_inspector_page(group))
             self._aces_drt_inspector_index = 3
             return
 
@@ -2746,7 +2866,11 @@ class StackPanel(QObject):
         # Lights/ASC CDL (see _apply_aces_drt_live).
         self._populate_drt_configs()
 
-        self.inspector_stack.addWidget(group)
+        # See _build_printer_lights_inspector's own comment on why every
+        # inspector page needs a trailing vertical stretch.
+        outer.addStretch(1)
+
+        self.inspector_stack.addWidget(self._wrap_inspector_page(group))
         self._aces_drt_inspector_index = 3
 
     def _populate_drt_configs(self):
@@ -2866,7 +2990,7 @@ class StackPanel(QObject):
         Printer Lights (see _build_printer_lights_inspector) -- every
         combo/spin box change writes straight into the selected stage's
         params and re-bakes immediately, no Update Stage button."""
-        group = QGroupBox("CAMier DRT Stage")
+        group = QGroupBox("CAMier DRT")
         outer = QVBoxLayout(group)
 
         if not aces_drt.OCIO_AVAILABLE:
@@ -2877,7 +3001,7 @@ class StackPanel(QObject):
             )
             label.setWordWrap(True)
             outer.addWidget(label)
-            self.inspector_stack.addWidget(group)
+            self.inspector_stack.addWidget(self._wrap_inspector_page(group))
             self._custom_drt_inspector_index = self.inspector_stack.count() - 1
             return
 
@@ -2897,7 +3021,6 @@ class StackPanel(QObject):
             outer.addWidget(section_label)
             for key, field_label, lo, hi, step, decimals, default in fields:
                 row = QHBoxLayout()
-                row.addWidget(QLabel(field_label))
                 spin = QDoubleSpinBox()
                 spin.setRange(lo, hi)
                 spin.setDecimals(decimals)
@@ -2905,6 +3028,7 @@ class StackPanel(QObject):
                 spin.setValue(default)
                 enable_drag_to_scrub(spin)
                 spin.valueChanged.connect(self._on_cdr_field_changed)
+                row.addWidget(_ParamLabel(field_label, lambda s=spin, d=default: s.setValue(d)))
                 row.addWidget(spin, stretch=1)
                 self._cdr_spins[key] = spin
                 outer.addLayout(row)
@@ -2917,7 +3041,6 @@ class StackPanel(QObject):
         outer.addWidget(gamut_label)
         for key, field_label, lo, hi, step, decimals, default in self._CDR_GAMUT_FIELDS:
             row = QHBoxLayout()
-            row.addWidget(QLabel(field_label))
             spin = QDoubleSpinBox()
             spin.setRange(lo, hi)
             spin.setDecimals(decimals)
@@ -2925,6 +3048,7 @@ class StackPanel(QObject):
             spin.setValue(default)
             enable_drag_to_scrub(spin)
             spin.valueChanged.connect(self._on_cdr_field_changed)
+            row.addWidget(_ParamLabel(field_label, lambda s=spin, d=default: s.setValue(d)))
             row.addWidget(spin, stretch=1)
             self._cdr_spins[key] = spin
             outer.addLayout(row)
@@ -2973,7 +3097,11 @@ class StackPanel(QObject):
         reset_button.clicked.connect(self._on_cdr_reset_clicked)
         outer.addWidget(reset_button)
 
-        self.inspector_stack.addWidget(group)
+        # See _build_printer_lights_inspector's own comment on why every
+        # inspector page needs a trailing vertical stretch.
+        outer.addStretch(1)
+
+        self.inspector_stack.addWidget(self._wrap_inspector_page(group))
         self._custom_drt_inspector_index = self.inspector_stack.count() - 1
 
     def _populate_cdr_final_target_combo(self, mastering_display, select=None):
@@ -3074,7 +3202,7 @@ class StackPanel(QObject):
     # ---- inspector: ASC CDL stage -------------------------------------
 
     def _build_cdl_inspector(self):
-        group = QGroupBox("ASC CDL Stage")
+        group = QGroupBox("ASC CDL")
         outer = QVBoxLayout(group)
 
         if not cdl.OCIO_AVAILABLE:
@@ -3085,7 +3213,7 @@ class StackPanel(QObject):
             )
             label.setWordWrap(True)
             outer.addWidget(label)
-            self.inspector_stack.addWidget(group)
+            self.inspector_stack.addWidget(self._wrap_inspector_page(group))
             self._cdl_inspector_index = self.inspector_stack.count() - 1
             return
 
@@ -3123,7 +3251,8 @@ class StackPanel(QObject):
             self._cdl_wheels[field_key] = wheel
 
             master_col = QVBoxLayout()
-            master_col.addWidget(QLabel(f"{field_label} (Master):"))
+            master_col.addWidget(_ParamLabel(
+                f"{field_label} (Master):", lambda fk=field_key: self._reset_one_cdl_field(fk)))
             master_spin = QDoubleSpinBox()
             master_spin.setRange(lo, hi)
             master_spin.setDecimals(4)
@@ -3146,7 +3275,7 @@ class StackPanel(QObject):
                 enable_drag_to_scrub(spin)
                 spin.valueChanged.connect(
                     lambda _v, fk=field_key: self._on_cdl_channel_spin_changed(fk))
-                fine_row.addWidget(QLabel(channel))
+                fine_row.addWidget(_ParamLabel(channel, lambda s=spin, d=default: s.setValue(d)))
                 fine_row.addWidget(spin)
                 channel_spins[channel] = spin
             self._cdl_sop_spins[field_key] = channel_spins
@@ -3172,7 +3301,7 @@ class StackPanel(QObject):
         outer.addLayout(sat_header)
 
         sat_row = QHBoxLayout()
-        sat_row.addWidget(QLabel("Sat:"))
+        sat_row.addWidget(_ParamLabel("Sat:", lambda: self.cdl_sat_spin.setValue(1.0)))
         self.cdl_sat_slider = QSlider(Qt.Orientation.Horizontal)
         self.cdl_sat_slider.setRange(0, CDL_SAT_RANGE)
         self.cdl_sat_slider.setValue(100)
@@ -3213,7 +3342,11 @@ class StackPanel(QObject):
         save_to_library_button.clicked.connect(self._on_cdl_save_to_library_clicked)
         outer.addWidget(save_to_library_button)
 
-        self.inspector_stack.addWidget(group)
+        # See _build_printer_lights_inspector's own comment on why every
+        # inspector page needs a trailing vertical stretch.
+        outer.addStretch(1)
+
+        self.inspector_stack.addWidget(self._wrap_inspector_page(group))
         self._cdl_inspector_index = self.inspector_stack.count() - 1
 
     def _on_cdl_sop_enabled_toggled(self, enabled):
@@ -3295,13 +3428,20 @@ class StackPanel(QObject):
         self._apply_cdl_live()
 
     def _on_cdl_reset_sop_clicked(self):
-        # Each setValue below fires _on_cdl_field_changed (unless already
-        # at that value), which applies live the same as typing would --
-        # no separate apply call needed here, same convention as
-        # _on_pl_reset_clicked.
-        for field_key, default in (("slope", 1.0), ("offset", 0.0), ("power", 1.0)):
-            for spin in self._cdl_sop_spins[field_key].values():
-                spin.setValue(default)
+        for field_key in CDL_SOP_FIELD_DEFAULTS:
+            self._reset_one_cdl_field(field_key)
+
+    def _reset_one_cdl_field(self, field_key):
+        """Resets just ONE SOP field's fine R/G/B spins to identity --
+        _on_cdl_channel_spin_changed (already wired on each spin) then
+        recomputes that field's own master/wheel position from the new
+        R/G/B, so a single-field reset stays fully in sync the same way
+        any other fine-spin edit does. Shared by Reset SOP to Identity
+        (all three fields) and each field's own "{label} (Master):"
+        label double-click (per Tom, see _ParamLabel)."""
+        default = CDL_SOP_FIELD_DEFAULTS[field_key]
+        for spin in self._cdl_sop_spins[field_key].values():
+            spin.setValue(default)
 
     def _on_cdl_reset_sat_clicked(self):
         self.cdl_sat_spin.setValue(1.0)
@@ -3346,7 +3486,7 @@ class StackPanel(QObject):
     # ---- inspector: color space conversion stage -----------------------
 
     def _build_colorspace_inspector(self):
-        group = QGroupBox("Color Space Conversion Stage")
+        group = QGroupBox("Color Space Conversion")
         outer = QVBoxLayout(group)
 
         if not csc.OCIO_AVAILABLE:
@@ -3357,7 +3497,7 @@ class StackPanel(QObject):
             )
             label.setWordWrap(True)
             outer.addWidget(label)
-            self.inspector_stack.addWidget(group)
+            self.inspector_stack.addWidget(self._wrap_inspector_page(group))
             self._colorspace_inspector_index = self.inspector_stack.count() - 1
             return
 
@@ -3398,7 +3538,11 @@ class StackPanel(QObject):
         # Lights/ASC CDL/ACES DRT (see _apply_colorspace_live).
         self._populate_csc_configs()
 
-        self.inspector_stack.addWidget(group)
+        # See _build_printer_lights_inspector's own comment on why every
+        # inspector page needs a trailing vertical stretch.
+        outer.addStretch(1)
+
+        self.inspector_stack.addWidget(self._wrap_inspector_page(group))
         self._colorspace_inspector_index = self.inspector_stack.count() - 1
 
     def _populate_csc_configs(self):
@@ -3469,7 +3613,7 @@ class StackPanel(QObject):
     # ---- inspector: grading_primary stage --------------------------------
 
     def _build_grading_primary_inspector(self):
-        group = QGroupBox("Grading Primary Stage")
+        group = QGroupBox("Grading Primary")
         outer = QVBoxLayout(group)
 
         if not gpr.OCIO_AVAILABLE:
@@ -3480,7 +3624,7 @@ class StackPanel(QObject):
             )
             label.setWordWrap(True)
             outer.addWidget(label)
-            self.inspector_stack.addWidget(group)
+            self.inspector_stack.addWidget(self._wrap_inspector_page(group))
             self._grading_primary_inspector_index = self.inspector_stack.count() - 1
             return
 
@@ -3493,25 +3637,40 @@ class StackPanel(QObject):
         style_row.addWidget(self.gpr_style_combo, stretch=1)
         outer.addLayout(style_row)
 
-        # Every RGBM field gets its own row (label + R/G/B/M spinboxes,
-        # no color-balance wheel -- see GRADING_PRIMARY_FIELD_SPECS' own
-        # comment on why this is simpler than CDL's wheel treatment), but
-        # only the 3 fields GRADING_PRIMARY_STYLE_FIELDS says the current
-        # style actually uses are ever VISIBLE at once (see
-        # _update_gpr_field_visibility) -- every field's row still exists
-        # and keeps its own value even while hidden, so switching styles
-        # back and forth never loses whatever was dialed in.
+        # Every RGBM field gets its own row: a color-balance wheel (drag
+        # to tint R/G/B apart from M, per Tom -- see GRADING_WHEEL_
+        # STRENGTH's own comment on the CDL-vs-here master difference)
+        # plus the label and R/G/B/M spinboxes for exact numeric entry,
+        # kept in sync in both directions the same way CDL's wheel/spins
+        # are (see _on_gpr_wheel_changed/_on_gpr_master_changed/
+        # _on_gpr_channel_spin_changed below). Only the 3 fields
+        # GRADING_PRIMARY_STYLE_FIELDS says the current style actually
+        # uses are ever VISIBLE at once (see _update_gpr_field_
+        # visibility) -- every field's row still exists and keeps its
+        # own value even while hidden, so switching styles back and
+        # forth never loses whatever was dialed in.
         self._gpr_field_rows = {}    # {field_key: QWidget} for show/hide
         self._gpr_field_spins = {}   # {field_key: {"R":.., "G":.., "B":.., "M":..}}
+        self._gpr_wheels = {}        # {field_key: ColorBalanceWheel}
 
         for field_key, field_label, is_additive in GRADING_PRIMARY_FIELD_SPECS:
             default = 0.0 if is_additive else 1.0
             lo, hi, step = GRADING_PRIMARY_ADDITIVE_RANGE if is_additive else GRADING_PRIMARY_MULT_RANGE
 
             row_widget = QWidget()
-            row = QHBoxLayout(row_widget)
-            row.setContentsMargins(0, 0, 0, 0)
-            row.addWidget(QLabel(f"{field_label}:"))
+            field_row = QHBoxLayout(row_widget)
+            field_row.setContentsMargins(0, 0, 0, 0)
+
+            wheel = ColorBalanceWheel(diameter=GRADING_PRIMARY_WHEEL_DIAMETER)
+            wheel.balance_changed.connect(
+                lambda x, y, fk=field_key: self._on_gpr_wheel_changed(fk, x, y))
+            field_row.addWidget(wheel)
+            self._gpr_wheels[field_key] = wheel
+
+            fields_col = QVBoxLayout()
+            fields_col.addWidget(_ParamLabel(
+                f"{field_label}:", lambda fk=field_key: self._reset_one_gpr_field(fk)))
+            spins_row = QHBoxLayout()
             channel_spins = {}
             for channel in ("R", "G", "B", "M"):
                 spin = QDoubleSpinBox()
@@ -3520,16 +3679,23 @@ class StackPanel(QObject):
                 spin.setSingleStep(step)
                 spin.setValue(default)
                 enable_drag_to_scrub(spin)
-                spin.valueChanged.connect(self._on_gpr_field_changed)
-                row.addWidget(QLabel(channel))
-                row.addWidget(spin)
+                if channel == "M":
+                    spin.valueChanged.connect(
+                        lambda _v, fk=field_key: self._on_gpr_master_changed(fk))
+                else:
+                    spin.valueChanged.connect(
+                        lambda _v, fk=field_key: self._on_gpr_channel_spin_changed(fk))
+                spins_row.addWidget(_ParamLabel(channel, lambda s=spin, d=default: s.setValue(d)))
+                spins_row.addWidget(spin)
                 channel_spins[channel] = spin
             self._gpr_field_spins[field_key] = channel_spins
+            fields_col.addLayout(spins_row)
+
+            field_row.addLayout(fields_col, stretch=1)
             self._gpr_field_rows[field_key] = row_widget
             outer.addWidget(row_widget)
 
         pivot_row = QHBoxLayout()
-        pivot_row.addWidget(QLabel("Pivot:"))
         self.gpr_pivot_spin = QDoubleSpinBox()
         self.gpr_pivot_spin.setRange(-2.0, 2.0)
         self.gpr_pivot_spin.setDecimals(4)
@@ -3537,11 +3703,12 @@ class StackPanel(QObject):
         self.gpr_pivot_spin.setValue(gpr.DEFAULT_PIVOT)
         enable_drag_to_scrub(self.gpr_pivot_spin)
         self.gpr_pivot_spin.valueChanged.connect(self._on_gpr_field_changed)
+        pivot_row.addWidget(_ParamLabel(
+            "Pivot:", lambda: self.gpr_pivot_spin.setValue(gpr.DEFAULT_PIVOT)))
         pivot_row.addWidget(self.gpr_pivot_spin)
         outer.addLayout(pivot_row)
 
         sat_row = QHBoxLayout()
-        sat_row.addWidget(QLabel("Saturation:"))
         self.gpr_sat_spin = QDoubleSpinBox()
         self.gpr_sat_spin.setRange(0.0, 4.0)
         self.gpr_sat_spin.setDecimals(4)
@@ -3549,6 +3716,8 @@ class StackPanel(QObject):
         self.gpr_sat_spin.setValue(gpr.DEFAULT_SATURATION)
         enable_drag_to_scrub(self.gpr_sat_spin)
         self.gpr_sat_spin.valueChanged.connect(self._on_gpr_field_changed)
+        sat_row.addWidget(_ParamLabel(
+            "Saturation:", lambda: self.gpr_sat_spin.setValue(gpr.DEFAULT_SATURATION)))
         sat_row.addWidget(self.gpr_sat_spin)
         outer.addLayout(sat_row)
 
@@ -3556,7 +3725,15 @@ class StackPanel(QObject):
         reset_button.clicked.connect(self._on_gpr_reset_clicked)
         outer.addWidget(reset_button)
 
-        self.inspector_stack.addWidget(group)
+        # See _build_printer_lights_inspector's own comment on why every
+        # inspector page needs a trailing vertical stretch. Only 3 of the
+        # 7 fields above are ever visible at once (see
+        # _update_gpr_field_visibility), so without this the leftover
+        # height from the 4 hidden rows would otherwise stretch the
+        # visible ones even further apart.
+        outer.addStretch(1)
+
+        self.inspector_stack.addWidget(self._wrap_inspector_page(group))
         self._grading_primary_inspector_index = self.inspector_stack.count() - 1
         self._update_gpr_field_visibility()
 
@@ -3573,16 +3750,85 @@ class StackPanel(QObject):
     def _on_gpr_field_changed(self, _value=None):
         self._apply_gpr_live()
 
+    # ---- Grading Primary wheel/fine-spinbox sync (see color_balance.py,
+    # and GRADING_WHEEL_STRENGTH's own comment on why M can't be
+    # recomputed from mean(R,G,B) the way CDL's master is) --------------
+
+    def _on_gpr_wheel_changed(self, field_key, x, y):
+        """Puck dragged -- M (master) stays put, R/G/B fan out around it."""
+        master = self._gpr_field_spins[field_key]["M"].value()
+        r, g, b = cb.rgb_from_master_and_wheel(master, x, y, strength=GRADING_WHEEL_STRENGTH)
+        self._set_gpr_fine_spins(field_key, r, g, b)
+        self._apply_gpr_live()
+
+    def _on_gpr_master_changed(self, field_key):
+        """M spinbox edited directly -- wheel position (the tint) is
+        unchanged, R/G/B all shift together to the new master, same
+        "editing master preserves the balance" behavior CDL's own master
+        spin gives (see _on_cdl_master_changed) -- just applied to this
+        field's own already-existing M spinbox rather than a separate
+        UI-only one."""
+        wheel = self._gpr_wheels[field_key]
+        x, y = wheel.balance()
+        master = self._gpr_field_spins[field_key]["M"].value()
+        r, g, b = cb.rgb_from_master_and_wheel(master, x, y, strength=GRADING_WHEEL_STRENGTH)
+        self._set_gpr_fine_spins(field_key, r, g, b)
+        self._apply_gpr_live()
+
+    def _on_gpr_channel_spin_changed(self, field_key):
+        """A fine R/G/B spinbox was typed into directly -- the exact typed
+        values are what gets written to stage.params (see _apply_gpr_live,
+        which reads these spinboxes directly); M is left completely alone
+        here (unlike CDL's own fine-spin handler, which recomputes master
+        as mean(R,G,B) -- wrong for this field, see GRADING_WHEEL_
+        STRENGTH's own comment on why M is a real, independently stored
+        value, not derived). This just back-computes a best-fit wheel
+        position so the wheel visually reflects wherever R/G/B's spread
+        around the CURRENT M now points (color_balance.
+        wheel_from_rgb_given_master)."""
+        spins = self._gpr_field_spins[field_key]
+        r, g, b = spins["R"].value(), spins["G"].value(), spins["B"].value()
+        master = spins["M"].value()
+        x, y = cb.wheel_from_rgb_given_master(r, g, b, master, strength=GRADING_WHEEL_STRENGTH)
+        self._gpr_wheels[field_key].set_balance(x, y, emit=False)
+        self._apply_gpr_live()
+
+    def _set_gpr_fine_spins(self, field_key, r, g, b):
+        spins = self._gpr_field_spins[field_key]
+        for channel, value in zip(("R", "G", "B"), (r, g, b)):
+            spin = spins[channel]
+            spin.blockSignals(True)
+            spin.setValue(value)
+            spin.blockSignals(False)
+
     def _on_gpr_reset_clicked(self):
-        # Each setValue below fires _on_gpr_field_changed (unless already
-        # at that value), which applies live the same as typing would --
-        # same convention as _on_cdl_reset_sop_clicked.
-        for field_key, _label, is_additive in GRADING_PRIMARY_FIELD_SPECS:
-            default = 0.0 if is_additive else 1.0
-            for spin in self._gpr_field_spins[field_key].values():
-                spin.setValue(default)
+        for field_key, _label, _is_additive in GRADING_PRIMARY_FIELD_SPECS:
+            self._reset_one_gpr_field(field_key, apply=False)
         self.gpr_pivot_spin.setValue(gpr.DEFAULT_PIVOT)
         self.gpr_sat_spin.setValue(gpr.DEFAULT_SATURATION)
+        self._apply_gpr_live()
+
+    def _reset_one_gpr_field(self, field_key, apply=True):
+        """Resets just ONE field's R/G/B/M spins + wheel to identity.
+        Directly blockSignals + set every spin AND the wheel here,
+        rather than relying on the sync handlers above to cascade (like
+        CDL's own per-field reset does) -- with M independently stored,
+        resetting R/G/B before M would transiently recompute a wrong
+        wheel position, and resetting M last would then shift the
+        just-reset R/G/B away from identity again (see
+        _on_gpr_master_changed). Setting everything directly first and
+        applying once at the end sidesteps that ordering hazard
+        entirely. `apply=False` lets _on_gpr_reset_clicked call this
+        once per field without re-applying (and re-baking) after every
+        single one -- it does its own single apply at the end instead."""
+        default = GRADING_PRIMARY_FIELD_DEFAULTS[field_key]
+        for spin in self._gpr_field_spins[field_key].values():
+            spin.blockSignals(True)
+            spin.setValue(default)
+            spin.blockSignals(False)
+        self._gpr_wheels[field_key].set_balance(0.0, 0.0, emit=False)
+        if apply:
+            self._apply_gpr_live()
 
     def _apply_gpr_live(self):
         """Reads every field/pivot/saturation spinbox plus the style combo
@@ -3611,7 +3857,7 @@ class StackPanel(QObject):
     # ---- inspector: exposure_contrast stage ------------------------------
 
     def _build_exposure_contrast_inspector(self):
-        group = QGroupBox("Exposure/Contrast Stage")
+        group = QGroupBox("Exposure/Contrast")
         outer = QVBoxLayout(group)
 
         if not ec.OCIO_AVAILABLE:
@@ -3622,7 +3868,7 @@ class StackPanel(QObject):
             )
             label.setWordWrap(True)
             outer.addWidget(label)
-            self.inspector_stack.addWidget(group)
+            self.inspector_stack.addWidget(self._wrap_inspector_page(group))
             self._exposure_contrast_inspector_index = self.inspector_stack.count() - 1
             return
 
@@ -3648,7 +3894,6 @@ class StackPanel(QObject):
             ("gamma", "Gamma", ec.IDENTITY_GAMMA, 0.01, 4.0),
         ):
             row = QHBoxLayout()
-            row.addWidget(QLabel(f"{field_label}:"))
             spin = QDoubleSpinBox()
             spin.setRange(lo, hi)
             spin.setDecimals(4)
@@ -3656,6 +3901,7 @@ class StackPanel(QObject):
             spin.setValue(default)
             enable_drag_to_scrub(spin)
             spin.valueChanged.connect(self._on_ec_field_changed)
+            row.addWidget(_ParamLabel(f"{field_label}:", lambda s=spin, d=default: s.setValue(d)))
             row.addWidget(spin, stretch=1)
             self._ec_field_spins[field_key] = spin
             outer.addLayout(row)
@@ -3664,7 +3910,11 @@ class StackPanel(QObject):
         reset_button.clicked.connect(self._on_ec_reset_clicked)
         outer.addWidget(reset_button)
 
-        self.inspector_stack.addWidget(group)
+        # See _build_printer_lights_inspector's own comment on why every
+        # inspector page needs a trailing vertical stretch.
+        outer.addStretch(1)
+
+        self.inspector_stack.addWidget(self._wrap_inspector_page(group))
         self._exposure_contrast_inspector_index = self.inspector_stack.count() - 1
 
     def _on_ec_field_changed(self, _value=None):
@@ -3705,7 +3955,7 @@ class StackPanel(QObject):
         Start/Width, all on one line) built from a shared loop rather than
         5 hand-laid-out sections, same "don't repeat the widget-building
         code 5 times" reasoning as GRADING_PRIMARY_FIELD_SPECS' loop."""
-        group = QGroupBox("Grading Tone Stage")
+        group = QGroupBox("Grading Tone")
         outer = QVBoxLayout(group)
 
         if not gtn.OCIO_AVAILABLE:
@@ -3716,7 +3966,7 @@ class StackPanel(QObject):
             )
             label.setWordWrap(True)
             outer.addWidget(label)
-            self.inspector_stack.addWidget(group)
+            self.inspector_stack.addWidget(self._wrap_inspector_page(group))
             self._grading_tone_inspector_index = self.inspector_stack.count() - 1
             return
 
@@ -3729,7 +3979,16 @@ class StackPanel(QObject):
         style_row.addWidget(self.gtn_style_combo, stretch=1)
         outer.addLayout(style_row)
 
+        # Each range also gets a color-balance wheel now (per Tom, R/G/B
+        # gain fanned out around M -- same GRADING_WHEEL_STRENGTH/
+        # wheel_from_rgb_given_master treatment Grading Primary's own
+        # fields just got, since M here is equally a real, independently
+        # stored 4th value, not derived from mean(R,G,B) -- see that
+        # module-level comment). Smaller diameter than Grading Primary's
+        # (GRADING_TONE_WHEEL_DIAMETER, see its own comment) to keep 5
+        # stacked ranges from bloating this already-the-largest inspector.
         self._gtn_range_spins = {}  # {range_key: {"R":.., "G":.., "B":.., "M":.., "Start":.., "Width":..}}
+        self._gtn_wheels = {}       # {range_key: ColorBalanceWheel}
         for range_key in gtn.RANGE_KEYS:
             r, g, b, m, start, width = gtn.DEFAULT_RANGE_VALUES[range_key]
             defaults = {"R": r, "G": g, "B": b, "M": m, "Start": start, "Width": width}
@@ -3746,15 +4005,26 @@ class StackPanel(QObject):
             # of validity (gpu_stack_renderer.py's own exception handling
             # around setGradingTone is what actually covers that case).
             gain_lo, gain_hi = gtn.GAIN_BOUNDS[range_key]
+
+            range_row = QHBoxLayout()
+            wheel = ColorBalanceWheel(diameter=GRADING_TONE_WHEEL_DIAMETER)
+            wheel.balance_changed.connect(
+                lambda x, y, rk=range_key: self._on_gtn_wheel_changed(rk, x, y))
+            range_row.addWidget(wheel)
+            self._gtn_wheels[range_key] = wheel
+
+            range_col = QVBoxLayout()
             # A plain bold label, not a nested QGroupBox -- every other
             # inspector page in this panel (CDL, ACES DRT, Grading
             # Primary, ...) uses exactly ONE outer QGroupBox for the
             # whole page and plain rows/labels inside it; a second,
             # nested bordered box per range here was the one place that
             # broke that convention (5 extra boxes-within-a-box).
-            range_label = QLabel(GRADING_TONE_RANGE_LABELS[range_key])
+            range_label = _ParamLabel(
+                GRADING_TONE_RANGE_LABELS[range_key],
+                lambda rk=range_key: self._reset_one_gtn_range(rk))
             range_label.setStyleSheet("font-weight: 600;")
-            outer.addWidget(range_label)
+            range_col.addWidget(range_label)
             row = QHBoxLayout()
             channel_spins = {}
             for channel, lo, hi in (
@@ -3768,15 +4038,31 @@ class StackPanel(QObject):
                 spin.setSingleStep(0.01)
                 spin.setValue(defaults[channel])
                 enable_drag_to_scrub(spin)
-                spin.valueChanged.connect(self._on_gtn_field_changed)
-                row.addWidget(QLabel(channel))
+                if channel == "M":
+                    spin.valueChanged.connect(
+                        lambda _v, rk=range_key: self._on_gtn_master_changed(rk))
+                elif channel in ("R", "G", "B"):
+                    spin.valueChanged.connect(
+                        lambda _v, rk=range_key: self._on_gtn_channel_spin_changed(rk))
+                else:  # Start/Width -- plain fields, no wheel involvement
+                    spin.valueChanged.connect(self._on_gtn_field_changed)
+                # A single isolated reset here (unlike the ALL-AT-ONCE
+                # bulk reset _reset_one_gtn_range's own docstring
+                # explains the M-vs-R/G/B ordering hazard for) is always
+                # well-defined even for R/G/B/M -- each channel's own
+                # already-wired valueChanged handler (master-changed/
+                # channel-spin-changed/field-changed above) does exactly
+                # what a normal single-value edit would.
+                row.addWidget(_ParamLabel(channel, lambda s=spin, d=defaults[channel]: s.setValue(d)))
                 row.addWidget(spin)
                 channel_spins[channel] = spin
             self._gtn_range_spins[range_key] = channel_spins
-            outer.addLayout(row)
+            range_col.addLayout(row)
+
+            range_row.addLayout(range_col, stretch=1)
+            outer.addLayout(range_row)
 
         scontrast_row = QHBoxLayout()
-        scontrast_row.addWidget(QLabel("S-Contrast:"))
         self.gtn_scontrast_spin = QDoubleSpinBox()
         self.gtn_scontrast_spin.setRange(*gtn.SCONTRAST_BOUNDS)
         self.gtn_scontrast_spin.setDecimals(4)
@@ -3784,6 +4070,8 @@ class StackPanel(QObject):
         self.gtn_scontrast_spin.setValue(gtn.DEFAULT_SCONTRAST)
         enable_drag_to_scrub(self.gtn_scontrast_spin)
         self.gtn_scontrast_spin.valueChanged.connect(self._on_gtn_field_changed)
+        scontrast_row.addWidget(_ParamLabel(
+            "S-Contrast:", lambda: self.gtn_scontrast_spin.setValue(gtn.DEFAULT_SCONTRAST)))
         scontrast_row.addWidget(self.gtn_scontrast_spin, stretch=1)
         outer.addLayout(scontrast_row)
 
@@ -3791,22 +4079,78 @@ class StackPanel(QObject):
         reset_button.clicked.connect(self._on_gtn_reset_clicked)
         outer.addWidget(reset_button)
 
-        self.inspector_stack.addWidget(group)
+        # See _build_printer_lights_inspector's own comment -- this is
+        # usually the tallest page (so this stretch rarely has anything
+        # left to absorb), but added for the same consistency reason: if
+        # a taller page is ever added later, this one shouldn't start
+        # silently stretching its own rows apart too.
+        outer.addStretch(1)
+
+        self.inspector_stack.addWidget(self._wrap_inspector_page(group))
         self._grading_tone_inspector_index = self.inspector_stack.count() - 1
 
     def _on_gtn_field_changed(self, _value=None):
         self._apply_gtn_live()
 
+    # ---- Grading Tone wheel/fine-spinbox sync -- identical reasoning to
+    # Grading Primary's own (see GRADING_WHEEL_STRENGTH's own comment) --
+    # just keyed by range_key instead of field_key. ---------------------
+
+    def _on_gtn_wheel_changed(self, range_key, x, y):
+        master = self._gtn_range_spins[range_key]["M"].value()
+        r, g, b = cb.rgb_from_master_and_wheel(master, x, y, strength=GRADING_WHEEL_STRENGTH)
+        self._set_gtn_fine_spins(range_key, r, g, b)
+        self._apply_gtn_live()
+
+    def _on_gtn_master_changed(self, range_key):
+        wheel = self._gtn_wheels[range_key]
+        x, y = wheel.balance()
+        master = self._gtn_range_spins[range_key]["M"].value()
+        r, g, b = cb.rgb_from_master_and_wheel(master, x, y, strength=GRADING_WHEEL_STRENGTH)
+        self._set_gtn_fine_spins(range_key, r, g, b)
+        self._apply_gtn_live()
+
+    def _on_gtn_channel_spin_changed(self, range_key):
+        spins = self._gtn_range_spins[range_key]
+        r, g, b = spins["R"].value(), spins["G"].value(), spins["B"].value()
+        master = spins["M"].value()
+        x, y = cb.wheel_from_rgb_given_master(r, g, b, master, strength=GRADING_WHEEL_STRENGTH)
+        self._gtn_wheels[range_key].set_balance(x, y, emit=False)
+        self._apply_gtn_live()
+
+    def _set_gtn_fine_spins(self, range_key, r, g, b):
+        spins = self._gtn_range_spins[range_key]
+        for channel, value in zip(("R", "G", "B"), (r, g, b)):
+            spin = spins[channel]
+            spin.blockSignals(True)
+            spin.setValue(value)
+            spin.blockSignals(False)
+
     def _on_gtn_reset_clicked(self):
-        # Each setValue below fires _on_gtn_field_changed (unless already
-        # at that value), which applies live the same as typing would --
-        # same convention as _on_cdl_reset_sop_clicked/_on_gpr_reset_clicked.
         for range_key in gtn.RANGE_KEYS:
-            r, g, b, m, start, width = gtn.DEFAULT_RANGE_VALUES[range_key]
-            spins = self._gtn_range_spins[range_key]
-            for channel, value in zip(("R", "G", "B", "M", "Start", "Width"), (r, g, b, m, start, width)):
-                spins[channel].setValue(value)
+            self._reset_one_gtn_range(range_key, apply=False)
         self.gtn_scontrast_spin.setValue(gtn.DEFAULT_SCONTRAST)
+        self._apply_gtn_live()
+
+    def _reset_one_gtn_range(self, range_key, apply=True):
+        """Resets just ONE range's R/G/B/M/Start/Width spins + wheel to
+        identity. Direct blockSignals + set every spin AND the wheel
+        here, same ordering-hazard reasoning as _reset_one_gpr_field (M
+        is independent, so letting the sync handlers above cascade
+        during a reset can leave R/G/B not actually at identity).
+        `apply=False` lets _on_gtn_reset_clicked reset all 5 ranges
+        without re-applying (and re-baking) after each one -- see
+        _reset_one_gpr_field's own docstring for the same pattern."""
+        r, g, b, m, start, width = gtn.DEFAULT_RANGE_VALUES[range_key]
+        spins = self._gtn_range_spins[range_key]
+        for channel, value in zip(("R", "G", "B", "M", "Start", "Width"), (r, g, b, m, start, width)):
+            spin = spins[channel]
+            spin.blockSignals(True)
+            spin.setValue(value)
+            spin.blockSignals(False)
+        self._gtn_wheels[range_key].set_balance(0.0, 0.0, emit=False)
+        if apply:
+            self._apply_gtn_live()
 
     def _apply_gtn_live(self):
         """Guarded by _refreshing_inspector, same convention as
@@ -3842,7 +4186,7 @@ class StackPanel(QObject):
         always written back to stage.params on every edit (see
         CurveEditorWidget's own docstring on why -- same "write the whole
         param block back" convention grading_tone's 5 ranges follow)."""
-        group = QGroupBox("Grading RGB Curve Stage")
+        group = QGroupBox("Grading RGB Curve")
         outer = QVBoxLayout(group)
 
         if not grc.OCIO_AVAILABLE:
@@ -3853,7 +4197,7 @@ class StackPanel(QObject):
             )
             label.setWordWrap(True)
             outer.addWidget(label)
-            self.inspector_stack.addWidget(group)
+            self.inspector_stack.addWidget(self._wrap_inspector_page(group))
             self._grading_rgb_curve_inspector_index = self.inspector_stack.count() - 1
             return
 
@@ -3898,7 +4242,7 @@ class StackPanel(QObject):
         reset_button.clicked.connect(lambda: self.grc_curve_editor.reset_active_channel())
         outer.addWidget(reset_button)
 
-        self.inspector_stack.addWidget(group)
+        self.inspector_stack.addWidget(self._wrap_inspector_page(group))
         self._grading_rgb_curve_inspector_index = self.inspector_stack.count() - 1
 
     def _on_grc_channel_button_clicked(self, channel):
@@ -3941,7 +4285,7 @@ class StackPanel(QObject):
         settings" spirit as _build_empty_inspector, just explaining what
         the marker does and pointing at the row-level controls (branch
         combo, enabled toggle) that actually matter for it."""
-        group = QGroupBox("Fork Split Stage")
+        group = QGroupBox("Fork Split")
         outer = QVBoxLayout(group)
         info = QLabel(
             "Opens two parallel branches from here. Add any stage kind "
@@ -3956,7 +4300,11 @@ class StackPanel(QObject):
         info.setWordWrap(True)
         info.setStyleSheet(f"color: {HINT_TEXT_HEX};")
         outer.addWidget(info)
-        self.inspector_stack.addWidget(group)
+        # See _build_printer_lights_inspector's own comment on why every
+        # inspector page needs a trailing vertical stretch -- most
+        # visible of all here, since this page is just one label.
+        outer.addStretch(1)
+        self.inspector_stack.addWidget(self._wrap_inspector_page(group))
         self._fork_split_inspector_index = self.inspector_stack.count() - 1
 
     # ---- inspector: fork_merge stage ------------------------------------
@@ -3970,7 +4318,7 @@ class StackPanel(QObject):
         every other stage kind uses, blending the merged result against
         the signal as it stood right before the matching Fork Split (see
         stack.py's _run_stages)."""
-        group = QGroupBox("Fork Merge Stage")
+        group = QGroupBox("Fork Merge")
         outer = QVBoxLayout(group)
 
         info = QLabel(
@@ -4002,7 +4350,11 @@ class StackPanel(QObject):
         reset_button.clicked.connect(lambda: self.fork_merge_blend_slider.setValue(50))
         outer.addWidget(reset_button)
 
-        self.inspector_stack.addWidget(group)
+        # See _build_printer_lights_inspector's own comment on why every
+        # inspector page needs a trailing vertical stretch.
+        outer.addStretch(1)
+
+        self.inspector_stack.addWidget(self._wrap_inspector_page(group))
         self._fork_merge_inspector_index = self.inspector_stack.count() - 1
 
     def _apply_fork_merge_live(self, value):
@@ -4067,15 +4419,14 @@ class StackPanel(QObject):
         elif stage.kind == "printer_lights":
             p = stage.params
             for channel, key in (("R", "r_points"), ("G", "g_points"), ("B", "b_points")):
-                slider = self._pl_sliders[channel]
-                slider.blockSignals(True)
-                slider.setValue(int(round(p.get(key, 0))))
-                slider.blockSignals(False)
-                self._pl_value_labels[channel].setText(str(slider.value()))
+                spin = self._pl_spins[channel]
+                spin.blockSignals(True)
+                spin.setValue(int(round(p.get(key, 0))))
+                spin.blockSignals(False)
             idx = self.pl_space_combo.findText(p.get("working_colourspace", DEFAULT_WORKING_COLOURSPACE))
             if idx >= 0:
                 # Blocked -- switching TO this stage shouldn't itself count
-                # as a live edit (see _on_pl_space_changed); sliders above
+                # as a live edit (see _on_pl_space_changed); spinboxes above
                 # get the same treatment.
                 self.pl_space_combo.blockSignals(True)
                 self.pl_space_combo.setCurrentIndex(idx)
@@ -4233,8 +4584,22 @@ class StackPanel(QObject):
                     default = gpr.IDENTITY_ADD if is_additive else gpr.IDENTITY_MULT
                     r, g, b, m = p.get(field_key, default)
                     spins = self._gpr_field_spins[field_key]
+                    # Blocked -- see _on_gpr_channel_spin_changed/_on_gpr_
+                    # master_changed's own docstrings: with M genuinely
+                    # independent of R/G/B, letting those handlers fire
+                    # mid-population (on a still-partially-old spin state)
+                    # would recompute a wrong wheel position and, once M
+                    # itself gets set, overwrite R/G/B with values that
+                    # don't match what's actually stored. Set every value
+                    # directly instead, then back-compute the wheel
+                    # position once from the fully-updated (r, g, b, m).
                     for channel, value in zip(("R", "G", "B", "M"), (r, g, b, m)):
-                        spins[channel].setValue(value)
+                        spin = spins[channel]
+                        spin.blockSignals(True)
+                        spin.setValue(value)
+                        spin.blockSignals(False)
+                    x, y = cb.wheel_from_rgb_given_master(r, g, b, m, strength=GRADING_WHEEL_STRENGTH)
+                    self._gpr_wheels[field_key].set_balance(x, y, emit=False)
 
                 self.gpr_pivot_spin.setValue(p.get("pivot", gpr.DEFAULT_PIVOT))
                 self.gpr_sat_spin.setValue(p.get("saturation", gpr.DEFAULT_SATURATION))
@@ -4260,9 +4625,19 @@ class StackPanel(QObject):
                 for range_key in gtn.RANGE_KEYS:
                     r, g, b, m, start, width = p.get(range_key) or gtn.DEFAULT_RANGE_VALUES[range_key]
                     spins = self._gtn_range_spins[range_key]
+                    # Blocked -- same reasoning as Grading Primary's own
+                    # refresh block (see that one's own comment): M is
+                    # independent, so letting the sync handlers fire
+                    # mid-population would compute a wrong wheel position
+                    # and then overwrite R/G/B once M itself gets set.
                     for channel, value in zip(("R", "G", "B", "M", "Start", "Width"),
                                                (r, g, b, m, start, width)):
-                        spins[channel].setValue(value)
+                        spin = spins[channel]
+                        spin.blockSignals(True)
+                        spin.setValue(value)
+                        spin.blockSignals(False)
+                    x, y = cb.wheel_from_rgb_given_master(r, g, b, m, strength=GRADING_WHEEL_STRENGTH)
+                    self._gtn_wheels[range_key].set_balance(x, y, emit=False)
                 self.gtn_scontrast_spin.setValue(p.get("scontrast", gtn.DEFAULT_SCONTRAST))
             self.inspector_stack.setCurrentIndex(self._grading_tone_inspector_index)
 
@@ -4361,7 +4736,7 @@ class StackPanel(QObject):
 
     def apply_cdl_entry(self, entry):
         """Bring a cdl_library.CDLEntry back into the Stack -- the single
-        entry point CDLLibraryPanel's "Apply to Stack" action (via
+        entry point StackMemoriesPanel's "Apply to Stack" action (via
         MainWindow, same "panel doesn't know about StackPanel" wiring as
         StackMemoriesPanel.recall_requested -> StackPanel.set_stack) uses
         regardless of which of two cases applies:
@@ -4391,6 +4766,55 @@ class StackPanel(QObject):
             self._refresh_inspector()
             self._emit_changed()
         else:
+            new_stage = st.make_cdl_stage(
+                slope=entry.slope, offset=entry.offset, power=entry.power, sat=entry.sat,
+                style=entry.style, sop_enabled=entry.sop_enabled, sat_enabled=entry.sat_enabled,
+            )
+            new_stage.label = _format_cdl_label(new_stage.params)
+            self._add_stage(new_stage)
+
+    def insert_entry_in_stack(self, entry):
+        """"Insert in Stack" (per Tom: "adds all of a saved stack's
+        operators (or a cdl) into the existing stack below the selected
+        entry") -- the Gallery's own right-click action for a
+        stack_memory.StackMemory or a cdl_library.CDLEntry row, routed
+        here by MainWindow same as apply_cdl_entry/recall_requested
+        above. Deliberately DIFFERENT from both of those: Recall REPLACES
+        the whole working stack, Apply CDL to Stack can overwrite an
+        already-selected 'cdl' stage in place -- this always ADDS new
+        stage(s), never replaces or overwrites anything already in the
+        stack, landing immediately after whichever stage is currently
+        selected (see _add_stage/_default_insert_index, the same "insert
+        here" placement every other add entry point already gets) and
+        selected in turn moving to the LAST stage inserted.
+
+        A StackMemory inserts every one of its stages, in order -- each
+        one calling _add_stage in turn means stage N+1 lands right after
+        stage N (since _add_stage's own default-insert-index tracks
+        whatever's currently selected, and each call re-selects the
+        stage it just added). Rebuilt as fresh Stage objects (kind/label/
+        params/enabled/opacity/branch copied, but a NEW id via
+        st.next_stage_id()) rather than reusing entry.stack.stages
+        directly -- those keep the SAME id every time the memory itself
+        is copied (see stack.Stage.copy()'s own docstring on why that's
+        right for Recall's non-destructive semantics), which would
+        collide with an already-live stage's id (or with itself, if this
+        same memory gets inserted a second time) since this ADDS onto an
+        existing stack rather than replacing it outright. `branch` is
+        passed through explicitly (not left for _add_stage's own auto-
+        assignment) so a saved fork region's own A/B tags survive the
+        insert exactly as saved, rather than being re-guessed.
+
+        A CDLEntry inserts one new 'cdl' stage, built the identical way
+        apply_cdl_entry's own "nothing cdl-shaped selected" branch does
+        -- just always taking that branch, never the overwrite-in-place
+        one, since Insert is unconditionally an ADD."""
+        if isinstance(entry, StackMemory):
+            for stage in entry.stack.stages:
+                new_stage = stage.copy()
+                new_stage.id = st.next_stage_id()
+                self._add_stage(new_stage, branch=stage.branch)
+        elif isinstance(entry, CDLEntry):
             new_stage = st.make_cdl_stage(
                 slope=entry.slope, offset=entry.offset, power=entry.power, sat=entry.sat,
                 style=entry.style, sop_enabled=entry.sop_enabled, sat_enabled=entry.sat_enabled,

@@ -121,6 +121,34 @@ def rgb_to_master_and_wheel(r, g, b, strength=1.0):
     return master, x, y
 
 
+def wheel_from_rgb_given_master(r, g, b, master, strength=1.0):
+    """Like rgb_to_master_and_wheel, but for a control where master is its
+    own independently stored value (e.g. OCIO GradingRGBM's 4th
+    component) rather than something derived from mean(r, g, b) -- ASC
+    CDL's slope/offset/power have no separate master field at all, so
+    rgb_to_master_and_wheel deriving master AS the mean is the only
+    sensible choice there; GradingRGBM keeps R, G, B, and M as four
+    genuinely independent numbers, so recomputing master from R/G/B here
+    would silently overwrite whatever the user (or a saved session) had
+    actually set it to. This only ever returns the best-fit wheel
+    position (x, y) for R/G/B's spread around the GIVEN master -- never
+    touches or returns master itself, so a caller can safely leave
+    whatever field/spinbox holds it completely alone. Exact whenever
+    (r, g, b) really did come from rgb_from_master_and_wheel(master, x,
+    y, strength) with this SAME master; otherwise (R/G/B set independently
+    of the wheel, e.g. typed by hand, or master edited afterward without
+    re-deriving R/G/B) this is the best-fit position for whatever part of
+    the spread a 2D wheel can express, same "not a unique inverse for
+    arbitrary input" caveat rgb_to_master_and_wheel's own docstring
+    covers."""
+    if strength == 0:
+        return 0.0, 0.0
+    balance_r = (r - master) / strength
+    balance_g = (g - master) / strength
+    balance_b = (b - master) / strength
+    return wheel_from_channel_balance(balance_r, balance_g, balance_b)
+
+
 def clamp_to_unit_circle(x, y):
     """Clamp (x, y) to the closed unit disk -- used by the widget so the
     puck never visually leaves the wheel, and by anything that wants to

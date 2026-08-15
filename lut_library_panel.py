@@ -7,8 +7,8 @@ session memory: Import... reads any
 format app_logic.load_lut_any_format supports and keeps the loaded LUT
 object itself (table/domain/name), not just its file path -- see
 lut_library.py's docstring on why that's the whole point ("can't go
-offline if the session is transferred"). Mirrors cdl_library_panel.py's
-"named shelf" pattern -- save/apply/rename/delete, persisted as part of
+offline if the session is transferred"). Mirrors stack_memories_panel.py's
+CDL-entry "named shelf" pattern -- save/apply/rename/delete, persisted as part of
 the session (session_io.py) -- but each entry is a whole LUT rather than
 a handful of SOP/SAT floats.
 
@@ -304,6 +304,6 @@ class LUTLibraryPanel(QWidget):
     def load_library(self, library):
         """Replace the whole library wholesale -- used by MainWindow for
         session load, same "wholesale replace + rebuild the list" pattern
-        as StackMemoriesPanel.load_library/CDLLibraryPanel.load_library."""
+        as StackMemoriesPanel.load_library/load_cdl_library."""
         self.library = library
         self._refresh_list()

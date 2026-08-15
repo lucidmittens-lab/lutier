@@ -41,7 +41,7 @@ lut_viewer_3d.py, none of them setObjectName'd, so these are type
 selectors) gets a highlight-colored fill/handle instead of the fully
 unstyled native look it had before. QScrollBar (currently only ever
 appears implicitly via QListWidget -- see browser_panel.py/
-lut_library_panel.py/cdl_library_panel.py/image_library_panel.py/
+lut_library_panel.py/image_library_panel.py/
 stack_memories_panel.py/stack_panel.py's list widgets, none of which had
 ANY scrollbar styling before this) gets a thin, minimal handle that
 picks up the same accent on hover.
@@ -953,6 +953,26 @@ QToolButton#videoTransportButton:checked {{
     border-radius: 3px;
 }}
 
+/* Browser panel's "Choose Folder..." button (per Tom: "a cleaner more
+   in-app style button rather than a system button") -- was a plain
+   QPushButton, so it got the raised/bordered chrome the base QPushButton
+   rule above gives every ordinary action button; that's the "system
+   button" look Tom was pointing at, same complaint already fixed the
+   same way for panelMenuButton/videoTransportButton above. Swapped to a
+   QToolButton (autoRaise=True in code) with the identical flat-at-rest,
+   accent-highlight-on-hover treatment -- padding sized for its text
+   label instead of those two's fixed icon-glyph min-width. */
+QToolButton#chooseFolderButton {{
+    border: none;
+    background: transparent;
+    padding: 4px 10px;
+}}
+
+QToolButton#chooseFolderButton:hover {{
+    background-color: palette(highlight);
+    border-radius: 4px;
+}}
+
 /* Real SMPTE timecode readout (Phase 4, timecode.py) -- monospace so
    digits don't jitter the label's own width as they change every tick
    during playback, same reason any numeric readout that updates in
@@ -962,54 +982,48 @@ QLabel#videoTimecodeLabel {{
 }}
 
 /* -- Buttons, all of them ------------------------------------------- */
-/* Border + background live on the base QPushButton rule, not just
-   :checkable -- an earlier version only styled :checkable buttons, which
-   left every ordinary action button (Choose Folder, Import Image, Add
-   From File, Export...) with no border/background at all: no visible
-   button chrome, looked like plain clickable text. Every button gets a
-   normal bordered/filled look now; :checked layers the highlighted
-   "this is ON" look on top for toggle buttons specifically. */
+/* Flat-at-rest, accent-highlight-on-hover -- same "in-app" treatment as
+   dockCloseButton/panelMenuButton/videoTransportButton/
+   chooseFolderButton above, per Tom: "remove all system style buttons
+   and replace with buttons similar to Select Folder in media browser."
+   QPushButton used to get its own bordered/filled "system button" look
+   (palette(mid) border, palette(button) background) here, which is
+   exactly the visual language those other buttons were already pulled
+   OUT of -- every plain QPushButton in the app (Update Stage, Export...,
+   Reset to 0/Identity, etc.) picks this rule up automatically via the
+   bare `QPushButton` selector, no per-call-site changes needed. */
 
 QPushButton {{
     padding: 4px 10px;
     border-radius: 4px;
-    border: 1px solid palette(mid);
-    background-color: palette(button);
+    border: none;
+    background: transparent;
     color: palette(button-text);
 }}
 
-/* hover/pressed used to be a flat gray shift with no tie to the app's
-   own accent color -- adding a highlight-tinted border on top of the
-   existing background shift so an ordinary action button (not just
-   :checkable ones) still visibly belongs to the same visual language as
-   everything else that uses palette(highlight). */
 QPushButton:hover {{
-    background-color: palette(light);
-    border: 1px solid palette(highlight);
+    background-color: palette(highlight);
 }}
 
 QPushButton:pressed {{
-    background-color: palette(dark);
-    border: 1px solid palette(highlight);
+    background-color: palette(highlight);
 }}
 
 QPushButton:disabled {{
     color: {_HINT_TEXT};
-    background-color: palette(window);
+    background: transparent;
 }}
 
 QPushButton:checkable:checked {{
     background-color: palette(highlight);
     color: palette(highlighted-text);
-    border: 1px solid palette(highlight);
     font-weight: 600;
 }}
 
 /* -- Group boxes (used inside Controls) ------------------------------ */
 
 QGroupBox {{
-    border: 1px solid palette(mid);
-    border-radius: {PANEL_BORDER_RADIUS}px;
+    border: none;
     margin-top: 10px;
     padding-top: 10px;
     font-weight: 600;
@@ -1223,8 +1237,38 @@ QSlider::sub-page:horizontal:disabled, QSlider::handle:horizontal:disabled {{
     border-color: palette(mid);
 }}
 
+/* Video transport scrub bar (video_scrub_slider.VideoScrubSlider) --
+   direct feedback on the general QSlider look above, scoped by ID so it
+   doesn't touch every OTHER slider in the app (printer-lights/CDL-sat/
+   fork-blend/graticule/grid-density/cage-opacity keep the general style):
+   "the handle and highlight on the scrub is ugly ... instead of a knob
+   there should be a simple white playhead." sub-page's accent "elapsed"
+   fill is flattened to match the groove exactly (no elapsed/remaining
+   distinction at all), and the handle is made fully invisible (0 width,
+   transparent) -- VideoScrubSlider's own paintEvent draws a plain white
+   line at the current value instead, plus thin in/out marker lines, see
+   that class's own docstring. */
+QSlider#videoScrubSlider::groove:horizontal {{
+    height: 4px;
+    background: palette(mid);
+    border-radius: 2px;
+}}
+
+QSlider#videoScrubSlider::sub-page:horizontal {{
+    background: palette(mid);
+    border-radius: 2px;
+}}
+
+QSlider#videoScrubSlider::handle:horizontal {{
+    width: 0px;
+    height: 0px;
+    margin: 0px;
+    border: none;
+    background: transparent;
+}}
+
 /* -- Scrollbars (implicit, via QListWidget across every library/browser
-   panel -- see browser_panel.py, lut_library_panel.py, cdl_library_panel.py,
+   panel -- see browser_panel.py, lut_library_panel.py,
    image_library_panel.py, stack_memories_panel.py, stack_panel.py) ---- */
 /* Had zero styling before -- whatever the native OS scrollbar looked
    like. Thin, minimal, transparent track; handle picks up the accent

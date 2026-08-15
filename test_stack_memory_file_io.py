@@ -89,7 +89,7 @@ def test_export_writes_valid_json_with_expected_format_tag():
         with open(path) as f:
             data = json.load(f)
         assert data["format"] == "lutier-stack-memory"
-        assert data["version"] == 1
+        assert data["version"] == 2
         assert data["name"] == "Tagged"
         assert "stack" in data
     print("export_memory: writes plain JSON tagged with the "
@@ -97,10 +97,51 @@ def test_export_writes_valid_json_with_expected_format_tag():
           "session format -- OK")
 
 
+def test_export_then_import_round_trips_thumbnail_and_full_still():
+    thumb = {"mode": "embedded", "data_b64": "dGh1bWI="}
+    full_still = {"mode": "embedded", "data_b64": "ZnVsbA=="}
+    memory = StackMemory("With Still", _make_sample_stack(), thumbnail=thumb, full_still=full_still)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "with_still.ltm")
+        smf.export_memory(memory, path)
+        imported, warnings = smf.import_memory(path)
+        assert warnings == []
+        assert imported.thumbnail == thumb
+        assert imported.full_still == full_still
+    print("export_memory/import_memory: thumbnail AND full_still both "
+          "round-trip through a real .ltm file -- OK")
+
+
+def test_import_defaults_thumbnail_and_full_still_for_a_version_1_file():
+    """A pre-VERSION-2 .ltm file has no thumbnail/full_still keys at all
+    -- must still load fine, defaulting both to None."""
+    import json
+    memory = StackMemory("Old Style", _make_sample_stack())
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "old.ltm")
+        smf.export_memory(memory, path)
+        with open(path) as f:
+            data = json.load(f)
+        data["version"] = 1
+        del data["thumbnail"]
+        del data["full_still"]
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+        imported, warnings = smf.import_memory(path)
+        assert warnings == []
+        assert imported.thumbnail is None
+        assert imported.full_still is None
+    print("import_memory: a VERSION 1 .ltm file with no thumbnail/"
+          "full_still keys loads fine, defaulting both to None -- OK")
+
+
 if __name__ == "__main__":
     test_export_then_import_round_trips_name_and_stack()
     test_imported_memory_gets_a_fresh_id()
     test_import_rejects_a_non_stack_memory_file()
     test_export_writes_valid_json_with_expected_format_tag()
+    test_export_then_import_round_trips_thumbnail_and_full_still()
+    test_import_defaults_thumbnail_and_full_still_for_a_version_1_file()
     print()
     print("All stack_memory_file_io tests passed.")

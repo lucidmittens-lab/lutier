@@ -1,6 +1,6 @@
 """
 main_window.py -- top-level app window. Ties BrowserPanel + LUTLibraryPanel
-+ CDLLibraryPanel + StackMemoriesPanel + ScopesPanel + LutViewer3D (its own
++ StackMemoriesPanel + ScopesPanel + LutViewer3D (its own
 panel again, see below) + the Stack together, all backed by app_logic.py,
 stack.py, session_io.py, and clf_adapter.py. Export lives in its own
 File > Export... dialog (see _show_export_dialog), not part of this spatial
@@ -9,7 +9,7 @@ layout at all.
 MIGRATED (per Tom, "Yeah. we want free form... do the migration to new
 system") from a hand-built QWidget + three hardcoded nested QSplitters to
 Qt's native QMainWindow + QDockWidget docking system -- every one of the
-ten panels below is now a real QDockWidget that can be dragged to any
+nine panels below is now a real QDockWidget that can be dragged to any
 edge of the window, dragged into/out of another panel's spot, tabbed with
 a neighbor, or torn off into a floating window, all via Qt's own built-in
 docking mechanics rather than anything hand-rolled here. See
@@ -30,24 +30,20 @@ _build_default_dock_layout, also reachable any time via Workspace >
     |  (top    |          Viewer            +--------------+
     |   left)  |                            |    Scopes    |
     +----------+----------------------------+--------------+
-    |  Image   |    Stack -- the stage list |    Graph     |
-    | Library  |    (center, main area)    |  (bottom      |
+    |  Media   |    Stack -- the stage list |    Graph     |
+    |Libraries |    (center, main area)    |  (bottom      |
     +----------+                           |   right)      |
     |   LUT    |                           |              |
     | Library  |                           |              |
     +----------+                           |              |
-    |   CDL    |                           |              |
-    | Library  |                           |              |
-    +----------+                           |              |
-    |  Stack   |                           |              |
-    | Memories |                           |              |
+    | Galleries|                           |              |
     | (bottom  |                           |              |
     |   left)  |                           |              |
     +----------+---------------------------+--------------+
 
-Browser, Image Library, LUT Library, CDL Library, and Stack Memories are
-five separate panels (per Tom) -- "Files" is the filesystem LUT browser
-(browser_panel.py, unchanged), "Image Library" (image_library_panel.py +
+Browser, Media Libraries, LUT Library, and Galleries are four separate
+panels (per Tom) -- "Files" is the filesystem LUT browser
+(browser_panel.py, unchanged), "Media Libraries" (image_library_panel.py +
 image_library.py, inserted between Browser and LUT Library per Tom) is a
 shelf of reference images ingested into session memory (see that module's
 docstring for the one "embedded in memory, path-referenced on disk"
@@ -58,28 +54,29 @@ Stack stage built from it, see StackPanel.add_lut_stage_from_library_entry)
 can't go offline just because the session moved to a machine that's never
 seen the original file, unlike an ordinary "lut" stage's source_path (see
 lut_library.py's docstring and session_io.py's docstring on LUT stage
-provenance) -- "CDL Library" (cdl_library_panel.py + cdl_library.py) is a
-shelf of named, saved ASC CDL grades -- save one from the CDL stage
-inspector's "Save to CDL Library..." button, or Import a real
-.cc/.cdl/.ccc file (parsed values copied straight into the entry, same
-"copied in, not referenced" philosophy as the LUT Library, just for a
-handful of floats instead of a whole table), then apply it back onto a
-CDL stage later -- and "Stack Memories" (stack_memories_panel.py +
-stack_memory.py) is a shelf of named, saved Stack snapshots, each also
+provenance) -- and "Galleries" (stack_memories_panel.py + stack_memory.py
++ cdl_library.py) is a shelf of named, saved Stack snapshots (each also
 exportable/importable to its own .ltm file independent of the whole
-session (see stack_memory_file_io.py). All are persisted as part of the
-session file (see session_io.py) rather than lost on quit. Recalling a
-Stack Memory routes into StackPanel.set_stack, applying a CDL Library
-entry routes into StackPanel.apply_cdl_entry, applying a LUT Library
+session, see stack_memory_file_io.py), externally-imported reference
+stills, AND named, saved ASC CDL grades all in one union list (per Tom:
+"CDL library should also be rolled into the gallery" -- there used to be
+a separate "CDL Library" panel/dock here; save a CDL entry from the CDL
+stage inspector's "Save to CDL Library..." button, or Import a real
+.cc/.cdl/.ccc file, then apply it back onto a CDL stage later, exactly as
+before, just from this panel now -- see stack_memories_panel.py's own
+docstring for the full row-kind breakdown). All are persisted as part of
+the session file (see session_io.py) rather than lost on quit. Recalling
+a Stack Memory routes into StackPanel.set_stack, applying a CDL entry
+routes into StackPanel.apply_cdl_entry, applying a LUT Library
 entry routes into StackPanel.add_lut_stage_from_library_entry, and
-applying an Image Library entry routes into SampleImagePanel's
-Sample/Reference slots (see image_library_panel.py's docstring) -- all
+applying a Media Libraries entry routes into SampleImagePanel's
+Source/Reference slots (see image_library_panel.py's docstring) -- all
 exactly like opening a session does -- none of these panels has a
 reference to StackPanel or SampleImagePanel, MainWindow wires all of them
 together (self.stack_memories_panel.recall_requested ->
-self.stack_panel.set_stack, self.cdl_library_panel.apply_requested ->
+self.stack_panel.set_stack, self.stack_memories_panel.apply_cdl_requested ->
 self.stack_panel.apply_cdl_entry, self.stack_panel.cdl_save_requested ->
-self.cdl_library_panel.save_entry, self.lut_library_panel.apply_requested
+self.stack_memories_panel.save_cdl_entry, self.lut_library_panel.apply_requested
 -> self.stack_panel.add_lut_stage_from_library_entry,
 self.image_library_panel.load_as_sample_requested/
 load_as_reference_requested -> self.sample_image.
@@ -94,8 +91,8 @@ own close button -- see _PanelDockWidget below), instead of this file
 manually re-syncing it after every kind of change. Each panel is a
 QDockWidget with a custom title bar (see _build_dock_title_bar) showing
 its label and, for panels that have one, the same "..." corner menu
-button as before (Image Library/LUT Library/CDL Library/Stack
-Memories/Viewer/Stack/Scopes/Graph) -- reuses the exact same
+button as before (Media Libraries/LUT Library/Galleries/Viewer/Stack/
+Scopes/Graph) -- reuses the exact same
 #panelTitleRow/#panelTitle object names style.py already styles, so the
 visual language is unchanged even though PanelFrame no longer draws its
 own title row for these (PanelFrame is still used underneath, purely for
@@ -110,7 +107,7 @@ as Qt's own default one, though the actual FEEL of that drag on a real
 display is one of this migration's UNVERIFIED-ON-REAL-HARDWARE items
 (see RUNNING.md's newest entry).
 
-FLOATING (per Tom, Cmd+Shift+1 through Cmd+Shift+0, same digits as each
+FLOATING (per Tom, Cmd+Shift+1 through Cmd+Shift+9, same digits as each
 panel's Shift+N toggle): now just QDockWidget.setFloating(), Qt's own
 native mechanism, rather than the hand-rolled setParent()+setWindowFlags()
 dance #39 built. Confirmed empirically in this sandbox that a floating
@@ -225,7 +222,6 @@ from PySide6.QtCore import Qt, QTimer, QByteArray, QEvent, QThread, QObject, Sig
 
 from browser_panel import BrowserPanel
 from stack_memories_panel import StackMemoriesPanel
-from cdl_library_panel import CDLLibraryPanel
 from lut_library_panel import LUTLibraryPanel
 from image_library_panel import ImageLibraryPanel
 from sample_image_panel import SampleImagePanel
@@ -279,10 +275,10 @@ EXPORT_FORMATS = [
 # reason; PanelFrame is still used, just as the dock's inner border/
 # background only (see _make_dock/_build_dock_title_bar).
 #
-# All ten toggles live in the Workspace menu (see this module's
+# All nine toggles live in the Workspace menu (see this module's
 # docstring) -- LEFT/CENTER/RIGHT here just group them roughly matching
-# each panel's default column (Browser+Image Library+LUT Library+CDL
-# Library+Stack Memories=left column, Viewer+Stack=center column, Stack
+# each panel's default column (Browser+Media Libraries+LUT
+# Library+Galleries=left column, Viewer+Stack=center column, Stack
 # Params+Scopes+3D Viewer=right column) -- purely a DEFAULT starting
 # position now (see _build_default_dock_layout), not a structural
 # constraint the way the old splitters were: any panel can be dragged
@@ -297,10 +293,9 @@ EXPORT_FORMATS = [
 # migration, still matches USER_MANUAL.md/help_text.py's shortcut table.
 PANEL_TOGGLES_LEFT = [
     ("browser_toggle", "Browser", "browser_frame", True),
-    ("image_library_toggle", "Media Library", "image_library_frame", True),
+    ("image_library_toggle", "Media Libraries", "image_library_frame", True),
     ("lut_library_toggle", "LUT Library", "lut_library_frame", True),
-    ("cdl_library_toggle", "CDL Library", "cdl_library_frame", True),
-    ("stack_memories_toggle", "Gallery", "stack_memories_frame", True),
+    ("stack_memories_toggle", "Galleries", "stack_memories_frame", True),
 ]
 PANEL_TOGGLES_CENTER = [
     ("sample_image_toggle", "Viewer", "sample_image_frame", True),
@@ -911,12 +906,11 @@ class MainWindow(QMainWindow):
         self.splitDockWidget(self.browser_frame, self.sample_image_frame, Qt.Orientation.Horizontal)
         self.splitDockWidget(self.sample_image_frame, self.stack_params_frame, Qt.Orientation.Horizontal)
 
-        # left column: Browser / Image Library / LUT Library / CDL
-        # Library / Stack Memories, top to bottom.
+        # left column: Browser / Media Libraries / LUT Library /
+        # Galleries, top to bottom.
         self.splitDockWidget(self.browser_frame, self.image_library_frame, Qt.Orientation.Vertical)
         self.splitDockWidget(self.image_library_frame, self.lut_library_frame, Qt.Orientation.Vertical)
-        self.splitDockWidget(self.lut_library_frame, self.cdl_library_frame, Qt.Orientation.Vertical)
-        self.splitDockWidget(self.cdl_library_frame, self.stack_memories_frame, Qt.Orientation.Vertical)
+        self.splitDockWidget(self.lut_library_frame, self.stack_memories_frame, Qt.Orientation.Vertical)
 
         # center column: Viewer / Stack, top to bottom.
         self.splitDockWidget(self.sample_image_frame, self.stack_frame, Qt.Orientation.Vertical)
@@ -933,8 +927,8 @@ class MainWindow(QMainWindow):
             [260, 700, 340], Qt.Orientation.Horizontal)
         self.resizeDocks(
             [self.browser_frame, self.image_library_frame, self.lut_library_frame,
-             self.cdl_library_frame, self.stack_memories_frame],
-            [300, 180, 180, 180, 180], Qt.Orientation.Vertical)
+             self.stack_memories_frame],
+            [300, 180, 180, 180], Qt.Orientation.Vertical)
         self.resizeDocks(
             [self.sample_image_frame, self.stack_frame],
             [260, 540], Qt.Orientation.Vertical)
@@ -958,29 +952,31 @@ class MainWindow(QMainWindow):
         self.stack_panel = StackPanel()
         self.stack_panel.stack_changed.connect(self._on_stack_changed)
 
-        # ---- left column: Browser (top) / Image Library / LUT Library / -
-        # ---- CDL Library / Stack Memories (bottom) -----------------------
-        # Five separate panels now (per Tom, Image Library inserted between
-        # Browser and LUT Library) -- used to be one Browser PanelFrame with
-        # an internal "Files" / "Stack Memories" QTabWidget, split into
-        # their own stacked group so all five are visible at once instead
-        # of one-tab-at-a-time. "Files" is the unchanged filesystem LUT
-        # browser, "Image Library" (between Browser and LUT Library, per
-        # Tom) is a shelf of reference images ingested into session memory
-        # -- see image_library_panel.py/image_library.py -- "LUT Library"
-        # is a shelf of LUTs ingested into session memory -- see
-        # lut_library_panel.py/lut_library.py -- "CDL Library" is a shelf
-        # of named, saved ASC CDL grades (see cdl_library_panel.py/
-        # cdl_library.py), "Stack Memories" is a shelf of named, saved
-        # Stack snapshots you can recall/update/rename/delete/export/
-        # import -- all four libraries ride along with the session file
-        # (see session_io.py).
+        # ---- left column: Browser (top) / Media Libraries / LUT Library -
+        # ---- / Galleries (bottom) -----------------------------------
+        # Four separate panels now (per Tom, Media Libraries inserted
+        # between Browser and LUT Library) -- used to be one Browser
+        # PanelFrame with an internal "Files" / "Stack Memories" QTabWidget,
+        # split into their own stacked group so all four are visible at
+        # once instead of one-tab-at-a-time. "Files" is the unchanged
+        # filesystem LUT browser, "Media Libraries" (between Browser and
+        # LUT Library, per Tom) is a shelf of reference images ingested
+        # into session memory -- see image_library_panel.py/
+        # image_library.py -- "LUT Library" is a shelf of LUTs ingested
+        # into session memory -- see lut_library_panel.py/lut_library.py --
+        # "Galleries" is a shelf of named, saved Stack snapshots you can
+        # recall/update/rename/delete/export/import, externally-imported
+        # reference stills, AND named, saved ASC CDL grades (folded in per
+        # Tom, see stack_memories_panel.py's own docstring) -- all three
+        # libraries ride along with the session file (see session_io.py).
         self.browser = BrowserPanel()
-        # Loading a file or Identity LUT from the Browser ADDS a stage to
-        # the Stack instead of replacing "the current LUT" -- there's no
-        # separate current-LUT slot anymore, see stack_panel.py.
+        # Loading a file from the Browser ADDS a stage to the Stack
+        # instead of replacing "the current LUT" -- there's no separate
+        # current-LUT slot anymore, see stack_panel.py. "New Identity
+        # LUT..." (per Tom, removed) used to be a second entry point
+        # here -- see stack_panel.py's docstring on why previewing an
+        # empty stack directly made that redundant.
         self.browser.file_selected.connect(lambda path: self.stack_panel.add_lut_stage_from_path(path))
-        self.browser.identity_lut_requested.connect(lambda size: self.stack_panel.add_identity_stage(size))
         self._make_dock("browser_frame", "Browser", self.browser)
 
         # Image Library's two apply_requested signals get connected to
@@ -988,7 +984,7 @@ class MainWindow(QMainWindow):
         # doesn't exist yet at this point in the method).
         self.image_library_panel = ImageLibraryPanel()
         self._make_dock(
-            "image_library_frame", "Media Library", self.image_library_panel,
+            "image_library_frame", "Media Libraries", self.image_library_panel,
             corner_widget=self.image_library_panel.menu_button)
 
         self.lut_library_panel = LUTLibraryPanel()
@@ -1007,30 +1003,6 @@ class MainWindow(QMainWindow):
             "lut_library_frame", "LUT Library", self.lut_library_panel,
             corner_widget=self.lut_library_panel.menu_button)
 
-        self.cdl_library_panel = CDLLibraryPanel()
-        # Applying an entry hands back nothing itself -- it emits the
-        # CDLEntry, and StackPanel.apply_cdl_entry decides whether to
-        # update the currently-selected 'cdl' stage in place or add a new
-        # one (see that method's docstring). This panel has no idea
-        # StackPanel exists, same arrangement as Stack Memories' recall.
-        self.cdl_library_panel.apply_requested.connect(self.stack_panel.apply_cdl_entry)
-        # The reverse direction -- saving FROM the CDL inspector's "Save
-        # to CDL Library..." button (see stack_panel.py) -- routes back
-        # into this panel the same way; StackPanel has no idea
-        # CDLLibraryPanel exists either.
-        self.stack_panel.cdl_save_requested.connect(self.cdl_library_panel.save_entry)
-        # Double-clicking a CDL file (.cc/.cdl/.ccc) in the Browser routes
-        # here too (see browser_panel.py's docstring on why CDL files land
-        # in the Library rather than going straight to the Stack the way
-        # LUT files do) -- same import_from_path() the "..." menu's
-        # Import... action and drag-and-drop both already use.
-        self.browser.cdl_file_selected.connect(self.cdl_library_panel.import_from_path)
-        # corner_widget=self.cdl_library_panel.menu_button -- same "..."
-        # header-menu treatment as LUT Library above.
-        self._make_dock(
-            "cdl_library_frame", "CDL Library", self.cdl_library_panel,
-            corner_widget=self.cdl_library_panel.menu_button)
-
         self.stack_memories_panel = StackMemoriesPanel()
         self.stack_memories_panel.set_stack_getter(self.stack_panel.get_stack)
         # Recalling a memory hands back a ready-to-use (already-copied)
@@ -1038,10 +1010,34 @@ class MainWindow(QMainWindow):
         # what wires the two together, same arrangement as opening a
         # session.
         self.stack_memories_panel.recall_requested.connect(self.stack_panel.set_stack)
+        # CDL (folded into this Gallery, per Tom -- see this panel's own
+        # docstring). Applying a CDL entry hands back nothing itself -- it
+        # emits the CDLEntry, and StackPanel.apply_cdl_entry decides
+        # whether to update the currently-selected 'cdl' stage in place or
+        # add a new one (see that method's docstring). This panel has no
+        # idea StackPanel exists, same arrangement as Recall above.
+        self.stack_memories_panel.apply_cdl_requested.connect(self.stack_panel.apply_cdl_entry)
+        # "Insert in Stack" (per Tom, see StackPanel.insert_entry_in_stack's
+        # own docstring) -- a Gallery row's own right-click action, ALWAYS
+        # adds new stage(s) rather than replacing/overwriting, unlike
+        # Recall/Apply CDL to Stack above.
+        self.stack_memories_panel.insert_in_stack_requested.connect(
+            self.stack_panel.insert_entry_in_stack)
+        # The reverse direction -- saving FROM the CDL inspector's "Save
+        # to CDL Library..." button (see stack_panel.py) -- routes back
+        # into this panel the same way; StackPanel has no idea
+        # StackMemoriesPanel exists either.
+        self.stack_panel.cdl_save_requested.connect(self.stack_memories_panel.save_cdl_entry)
+        # Double-clicking a CDL file (.cc/.cdl/.ccc) in the Browser routes
+        # here too (see browser_panel.py's docstring on why CDL files land
+        # in the Gallery rather than going straight to the Stack the way
+        # LUT files do) -- same import_cdl_from_path() the "..." menu's
+        # mono "Import..." action and drag-and-drop both already use.
+        self.browser.cdl_file_selected.connect(self.stack_memories_panel.import_cdl_from_path)
         # corner_widget=self.stack_memories_panel.menu_button -- same "..."
-        # header-menu treatment as LUT Library/CDL Library above.
+        # header-menu treatment as LUT Library above.
         self._make_dock(
-            "stack_memories_frame", "Gallery", self.stack_memories_panel,
+            "stack_memories_frame", "Galleries", self.stack_memories_panel,
             corner_widget=self.stack_memories_panel.menu_button)
 
         # ---- center column: Viewer (top) / Stack (main area) -----------
@@ -1112,6 +1108,12 @@ class MainWindow(QMainWindow):
         # since both sides live on the UI thread (no cross-thread signal
         # concern, same as the video playback lock/unlock wiring above).
         self.stack_memories_panel.set_still_capture_getter(self._capture_gallery_still)
+        # Feeds Grab Still's name-prompt suggestion (per Tom: "automatic
+        # still naming with the source name + date/time"), see
+        # StackMemoriesPanel.set_source_name_getter's own docstring.
+        self.stack_memories_panel.set_source_name_getter(
+            lambda: Path(self.sample_image.current_path).stem
+            if self.sample_image.current_path else None)
         self.stack_memories_panel.load_as_reference_requested.connect(
             lambda still: self.sample_image.load_reference_from_path(still.source_path))
         # A StackMemory's captured full_still has no source file to
@@ -1209,7 +1211,7 @@ class MainWindow(QMainWindow):
         hand-rolled action can't do for free.
 
         CATEGORY MENUS (per Tom): one top-level menu per panel that has a
-        "..." corner menu -- LUT Library, CDL Library, Stack Memories,
+        "..." corner menu -- LUT Library, Galleries,
         Viewer, Stack, Scopes, Graph -- each just calls that panel's own
         populate_menu(menu) (see each panel module's docstring) to add the
         EXACT same actions, wired to the exact same callback methods. This
@@ -1229,23 +1231,28 @@ class MainWindow(QMainWindow):
         Cmd+E for New/Open/Save/Save As/Export (QKeySequence's "Ctrl+..."
         maps to Cmd on macOS automatically -- this is the portable way to
         write it, not a Mac-specific string), and Shift+1 through Shift+9
-        then Shift+0 for
-        the TEN Workspace panel toggles, assigned by simple position in
-        PANEL_TOGGLES (Browser=1, Image Library=2, LUT Library=3, CDL
-        Library=4, Stack Memories=5, Viewer=6, Stack=7, Parameters=8,
-        Scopes=9, Graph=10) -- set directly on each dock's own
+        for
+        the NINE Workspace panel toggles, assigned by simple position in
+        PANEL_TOGGLES (Browser=1, Media Libraries=2, LUT Library=3,
+        Galleries=4, Viewer=5, Stack=6, Parameters=7,
+        Scopes=8, Graph=9) -- set directly on each dock's own
         toggleViewAction() below. Extrapolating a new panel's shortcut is
         automatic (just its position in the list), not something to
         hand-assign each time a panel's added/reordered -- EXCEPT past
-        position 9, where keyboards run out of single digits: position 10
-        (Graph) gets Shift+0 rather than the nonsensical "Shift+10",
+        position 9, where keyboards run out of single digits: a 10th panel
+        would get Shift+0 rather than the nonsensical "Shift+10",
         following the ordinary keyboard-row convention of 0 coming right
-        after 9. If an 11th panel is ever added, this scheme has no more
+        after 9 (used to be exercised for real, when CDL Library was its
+        own 10th panel here -- folded into Galleries per Tom, see
+        stack_memories_panel.py's own docstring, so all nine panels now
+        fit within Shift+1..9 with no 0 needed; the code below still
+        handles a >9th panel the same way if one's ever added again). If
+        an 11th panel is ever added, this scheme has no more
         room and would need an actual redesign (e.g. Cmd+1..9,0 instead of
         Shift+), not just another special case.
 
-        FLOATING (per Tom): Cmd+Shift+1 through Cmd+Shift+9 then
-        Cmd+Shift+0 -- the exact same per-panel digit as its Shift+N
+        FLOATING (per Tom): Cmd+Shift+1 through Cmd+Shift+9 -- the exact
+        same per-panel digit as its Shift+N
         toggle, with Cmd added -- pops that panel out of the main window
         into its own top-level window instead of showing/hiding it in
         place (see _float_panel/_dock_panel, both now thin wrappers over
@@ -1317,15 +1324,15 @@ class MainWindow(QMainWindow):
 
         workspace_menu = menu_bar.addMenu("&Workspace")
 
-        # All ten show/hide toggles together first, THEN all ten Float
+        # All nine show/hide toggles together first, THEN all nine Float
         # toggles together (per Tom -- this used to interleave each
         # panel's pair; two flat blocks read as two distinct KINDS of
         # control instead). Both loops walk PANEL_TOGGLES in the exact
         # same order, so a given row position means the same panel in
         # either block.
         for i, (action_attr, label, frame_attr, _default_visible) in enumerate(PANEL_TOGGLES, start=1):
-            # Position 10 (currently Graph) gets Shift+0, not the
-            # unparseable "Shift+10" -- see this method's docstring.
+            # Only matters once a 10th panel exists again -- see this
+            # method's own docstring on Shift+0's fallback role.
             shortcut_digit = i if i <= 9 else 0
             # The dock's OWN toggleViewAction() -- Qt's built-in show/hide
             # action, kept correctly in sync with actual visibility no
@@ -1387,16 +1394,13 @@ class MainWindow(QMainWindow):
         workspace_menu.addAction("Media Cache Folder...", self._choose_media_cache_folder)
 
         # ---- category menus -- see docstring above ------------------------
-        image_library_menu = menu_bar.addMenu("Media Library")
+        image_library_menu = menu_bar.addMenu("Media Libraries")
         self.image_library_panel.populate_menu(image_library_menu)
 
         lut_library_menu = menu_bar.addMenu("LUT Library")
         self.lut_library_panel.populate_menu(lut_library_menu)
 
-        cdl_library_menu = menu_bar.addMenu("CDL Library")
-        self.cdl_library_panel.populate_menu(cdl_library_menu)
-
-        stack_memories_menu = menu_bar.addMenu("Gallery")
+        stack_memories_menu = menu_bar.addMenu("Galleries")
         self.stack_memories_panel.populate_menu(stack_memories_menu)
 
         viewer_menu = menu_bar.addMenu("Viewer")
@@ -1471,13 +1475,13 @@ class MainWindow(QMainWindow):
         if (self.stack_panel.get_stack().stages
                 or self.stack_memories_panel.get_library().memories
                 or self.stack_memories_panel.get_gallery_library().stills
-                or self.cdl_library_panel.get_library().entries
+                or self.stack_memories_panel.get_cdl_library().entries
                 or self.lut_library_panel.get_library().entries
                 or self.image_library_panel.get_library().entries):
             reply = QMessageBox.question(
                 self, "New Session",
-                "Discard the current stack, Gallery, CDL Library, "
-                "LUT Library, and Media Library and start a new session? "
+                "Discard the current stack, Galleries, "
+                "LUT Library, and Media Libraries and start a new session? "
                 "Unsaved changes will be lost.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Cancel,
@@ -1506,7 +1510,7 @@ class MainWindow(QMainWindow):
         self._update_undo_redo_actions()
         self.stack_memories_panel.load_library(StackMemoryLibrary())
         self.stack_memories_panel.load_gallery_library(GalleryStillLibrary())
-        self.cdl_library_panel.load_library(CDLLibrary())
+        self.stack_memories_panel.load_cdl_library(CDLLibrary())
         self.lut_library_panel.load_library(LUTLibrary())
         self.image_library_panel.load_library(ImageLibrary())
         # Reset BEFORE restore_default_image() below, not after -- that
@@ -1561,7 +1565,7 @@ class MainWindow(QMainWindow):
         self._update_undo_redo_actions()
         self.stack_memories_panel.load_library(memory_library)
         self.stack_memories_panel.load_gallery_library(gallery_still_library)
-        self.cdl_library_panel.load_library(cdl_library)
+        self.stack_memories_panel.load_cdl_library(cdl_library)
         self.lut_library_panel.load_library(lut_library)
         self.image_library_panel.load_library(image_library)
         if sample_image_state is not None:
@@ -1612,7 +1616,7 @@ class MainWindow(QMainWindow):
                 path, self.stack_panel.get_stack(), self.sample_image.get_session_state(),
                 stack_memory_library=self.stack_memories_panel.get_library(),
                 gallery_still_library=self.stack_memories_panel.get_gallery_library(),
-                cdl_library=self.cdl_library_panel.get_library(),
+                cdl_library=self.stack_memories_panel.get_cdl_library(),
                 lut_library=self.lut_library_panel.get_library(),
                 image_library=self.image_library_panel.get_library(),
                 undo_history=self._undo_history, canvas=self._canvas)
@@ -2447,7 +2451,7 @@ class MainWindow(QMainWindow):
             # Export Still itself is off -- see _on_export_still_toggled.
             still_sub_row = QHBoxLayout()
             still_sub_row.addSpacing(20)
-            self.export_still_to_library_checkbox = QCheckBox("Import Still to Media Library")
+            self.export_still_to_library_checkbox = QCheckBox("Import Still to Media Libraries")
             self.export_still_to_library_checkbox.setEnabled(False)
             still_sub_row.addWidget(self.export_still_to_library_checkbox)
             outer.addLayout(still_sub_row)
@@ -2455,7 +2459,7 @@ class MainWindow(QMainWindow):
             self.export_add_to_library_checkbox = QCheckBox("Import to LUT Library")
             outer.addWidget(self.export_add_to_library_checkbox)
 
-            self.export_save_memory_checkbox = QCheckBox("Save Stack Memory")
+            self.export_save_memory_checkbox = QCheckBox("Grab Still")
             outer.addWidget(self.export_save_memory_checkbox)
 
             button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
@@ -2972,7 +2976,7 @@ class MainWindow(QMainWindow):
         if self.export_save_memory_checkbox.isChecked():
             self.stack_memories_panel.save_memory(
                 Path(out_path).stem, self.stack_panel.get_stack())
-            extra_lines.append(f'Saved Stack Memory "{Path(out_path).stem}".')
+            extra_lines.append(f'Grabbed still "{Path(out_path).stem}".')
 
         message = f"Saved to:\n{out_path}"
         if extra_lines:
@@ -3003,12 +3007,12 @@ class MainWindow(QMainWindow):
         at all when this one's checked) additionally hands the just-
         written still to ImageLibraryPanel.import_from_path, i.e. a real
         re-decode of the file on disk rather than the in-memory array --
-        matches how every other Image Library import already works (see
+        matches how every other Media Libraries import already works (see
         image_library.py's docstring on why entries there are path-
         referenced/re-decoded rather than fully embedded, unlike the LUT
         Library's import_lut_object above)."""
         if not self.sample_image.has_sample_image():
-            return "Export Still skipped: no sample image loaded."
+            return "Export Still skipped: no source image loaded."
         still_path = str(Path(lut_out_path).with_suffix(".png"))
         try:
             result = self.sample_image.render_full_resolution_after(
@@ -3020,7 +3024,7 @@ class MainWindow(QMainWindow):
         lines = [f"Exported a still to:\n{still_path}"]
         if self.export_still_to_library_checkbox.isChecked():
             self.image_library_panel.import_from_path(still_path)
-            lines.append("Imported the still into the Media Library.")
+            lines.append("Imported the still into the Media Libraries.")
         return "\n".join(lines)
 
 

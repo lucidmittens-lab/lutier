@@ -6,7 +6,7 @@ app_logic.py, ...), so the actual serialize/deserialize logic is testable
 without a display -- the GUI layer (main_window.py) just calls
 save_session/load_session and hands the result to StackPanel.set_stack /
 SampleImagePanel.load_session_state / StackMemoriesPanel.load_library /
-CDLLibraryPanel.load_library / LUTLibraryPanel.load_library /
+StackMemoriesPanel.load_cdl_library / LUTLibraryPanel.load_library /
 ImageLibraryPanel.load_library.
 
 WHAT'S SAVED: the working Stack (every stage's kind/label/enabled/opacity/
@@ -66,13 +66,19 @@ embedded as a giant baked table anyway (that's what .cube/.clf export is
 for) -- what actually needs to survive a save/load round trip is HOW to
 rebuild the same LUT, not the LUT itself. stack_panel.py tags every "lut"
 stage's params with that provenance at creation time (source_kind: "file"
-+ source_path, or source_kind: "identity" + identity_size) -- see
-add_lut_stage_from_path/add_identity_stage there. This module just reads
-those tags back out on save (stack_to_session_dict) and reconstructs via
-the exact same loaders (load_lut_any_format/create_identity_lut) on load
++ source_path) -- see add_lut_stage_from_path there. This module just
+reads those tags back out on save (stack_to_session_dict) and
+reconstructs via the exact same loader (load_lut_any_format) on load
 (stack_from_session_dict), re-tagging the rebuilt stage the same way so a
 LOADED session (or a loaded memory) can be re-saved without losing
-provenance. This applies equally to memories, since they're serialized
+provenance. source_kind: "identity" + identity_size (reconstructed via
+create_identity_lut) is still handled here too, on load only -- "New
+Identity LUT..." (the UI entry point that used to create these) was
+removed (per Tom, the Viewer previewing an empty stack directly made it
+redundant), but an OLD session/memory saved before that removal can still
+have identity-sourced stages in it, so this module keeps reconstructing
+them; nothing in the live app creates a new one anymore. This applies
+equally to memories, since they're serialized
 through the same stack_to_session_dict/stack_from_session_dict pair.
 
 A missing/moved source file, or any other single-stage reconstruction
@@ -260,8 +266,9 @@ def stage_to_session_dict(stage):
     branch plus whatever fields that kind needs). Raises ValueError if the
     stage has no reconstructable provenance (a "lut" stage with an
     unrecognized/missing source_kind) -- shouldn't happen for anything
-    created through the normal add_lut_stage_from_path/add_identity_stage
-    paths, but if some other path ever produces one, failing loudly here
+    created through the normal add_lut_stage_from_path path (or an old
+    session/memory's identity-sourced stage, see this module's own
+    docstring), but if some other path ever produces one, failing loudly here
     is deliberate: this used to silently return None and have
     stack_to_session_dict drop the stage with zero indication anything
     was lost, asymmetric with the load path (stage_from_session_dict),
@@ -906,8 +913,10 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
     StackMemoriesPanel.get_gallery_library() returned (a
     stack_memory.GalleryStillLibrary, Phase 3 Stills Gallery, or None to
     save with no gallery stills). cdl_library: whatever
-    CDLLibraryPanel.get_library() returned (a cdl_library.CDLLibrary, or
-    None to save with no CDL Library entries). lut_library: whatever
+    StackMemoriesPanel.get_cdl_library() returned (a cdl_library.CDLLibrary,
+    or None to save with no CDL entries -- CDL Library was folded into the
+    Gallery, per Tom, so this now lives on StackMemoriesPanel too, same
+    panel as gallery_still_library above). lut_library: whatever
     LUTLibraryPanel.get_library() returned (a lut_library.LUTLibrary, or
     None to save with no LUT Library entries). image_library: whatever
     ImageLibraryPanel.get_library() returned (an image_library.ImageLibrary,

@@ -17,9 +17,11 @@ history if a similar per-source readout is wanted again later; this
 widget doesn't track colorspace at all now.
 
 FIRST PASS on "make the before/after more attractive and wipeable" --
-functional and interactive, but the visual styling (colors, handle shape)
-is a starting point for iteration, not a settled opinion. Easy knobs if
-the look needs to change: HANDLE_COLOR, HANDLE_WIDTH, HANDLE_GRIP_RADIUS.
+functional and interactive, but the visual styling was a starting point
+for iteration, not a settled opinion; the divider line/handle drawn here
+in that first pass was removed outright later (per Tom: "remove border
+from image wipe"), see paintEvent -- the wipe divider is fully invisible
+now, grabbed by clicking anywhere on the image (see mousePressEvent).
 
 GPU-ACCELERATION PROJECT, STAGE 5 (2026-08-09) -- this widget is now the
 actual GPU-resident rendering surface, not just a QOpenGLWidget hosting
@@ -79,13 +81,13 @@ ancestor widget happens to already have painted underneath (see RUNNING.md
 #44/#46 for two real bugs that came from exactly that assumption) -- this
 widget owns its own background outright. In the GPU pipeline, that's
 WipeCompositor's own uBackgroundColor (palette(base), passed in from here)
-filling everything outside uImageRect; HANDLE_COLOR/PLACEHOLDER_BG
-below stay hardcoded (they're drawn on top of arbitrary image content, not
-part of the app's theme-following chrome), same reasoning as always.
+filling everything outside uImageRect; PLACEHOLDER_BG below stays
+hardcoded (drawn on top of arbitrary image content, not part of the
+app's theme-following chrome), same reasoning as always.
 """
 import numpy as np
 from PySide6.QtCore import Qt, QRectF, QPointF, Signal
-from PySide6.QtGui import QPainter, QPen, QColor, QPalette
+from PySide6.QtGui import QPainter, QColor, QPalette
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QSizePolicy
 
@@ -94,9 +96,6 @@ import gpu_stack_renderer
 import gpu_shader_prototype as gsp
 from stack import _stage_fingerprint
 
-HANDLE_COLOR = QColor(255, 255, 255, 230)
-HANDLE_WIDTH = 2
-HANDLE_GRIP_RADIUS = 9
 EMPTY_TEXT_COLOR = QColor(150, 150, 150)
 PLACEHOLDER_BG = QColor(40, 40, 40)
 
@@ -869,19 +868,13 @@ class WipeCompareWidget(QOpenGLWidget):
             painter.drawText(image_rect, Qt.AlignmentFlag.AlignCenter,
                               self._after_placeholder_text)
 
-        if not self._wipe_enabled:
-            painter.end()
-            return
-
-        divider_x = image_rect.left() + image_rect.width() * self._wipe_fraction
-        painter.setPen(QPen(HANDLE_COLOR, HANDLE_WIDTH))
-        painter.drawLine(QPointF(divider_x, image_rect.top()),
-                          QPointF(divider_x, image_rect.bottom()))
-
-        center_y = image_rect.top() + image_rect.height() / 2
-        painter.setPen(QPen(QColor(60, 60, 60), 1))
-        painter.setBrush(HANDLE_COLOR)
-        painter.drawEllipse(QPointF(divider_x, center_y), HANDLE_GRIP_RADIUS, HANDLE_GRIP_RADIUS)
+        # No divider line/handle drawn anymore (per Tom: "remove border
+        # from image wipe... make sure that you can grab the border by
+        # clicking anywhere on the image") -- the wipe divider is fully
+        # invisible now; mousePressEvent already lets you grab/set it by
+        # clicking anywhere on the image (see below), not just near the
+        # old handle, so dragging still works exactly the same, there's
+        # just nothing painted to mark where it currently is.
 
         # No BEFORE/AFTER corner labels anymore (per Tom) -- with Left/
         # Right each independently pickable from three sources (Sample
@@ -929,10 +922,13 @@ class WipeCompareWidget(QOpenGLWidget):
             return
         if self._dragging:
             self._update_wipe_from_x(event.position().x(), image_rect)
-        divider_x = image_rect.left() + image_rect.width() * self._wipe_fraction
-        near_handle = abs(event.position().x() - divider_x) < HANDLE_GRIP_RADIUS + 4
+        # No visible handle to be "near" anymore (per Tom, see paintEvent)
+        # -- clicking/dragging works from anywhere on the image, so the
+        # resize cursor covers the whole image_rect, not just a hitbox
+        # around a divider position nothing marks visually.
         self.setCursor(
-            Qt.CursorShape.SizeHorCursor if (near_handle or self._dragging)
+            Qt.CursorShape.SizeHorCursor
+            if (self._dragging or image_rect.contains(event.position()))
             else Qt.CursorShape.ArrowCursor
         )
 

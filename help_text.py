@@ -42,8 +42,8 @@ Grading Tone slider actually run?" has a direct answer.
 
 Every panel can be **dragged by its title bar** to rearrange the whole
 workspace freely, **shown/hidden** from the Workspace menu (or its own
-Shift+1 through Shift+0 shortcut), and **floated** into its own window
-(Cmd+Shift+1 through Cmd+Shift+0, matching digit). There is no fixed
+Shift+1 through Shift+9 shortcut), and **floated** into its own window
+(Cmd+Shift+1 through Cmd+Shift+9, matching digit). There is no fixed
 layout to fight against — see **Workspace & Window Management** near the
 end for the full set of layout/window features shared across every panel.
 
@@ -54,20 +54,20 @@ end for the full set of layout/window features shared across every panel.
 Point it at a folder; it lists LUT files (`.cube`, `.clf`, `.spi1d`,
 `.spi3d`, `.spimtx`, `.csp`) and ASC CDL files (`.cc`, `.cdl`, `.ccc`)
 together, CDL ones tagged `[CDL]`. Double-click a LUT to add it to the
-Stack; double-click a CDL to import it into the CDL Library. Drag either
-kind onto its matching Library panel, or drag a LUT onto the Stack
-directly. "New Identity LUT..." starts a stage from a neutral
-pass-through instead of a file.
+Stack; double-click a CDL to import it into the Gallery. Drag either
+kind onto its matching Library/Gallery panel, or drag a LUT onto the
+Stack directly.
 
 **Source:** `browser_panel.py` (file listing/drag-drop); LUT file
 reading is `app_logic.load_lut_any_format` (dispatches to
 `colour-science`'s own per-format readers).
 
-## Media Library
+## Media Libraries
 
 A shelf of reference stills AND video imported into the session. Import
-a file, then double-click an entry (or use its "☰" menu) to load it as
-the Viewer's Sample or Reference image (video only supports Sample, not
+a file, then double-click an entry (or right-click it for "Load as
+Source"/"Load as Reference"/"Rename..."/"Delete") to load it as
+the Viewer's Source or Reference image (video only supports Source, not
 Reference).
 
 **Source:** `image_library_panel.py`; entries are `image_library.py`'s
@@ -82,52 +82,52 @@ afterward won't break anything.
 **Source:** `lut_library_panel.py`; entries are `lut_library.py`'s
 `LUTLibraryEntry`/`LUTLibrary`.
 
-## CDL Library
-
-Saved ASC CDL grades (SOP/SAT values), either saved from a CDL stage in
-the Stack or imported from a file.
-
-**Source:** `cdl_library_panel.py`; the underlying SOP/SAT values are the
-same `cdl.py` structures a CDL stage in the Stack uses (see **ASC CDL**
-under **Stack → Operators** below).
-
 ## Gallery
 
 Named snapshots of the whole Stack, so you can save a look, keep working,
 and get back to it later ("Recall") — each capture includes a thumbnail
 and a full canvas-resolution still, both loadable as Reference. Can also
 be exported to/imported from their own `.ltm` file, independent of the
-session. The same panel also holds externally-imported reference stills
-("Import Still..."), kept separate from the Media Library.
+session. The same panel also holds externally-imported reference stills,
+kept separate from the Media Libraries, AND saved ASC CDL grades (SOP/SAT
+values, either saved from a CDL stage in the Stack or imported from a
+file — "Apply to Stack" brings one back onto a CDL stage). One mono
+"Import..." action picks the right kind of entry (still image, `.ltm`,
+or `.cc`/`.cdl`/`.ccc`) from the chosen file's own extension. Right-click
+any row for Recall/Update Still/Apply CDL to
+Stack/Insert in Stack/Load as Reference/Rename.../Delete/Export... —
+whichever of those actually apply to that row's own kind (Insert in
+Stack, unlike Recall/Apply, always ADDS new stage(s) rather than
+replacing/overwriting).
 
 **Source:** `stack_memories_panel.py`; snapshots are serialized the same
-way a session's Stack is (see `session_io.py`).
+way a session's Stack is (see `session_io.py`); a CDL entry's underlying
+SOP/SAT values are the same `cdl.py` structures a CDL stage in the Stack
+uses (see **ASC CDL** under **Stack → Operators** below).
 
 ## Viewer
 
-The sample image preview, before/after wipe compare. Two roles:
-**Sample**, which shows the Stack's live result, and **Reference**, a
+The source image preview, before/after wipe compare. Two roles:
+**Source**, which shows the Stack's live result, and **Reference**, a
 second image the Stack never touches — useful for comparing your grade
 against a separate plate, still, or approved frame. Load each from the
-Media Library or via the Viewer's "☰" menu ("Load Sample Image..." /
-"Load Reference Image..."). That same menu's "Left Image"/"Right Image"
-submenus each pick independently from three sources — Sample Before,
-Sample After, or Reference — and "Enable Wipe" switches between a plain
-single-image view (showing whatever "Right Image" is set to, the default
-at launch) and the split-screen compare. Reference has its own "Adapt
-Reference..." entry, unmanaged by default. The Viewer previews raw code
-values, Unmanaged by default — use "Adapt Sample Image..." to declare a
-source space and convert it non-destructively before preview. Scroll to
-zoom in/out (anchored on the cursor), middle-mouse-drag to pan around,
-middle-double-click to reset back to fit — independent of the left-click
-wipe divider drag, so both work at once without conflicting.
+Media Libraries ("Load as Source"/"Load as Reference"). The Viewer's "☰"
+menu's "Left Image"/"Right Image" submenus each pick independently from
+three sources — Source Before, Source After, or Reference — and "Enable
+Wipe" switches between a plain single-image view (showing whatever
+"Right Image" is set to, the default at launch) and the split-screen
+compare. The Viewer previews images exactly as decoded, with no implicit
+color-space reinterpretation step. Scroll to zoom in/out (anchored on
+the cursor), middle-mouse-drag to pan around, middle-double-click to
+reset back to fit — independent of the left-click wipe divider drag, so
+both work at once without conflicting.
 
-**Source:** `sample_image_panel.py` (image loading/adapt/wipe-source
-logic) driving `wipe_compare_widget.py` (the actual compare/zoom/pan
-widget). The Stack's live result shown as "Sample After" is graded on the
-GPU when the Stack is GPU-eligible (`gpu_stack_renderer.py`), falling
-back to the same CPU path (`stack.apply_stack_to_image_array`) otherwise
-— visually identical either way, just a performance difference.
+**Source:** `sample_image_panel.py` (image loading/wipe-source logic)
+driving `wipe_compare_widget.py` (the actual compare/zoom/pan widget).
+The Stack's live result shown as "Source After" is graded on the GPU when
+the Stack is GPU-eligible (`gpu_stack_renderer.py`), falling back to the
+same CPU path (`stack.apply_stack_to_image_array`) otherwise — visually
+identical either way, just a performance difference.
 
 ## Stack
 
@@ -156,7 +156,7 @@ control.
 
 - **LUT** — applies a loaded LUT's own table directly (3D or 1D,
   whichever the file declares). Not itself a live-editable operator —
-  the table came from a file (or "New Identity LUT..."), not sliders.
+  the table came from a file, not sliders.
   **Source:** `colour-science`'s own `colour.LUT3D`/`colour.LUT1D`
   (`.apply()`), loaded via `app_logic.load_lut_any_format`. GPU-
   accelerated for a plain, default-domain `colour.LUT3D` (`gpu_lut_shader.py`,
@@ -213,9 +213,15 @@ control.
   interchange). A Style dropdown picks which field set applies: **Log**
   (Brightness/Contrast/Gamma, tuned for a log-encoded working space,
   default), **Lin** (Offset/Exposure/Contrast, scene-linear), or **Video**
-  (Lift/Gamma/Gain, the classic 3-wheel grade). Pivot and Saturation are
-  always shown regardless of style. Contrast/Gamma/Gain are floored at
-  0.01 (OCIO's own `validate()` requires them strictly positive).
+  (Lift/Gamma/Gain, the classic 3-wheel grade) — each of the three visible
+  fields gets its own drag-and-tint color-balance wheel (same control CDL
+  uses) alongside its R/G/B/Master spinboxes; the wheel tints R/G/B apart
+  from Master without changing Master, editing Master shifts all three
+  together and keeps the wheel's own tint, and typing a fine R/G/B value
+  updates the wheel's position without touching Master. Pivot and
+  Saturation are always shown regardless of style. Contrast/Gamma/Gain
+  are floored at 0.01 (OCIO's own `validate()` requires them strictly
+  positive).
   **Source:** `grading_primary.py` (wraps OCIO's `GradingPrimaryTransform`/
   `GradingPrimary`/`GradingRGBM`). GPU-accelerated via OCIO's own
   `makeDynamic()` mechanism (`gpu_ocio_dynamic.py`) — dragging a slider
@@ -235,7 +241,9 @@ control.
 
 - **Grading Tone** — OCIO's print-style tone shaping across 5
   overlapping ranges: Blacks, Shadows, Midtones, Highlights, Whites, each
-  with independent R/G/B/Master gain plus its own Start/Width along the
+  with independent R/G/B/Master gain (each range also gets its own
+  color-balance wheel, same behavior as Grading Primary's above, just a
+  smaller diameter to fit all 5 ranges) plus its own Start/Width along the
   tone curve, plus a single S-Contrast scalar. Same Style dropdown as
   Grading Primary (Log/Lin/Video). Every range's gain is bounded (OCIO's
   own real, undocumented `validate()` limits — 0.1–1.9 for
@@ -355,10 +363,15 @@ there, not duplicated here). Every numeric field throughout the app (CDL
 Slope/Offset/Power/Sat, Stack opacity, Domain min/max, ...) can be
 click-dragged left/right to scrub its value up/down, not just typed into
 or nudged with its up/down arrows — hold **Shift** while dragging for
-finer control.
+finer control. Double-clicking a parameter's own name label resets just
+that one parameter to its default — a single control (Printer Lights'
+R/G/B, Exposure/Contrast's fields, ...) for a plain scalar, or a whole
+wheel+spins field/range at once (CDL's Slope/Offset/Power, Grading
+Primary's fields, Grading Tone's ranges) when the label names the group
+rather than one spinbox.
 
 **Source:** `stack_panel.py`'s per-kind `_build_*_inspector`/`_apply_*_live`
-methods.
+methods; the double-click-to-reset label is `_ParamLabel`.
 
 ## Scopes
 
@@ -413,18 +426,19 @@ is no fixed layout to fight against; the arrangement described panel-by-
 panel above is only where LUTier starts, not a constraint.
 
 Every panel can also be shown/hidden from the **Workspace** menu (or its
-own Shift+1 through Shift+0 shortcut), and every panel's "☰" button in
+own Shift+1 through Shift+9 shortcut), and every panel's "☰" button in
 its top-right corner has the same actions as its matching entry in the
 menu bar — whichever you find faster. Any panel can also be **floated**
 out of the main window into its own window without dragging — Cmd+Shift+1
-through Cmd+Shift+0 (same digit as its show/hide shortcut), or "Float
+through Cmd+Shift+9 (same digit as its show/hide shortcut), or "Float
 [Panel]" in the Workspace menu — which stays above the main window
 specifically, though it can still be covered by (or cover) other floating
 panels/dialogs and other applications entirely. Closing a floated panel's
 window, or floating it again, puts it right back into the main window.
 
-Hold **Alt** while hovering over an entry in Gallery, LUT Library,
-CDL Library, Media Library, or a stage in the Stack itself to see a
+Hold **Alt** while hovering over an entry in Gallery (including a CDL
+entry), LUT Library, Media Libraries, the Browser, or a stage in the
+Stack itself to see a
 floating info card with that entry's full details near the cursor —
 handy for a saved Stack Memory's full stage-by-stage breakdown, or a
 Library entry's full source file path, without selecting it first. Move
@@ -450,13 +464,13 @@ panel arrangement.
 
 ## Sessions
 
-File > New/Open/Save/Save As saves everything — the Stack, the Sample
-and Reference images, and all four libraries (LUT, CDL, Gallery,
-Media) — to a single `.ltr` file, so a saved session reopens with the
-same grade and libraries. Unlike LUT/CDL Library entries, a Media
-Library entry is stored by reference to its source file, not embedded —
-it survives a save/reload on the same machine as long as the original
-file hasn't moved. Panel layout (position, size, shown/hidden/floating,
+File > New/Open/Save/Save As saves everything — the Stack, the Source
+and Reference images, and all three libraries (LUT, Gallery -- which
+includes CDL entries, Media) — to a single `.ltr` file, so a saved
+session reopens with the same grade and libraries. Unlike LUT Library or
+Gallery entries, a Media Libraries entry is stored by reference to its
+source file, not embedded — it survives a save/reload on the same
+machine as long as the original file hasn't moved. Panel layout (position, size, shown/hidden/floating,
 window size) is NOT part of a session — it's remembered automatically
 between launches instead, and can be saved/loaded independently as its
 own preset file — see **Workspace & Window Management** above.
@@ -476,16 +490,16 @@ filename:
 
 - **Export Still** — also saves a full-resolution graded still (same
   name as the LUT, `.png`) using whatever's loaded in the Viewer.
-  Skipped with a note in the confirmation if no sample image is loaded.
-  Its own indented sub-checkbox, **Import Still to Media Library**, is
+  Skipped with a note in the confirmation if no source image is loaded.
+  Its own indented sub-checkbox, **Import Still to Media Libraries**, is
   only enabled when Export Still is checked, and additionally ingests
-  that still into the Media Library.
+  that still into the Media Libraries.
 - **Import to LUT Library** — also ingests the exported LUT into the LUT
   Library (the full-precision baked table, not a re-read of the exported
   file — see `lut_library_panel.py`'s docstring on why that distinction
   matters for a lossy format like `.3dl`).
-- **Save Stack Memory** — also saves the current Stack as a new Stack
-  Memory, named after the exported file.
+- **Grab Still** — also saves the current Stack as a new Gallery still,
+  named after the exported file.
 
 **Source:** `main_window.py`'s Export dialog, writing via `colour-science`'s
 own `colour.write_LUT` for most formats and `colour_clf_io`/`clf_adapter.py`
@@ -497,7 +511,7 @@ Edit > Undo/Redo covers edits to the Stack itself — adding, removing,
 reordering, or adjusting a stage; recalling a Stack Memory; applying a
 CDL or LUT Library entry; opening a session. It doesn't cover library
 management (importing/renaming/deleting a saved LUT or CDL) or the
-sample image.
+source image.
 
 **Source:** `undo_history.py`'s `UndoHistory` (`session_io.py`'s
 `undo_history_to_session_list` persists it across a saved session).
@@ -514,22 +528,16 @@ sample image.
 | Save Session As... | ⌘⇧S |
 | Export... | ⌘E |
 | Show/Hide Browser | ⇧1 |
-| Show/Hide Media Library | ⇧2 |
+| Show/Hide Media Libraries | ⇧2 |
 | Show/Hide LUT Library | ⇧3 |
-| Show/Hide CDL Library | ⇧4 |
-| Show/Hide Gallery | ⇧5 |
-| Show/Hide Viewer | ⇧6 |
-| Show/Hide Stack | ⇧7 |
-| Show/Hide Parameters | ⇧8 |
-| Show/Hide Scopes | ⇧9 |
-| Show/Hide Graph | ⇧0 |
-| Media Library: Import... | ⌘I |
-| Media Library: Load as Sample | ⌘L |
-| Media Library: Load as Reference | ⌘R |
-| Gallery: Save Current Stack... | ⌘G |
-| Gallery: Recall | ⌘⇧G |
-| Gallery: Update | ⌘U |
-| Gallery: Export... | ⌘⇧E |
+| Show/Hide Galleries | ⇧4 |
+| Show/Hide Viewer | ⇧5 |
+| Show/Hide Stack | ⇧6 |
+| Show/Hide Parameters | ⇧7 |
+| Show/Hide Scopes | ⇧8 |
+| Show/Hide Graph | ⇧9 |
+| Media Libraries: Import... | ⌘I |
+| Gallery: Grab Still | ⌘G |
 | Viewer: Enable Wipe | ⌘W |
 | Scopes: Histogram | ⌘1 |
 | Scopes: Waveform | ⌘2 |

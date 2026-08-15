@@ -1,20 +1,23 @@
 """
-sample_image_panel.py -- import a sample image and preview it before/after
-the current Stack (see stack_panel.py) is applied, via an interactive wipe
-comparison (wipe_compare_widget.py). Also lets you export that graded
-result as a real still image file (Export Still), independent of LUT
-export (see main_window.py's Export dialog) -- though that dialog's own
-"Export Still" checkbox (per Tom) now reuses this panel's
+sample_image_panel.py -- preview a source image before/after the current
+Stack (see stack_panel.py) is applied, via an interactive wipe comparison
+(wipe_compare_widget.py). Also lets you export that graded result as a
+real still image file (Export Still), independent of LUT export (see
+main_window.py's Export dialog) -- though that dialog's own "Export
+Still" checkbox (per Tom) now reuses this panel's
 render_full_resolution_after/has_sample_image directly rather than
-duplicating the reload/adapt/apply sequence, see those methods' docstrings
+duplicating the reload/apply sequence, see those methods' docstrings
 below.
 
 The actual image loading and file export live in app_logic.py
 (load_image_as_array / export_image_array_to_file) and are fully tested
 there without Qt; the actual stack application is
 stack.apply_stack_to_image_array, fully tested in test_stack.py. This
-file is just the widget: QFileDialog for import/export, and feeding the
-result into WipeCompareWidget.
+file is just the widget: QFileDialog for export, and feeding the result
+into WipeCompareWidget. Loading a source or reference image from disk
+within the Viewer panel was removed (per Tom) -- sources/references now
+come from the Media Library instead (see load_sample_from_library_entry/
+load_reference_from_library_entry).
 
 PREVIEW HAND-OFF (2026-08-09, GPU project Stage 5) -- this panel now hands
 WipeCompareWidget raw (H,W,3) float32 numpy arrays directly (see
@@ -51,49 +54,27 @@ NOT reuse that downsampled array, it reloads the original file at full
 resolution and grades THAT, so what gets saved is an actual deliverable,
 not a 480px-wide preview thumbnail.
 
-COLOR ADAPTATION (non-destructive): imported/default images carry two
-separate arrays -- `_original_array` (exactly what was decoded off disk,
-[0,1] raw code values, never touched again after load) and `_image_array`
-(the "working" array everything else in this file actually uses -- before/
-after preview, scopes, Export Still). `_image_array` is always DERIVED
-from `_original_array` via _recompute_working_array()/
-_apply_adaptation_to_array(), never mutated in place, so toggling Unmanaged
-back on or picking a different From/To always starts fresh from the exact
-original pixels -- no compounding rounding error across repeated
-conversions, same non-destructive principle the Stack itself follows.
-Unmanaged (the default for anything loaded via "Load Sample Image...", per
-Tom) means _apply_adaptation_to_array is a no-op -- the working array IS
-the original array. "Adapt" (the dialog opened via the "Adapt Sample
-Image..." menu entry) uses colorspace.convert (colour.RGB_to_RGB under
-the hood, same machinery the Stack's per-LUT-stage Retarget option
-already uses) to reinterpret those code values as a declared source space
-and convert them into a different scene-referred space before anything
-downstream (preview, scopes, Export Still) ever sees them. The bundled
-default startup image (see main_window.py) is loaded via
-load_default_image with its declared source pre-filled (ACEScct) but
-adaptation still starts OFF/Unmanaged, matching that same default -- it
-just saves a step if you turn Adapt on.
+`_image_array` (the "working" array everything else in this file actually
+uses -- before/after preview, scopes, Export Still) is always derived
+from `_original_array` (exactly what was decoded off disk, [0,1] raw code
+values, never touched again after load) via _recompute_working_array(),
+never mutated in place -- same non-destructive principle the Stack itself
+follows. Color-space adaptation (a "declare a source space, convert into
+a different one before preview" dialog) used to live here too but was
+removed (per Tom) -- sources/references are now used as decoded, no
+implicit reinterpretation step.
 
-HEADER UI (per Tom): a single "..." menu button holds "Load Sample
-Image.../Adapt Sample Image.../Export Still.../Load Default Sample"
-instead of four separate buttons -- same toolbar-space-saving direction
-as the Stack panel's Grid Size/Domain popup. "Load Default Sample"
-(restore_default_image) replaced the old destructive Clear -- there's
-always a sensible image to fall back to instead of an empty panel, so
-"clear to nothing" wasn't pulling its weight as its own action. The file
-path itself is intentionally never displayed (also per Tom) -- load
-failures surface via a QMessageBox instead of a persistent label; the one
-thing still shown inline (status_label, non-modal, since it can fire on
-every live edit) is a stack-apply failure message, which isn't about the
-path at all.
-
-Adapt's From/To pickers are built from colorspace.list_colourspace_choices,
-not the bare colour.RGB_COLOURSPACES names -- see that function's
-docstring for why (most camera-native "gamut" names have a specific log
-curve baked in as their default cctf, but the bare name alone doesn't say
-so; the picker labels gamut+curve together, e.g. "ARRI Wide Gamut 3 --
-LogC3", while still resolving back to the exact colourspace object either
-way, so both the primaries AND the log transform always run together).
+HEADER UI (per Tom): a single "..." menu button holds "Export Still.../
+Load Default Source" instead of separate buttons -- same toolbar-space-
+saving direction as the Stack panel's Grid Size/Domain popup. "Load
+Default Source" (restore_default_image) replaced the old destructive
+Clear -- there's always a sensible image to fall back to instead of an
+empty panel, so "clear to nothing" wasn't pulling its weight as its own
+action. The file path itself is intentionally never displayed (also per
+Tom) -- load failures surface via a QMessageBox instead of a persistent
+label; the one thing still shown inline (status_label, non-modal, since
+it can fire on every live edit) is a stack-apply failure message, which
+isn't about the path at all.
 
 PySide6 + stub libEGL.so.1 are installed now (see browser_panel.py's
 docstring) -- menu_button no longer builds its own header row (see
@@ -101,20 +82,15 @@ _build_layout below); MainWindow now places it as PanelFrame's
 corner_widget on the "Viewer" title row instead, confirmed headless by
 walking the constructed widget tree. Actual pixel rendering/import/export
 below is still unverified in this offscreen environment. Please run
-main_window.py, import a real image, build a
+main_window.py, load a source image from the Media Library, build a
 stack with a couple of stages, confirm the preview updates live as you
 add/reorder/toggle/adjust opacity on stages, then try Export Still and
 confirm the saved file is full resolution and matches what the "after"
 side of the wipe compare showed. Also confirm: the app launches with the
-bundled default reference image already loaded and Unmanaged; the "..."
-menu's Load Sample Image/Adapt Sample Image/Export Still/Load Default
-Sample all work; Load Default Sample reloads the bundled image after
-you've imported something else; opening Adapt Sample Image...,
-checking the box, and picking From/To visibly changes the "before" side
-(and therefore "after" too) with the label showing gamut+curve together;
-unchecking Adapt reverts exactly to the original look with no drift;
-Export Still reflects whatever adaptation is currently active; no file
-path is ever shown anywhere in this panel.
+bundled default reference image already loaded; the "..." menu's Export
+Still/Load Default Source both work; Load Default Source reloads the
+bundled image after you've loaded something else from the Media Library;
+no file path is ever shown anywhere in this panel.
 """
 import math
 from pathlib import Path
@@ -131,10 +107,8 @@ from PySide6.QtWidgets import (
 from wipe_compare_widget import WipeCompareWidget
 from video_scrub_slider import VideoScrubSlider
 from app_logic import (
-    load_image_as_array, export_image_array_to_file,
-    default_sample_image_path, DEFAULT_SAMPLE_IMAGE_SOURCE_COLOURSPACE,
+    load_image_as_array, export_image_array_to_file, default_sample_image_path,
 )
-from colorspace import convert as convert_colourspace, list_colourspace_choices
 from stack import apply_stack_to_image_array, StageCache
 from floating_dialog import make_floating_tool_window, show_floating
 import gpu_stack_renderer
@@ -192,8 +166,8 @@ EDIT_SETTLE_DEBOUNCE_MS = 150
 # The three things either side of the wipe (or the single view, when the
 # wipe's disabled -- see _render_wipe, which reuses the Right selection as
 # the single-view source rather than tracking a fourth independent state)
-# can show -- see this module's docstring on Sample vs Reference. "Sample
-# Before"/"Sample After" are the pre-/post-stack states of the one Sample
+# can show -- see this module's docstring on Source vs Reference. "Source
+# Before"/"Source After" are the pre-/post-stack states of the one Source
 # image this panel always had; "Reference" is the new second image the
 # Stack never touches. Left/Right are picked from "Left"/"Right" tree
 # submenus in the "..." menu (per Tom -- see populate_menu/
@@ -205,8 +179,8 @@ WIPE_SOURCE_SAMPLE_BEFORE = "sample_before"
 WIPE_SOURCE_SAMPLE_AFTER = "sample_after"
 WIPE_SOURCE_REFERENCE = "reference"
 WIPE_SOURCE_CHOICES = [
-    ("Sample Before", WIPE_SOURCE_SAMPLE_BEFORE),
-    ("Sample After", WIPE_SOURCE_SAMPLE_AFTER),
+    ("Source Before", WIPE_SOURCE_SAMPLE_BEFORE),
+    ("Source After", WIPE_SOURCE_SAMPLE_AFTER),
     ("Reference", WIPE_SOURCE_REFERENCE),
 ]
 
@@ -288,9 +262,6 @@ class SampleImagePanel(QWidget):
         # own cache" reason _preview_cache_downres's own comment gives.
         self._image_array_scopes = None
         self._preview_cache_scopes = StageCache()
-        self._source_colourspace = None  # declared space of _original_array's code values, or None
-        self._adapt_enabled = False  # False = Unmanaged (_image_array IS _original_array)
-        self._adapt_target_colourspace = None  # space to convert into when _adapt_enabled
         self._stack_getter = None  # zero-arg callable -> the live stack.Stack
         self._current_after_array = None  # last successfully rendered "after" result, or None
         # Whether _current_after_array was rendered from the EDIT_
@@ -304,19 +275,14 @@ class SampleImagePanel(QWidget):
         self._last_after_was_downres = False
 
         # Reference image state -- deliberately a full parallel set of
-        # fields, not a shared/parameterized structure with the Sample
+        # fields, not a shared/parameterized structure with the Source
         # fields above. See this module's docstring: Reference is the
         # Stack-never-touches-it second image, with its own independent
-        # Adapt state (own dialog, own checkbox/From/To, defaults
-        # Unmanaged same as Sample's does) and its own preview-resolution
-        # tracking, so it can be loaded/adapted/resized without ever
-        # affecting Sample.
+        # array/path tracking, so it can be loaded/resized without ever
+        # affecting Source.
         self._reference_current_path = None
         self._reference_original_array = None
         self._reference_image_array = None
-        self._reference_source_colourspace = None
-        self._reference_adapt_enabled = False
-        self._reference_adapt_target_colourspace = None
 
         # Wipe state -- moved out of on-panel widgets into the "..." menu
         # (per Tom, see populate_menu/_build_wipe_source_submenu). Plain
@@ -353,8 +319,6 @@ class SampleImagePanel(QWidget):
         self._independent_viewer_sink = None  # the ONE AirPlayOutputSink this menu item owns, or None
 
         self._build_layout()
-        self._build_adapt_dialog()
-        self._build_reference_adapt_dialog()
 
         # Settle-detection for the temporary editing-time downres (see
         # EDIT_DOWNRES_FACTOR/refresh_preview) -- NOT a resize/zoom-driven
@@ -395,8 +359,7 @@ class SampleImagePanel(QWidget):
         # Right source pickers all moved into the "..." menu (per Tom, see
         # populate_menu/_build_wipe_source_submenu), same "toolbar-space-
         # saving" direction as the header "..." menu itself already
-        # follows for Load Sample Image/Adapt Sample Image/Export Still/
-        # Load Default Sample above.
+        # follows for Export Still/Load Default Source above.
         #
         # No color_readout_label / wipe-usage hint row anymore (per Tom) --
         # a "Color: ..." overlay chip painted directly on the image used to
@@ -560,19 +523,20 @@ class SampleImagePanel(QWidget):
         _wipe_left_actions/_wipe_right_actions -- see _on_wipe_enabled_toggled/
         _on_wipe_left_selected/_on_wipe_right_selected for how a change
         made from either menu's copy gets mirrored into the other's."""
-        menu.addAction("Load Sample Image...", self.import_image)
-        menu.addAction("Load Video...", self.import_video)
-        menu.addAction("Adapt Sample Image...", self.show_adapt_dialog)
+        # No "Load Source Image.../Load Video.../Load Reference Image..."
+        # here anymore (per Tom: "remove the ability to load a source or
+        # reference from disk within the viewer panel") -- the Media
+        # Libraries panel (image_library_panel.py, "Load as Source"/
+        # "Load as Reference") is now the sole ingestion path for both
+        # slots; this panel only ever gets content pushed into it, never
+        # pulls it directly from a file dialog itself. "Load Default
+        # Source" survives as the one exception -- it's a reset-to-known-
+        # state action (the one bundled asset this app ships with), not a
+        # user-chosen-file import.
         menu.addAction("Export Still...", self.export_still)
         menu.addSeparator()
         # Replaces the old destructive Clear -- see this module's docstring.
-        menu.addAction("Load Default Sample", self.restore_default_image)
-        menu.addSeparator()
-        # Reference -- see this module's docstring. No "Default"/Export
-        # equivalent for Reference (there's no bundled default, and it's
-        # never stack-graded content to export).
-        menu.addAction("Load Reference Image...", self.import_reference_image)
-        menu.addAction("Adapt Reference...", self.show_reference_adapt_dialog)
+        menu.addAction("Load Default Source", self.restore_default_image)
         menu.addSeparator()
 
         # Wipe controls (per Tom, moved out of the on-panel row into here).
@@ -636,221 +600,19 @@ class SampleImagePanel(QWidget):
             action.triggered.connect(lambda _checked, k=key: on_selected(k))
             actions_list.append((action, key))
 
-    def _build_adapt_dialog(self):
-        dialog = QDialog(self)
-        make_floating_tool_window(dialog)
-        dialog.setWindowTitle("Adapt Sample Image")
-        outer = QVBoxLayout(dialog)
-
-        self.adapt_checkbox = QCheckBox("Adapt color space (unchecked = Unmanaged)")
-        self.adapt_checkbox.toggled.connect(self._on_adapt_checkbox_toggled)
-        outer.addWidget(self.adapt_checkbox)
-
-        # Labeled by gamut+EOTF/log curve together (e.g. "ARRI Wide Gamut 3
-        # -- LogC3"), not the bare gamut-only name -- see
-        # colorspace.list_colourspace_choices' docstring. userData on each
-        # item is the real colour-science name convert()/lookup_colourspace
-        # expect; read it back via .currentData(), not .currentText().
-        choices = list_colourspace_choices()
-        from_row = QHBoxLayout()
-        from_row.addWidget(QLabel("From:"))
-        self.adapt_from_combo = QComboBox()
-        for label, name in choices:
-            self.adapt_from_combo.addItem(label, name)
-        self.adapt_from_combo.currentIndexChanged.connect(self._on_adapt_combo_changed)
-        from_row.addWidget(self.adapt_from_combo, stretch=1)
-        outer.addLayout(from_row)
-
-        to_row = QHBoxLayout()
-        to_row.addWidget(QLabel("To:"))
-        self.adapt_to_combo = QComboBox()
-        for label, name in choices:
-            self.adapt_to_combo.addItem(label, name)
-        self.adapt_to_combo.currentIndexChanged.connect(self._on_adapt_combo_changed)
-        to_row.addWidget(self.adapt_to_combo, stretch=1)
-        outer.addLayout(to_row)
-
-        self.adapt_from_combo.setEnabled(False)
-        self.adapt_to_combo.setEnabled(False)
-
-        # Live: checking the box or changing either combo applies
-        # immediately (see _apply_adapt_state_live) -- nothing left to
-        # commit, so this is just an acknowledge-and-close button, not a
-        # separate confirm step.
-        ok_button = QPushButton("OK")
-        ok_button.clicked.connect(dialog.close)
-        outer.addWidget(ok_button)
-
-        self._adapt_dialog = dialog
-
-    def _build_reference_adapt_dialog(self):
-        """Mirrors _build_adapt_dialog exactly, for the Reference slot --
-        see this module's docstring on why Reference gets its own fully
-        independent Adapt dialog/state rather than sharing Sample's."""
-        dialog = QDialog(self)
-        make_floating_tool_window(dialog)
-        dialog.setWindowTitle("Adapt Reference Image")
-        outer = QVBoxLayout(dialog)
-
-        self.ref_adapt_checkbox = QCheckBox("Adapt color space (unchecked = Unmanaged)")
-        self.ref_adapt_checkbox.toggled.connect(self._on_ref_adapt_checkbox_toggled)
-        outer.addWidget(self.ref_adapt_checkbox)
-
-        choices = list_colourspace_choices()
-        from_row = QHBoxLayout()
-        from_row.addWidget(QLabel("From:"))
-        self.ref_adapt_from_combo = QComboBox()
-        for label, name in choices:
-            self.ref_adapt_from_combo.addItem(label, name)
-        self.ref_adapt_from_combo.currentIndexChanged.connect(self._on_ref_adapt_combo_changed)
-        from_row.addWidget(self.ref_adapt_from_combo, stretch=1)
-        outer.addLayout(from_row)
-
-        to_row = QHBoxLayout()
-        to_row.addWidget(QLabel("To:"))
-        self.ref_adapt_to_combo = QComboBox()
-        for label, name in choices:
-            self.ref_adapt_to_combo.addItem(label, name)
-        self.ref_adapt_to_combo.currentIndexChanged.connect(self._on_ref_adapt_combo_changed)
-        to_row.addWidget(self.ref_adapt_to_combo, stretch=1)
-        outer.addLayout(to_row)
-
-        self.ref_adapt_from_combo.setEnabled(False)
-        self.ref_adapt_to_combo.setEnabled(False)
-
-        ok_button = QPushButton("OK")
-        ok_button.clicked.connect(dialog.close)
-        outer.addWidget(ok_button)
-
-        self._reference_adapt_dialog = dialog
-
-    def _on_adapt_checkbox_toggled(self, checked):
-        self.adapt_from_combo.setEnabled(checked)
-        self.adapt_to_combo.setEnabled(checked)
-        self._apply_adapt_state_live()
-
-    def _on_ref_adapt_checkbox_toggled(self, checked):
-        self.ref_adapt_from_combo.setEnabled(checked)
-        self.ref_adapt_to_combo.setEnabled(checked)
-        self._apply_ref_adapt_state_live()
-
-    def _on_ref_adapt_combo_changed(self, _index):
-        self._apply_ref_adapt_state_live()
-
-    def show_reference_adapt_dialog(self):
-        if self._reference_original_array is None:
-            QMessageBox.information(self, "No reference image", "Load a reference image first.")
-            return
-        self.ref_adapt_checkbox.blockSignals(True)
-        self.ref_adapt_checkbox.setChecked(self._reference_adapt_enabled)
-        self.ref_adapt_checkbox.blockSignals(False)
-        self.ref_adapt_from_combo.setEnabled(self._reference_adapt_enabled)
-        self.ref_adapt_to_combo.setEnabled(self._reference_adapt_enabled)
-        if self._reference_source_colourspace:
-            idx = self.ref_adapt_from_combo.findData(self._reference_source_colourspace)
-            if idx >= 0:
-                self.ref_adapt_from_combo.blockSignals(True)
-                self.ref_adapt_from_combo.setCurrentIndex(idx)
-                self.ref_adapt_from_combo.blockSignals(False)
-        if self._reference_adapt_target_colourspace:
-            idx = self.ref_adapt_to_combo.findData(self._reference_adapt_target_colourspace)
-            if idx >= 0:
-                self.ref_adapt_to_combo.blockSignals(True)
-                self.ref_adapt_to_combo.setCurrentIndex(idx)
-                self.ref_adapt_to_combo.blockSignals(False)
-        show_floating(self._reference_adapt_dialog)
-
-    def _apply_ref_adapt_state_live(self):
-        self._reference_adapt_enabled = self.ref_adapt_checkbox.isChecked()
-        self._reference_source_colourspace = self.ref_adapt_from_combo.currentData()
-        self._reference_adapt_target_colourspace = self.ref_adapt_to_combo.currentData()
-        try:
-            self._recompute_reference_working_array()
-        except Exception as e:  # noqa: BLE001 -- surface any conversion failure to the user
-            QMessageBox.critical(self._reference_adapt_dialog, "Adapt failed", str(e))
-            return
-        self._render_wipe()
-
-    def _on_adapt_combo_changed(self, _index):
-        # Only meaningful while Adapt is checked (Unmanaged ignores
-        # From/To entirely), but harmless either way -- always remember
-        # whichever spaces are selected, see _apply_adapt_state_live.
-        self._apply_adapt_state_live()
-
-    def show_adapt_dialog(self):
-        if self._original_array is None:
-            QMessageBox.information(self, "No image", "Import a sample image first.")
-            return
-        # Blocked while pre-filling to whatever state is already active --
-        # this is just syncing the dialog's controls to reality, not a new
-        # user-driven change, so it shouldn't itself trigger another live
-        # recompute (harmless if it did -- same state in, same state out --
-        # but pointless work, and _on_adapt_checkbox_toggled would also
-        # re-enable/disable the combos redundantly).
-        self.adapt_checkbox.blockSignals(True)
-        self.adapt_checkbox.setChecked(self._adapt_enabled)
-        self.adapt_checkbox.blockSignals(False)
-        self.adapt_from_combo.setEnabled(self._adapt_enabled)
-        self.adapt_to_combo.setEnabled(self._adapt_enabled)
-        if self._source_colourspace:
-            idx = self.adapt_from_combo.findData(self._source_colourspace)
-            if idx >= 0:
-                self.adapt_from_combo.blockSignals(True)
-                self.adapt_from_combo.setCurrentIndex(idx)
-                self.adapt_from_combo.blockSignals(False)
-        if self._adapt_target_colourspace:
-            idx = self.adapt_to_combo.findData(self._adapt_target_colourspace)
-            if idx >= 0:
-                self.adapt_to_combo.blockSignals(True)
-                self.adapt_to_combo.setCurrentIndex(idx)
-                self.adapt_to_combo.blockSignals(False)
-        show_floating(self._adapt_dialog)
-
-    def _apply_adapt_state_live(self):
-        """Checking/unchecking Adapt, or changing either combo while it's
-        checked, applies immediately -- no separate commit step (per Tom:
-        "the image can change as soon as" either happens). Always remembers
-        whichever From/To are currently picked, even while Unmanaged, so
-        toggling Adapt back on later doesn't lose the last selection."""
-        self._adapt_enabled = self.adapt_checkbox.isChecked()
-        self._source_colourspace = self.adapt_from_combo.currentData()
-        self._adapt_target_colourspace = self.adapt_to_combo.currentData()
-        try:
-            self._recompute_working_array()
-        except Exception as e:  # noqa: BLE001 -- surface any conversion failure to the user
-            QMessageBox.critical(self._adapt_dialog, "Adapt failed", str(e))
-            return
-        self._recompute_sample_after()
-        self._render_wipe()
-        self._casting_controller.on_stack_or_image_changed()
-
-    @staticmethod
-    def _convert_if_enabled(array, adapt_enabled, source_colourspace, target_colourspace):
-        """The actual conversion math behind both _apply_adaptation_to_array
-        (Sample) and _recompute_reference_working_array (Reference) --
-        shared so the two independent Adapt states can never drift into
-        applying the conversion differently, even though which state's
-        values get passed in is otherwise completely separate."""
-        if not adapt_enabled or not source_colourspace or not target_colourspace:
-            return array
-        converted = convert_colourspace(array, source_colourspace, target_colourspace)
-        return np.asarray(converted, dtype=np.float32)
-
-    def _apply_adaptation_to_array(self, array):
-        """Shared by _recompute_working_array (preview resolution) and
-        export_still (full resolution) so both ever apply the exact same
-        adaptation -- never mutates `array` itself, always converts fresh
-        from whatever's handed in."""
-        return self._convert_if_enabled(
-            array, self._adapt_enabled, self._source_colourspace, self._adapt_target_colourspace)
-
     def _recompute_working_array(self):
+        """`_image_array` is always DERIVED from `_original_array`, never
+        mutated in place -- was also where Adapt's colorspace conversion
+        used to be applied before that feature was removed (per Tom:
+        "remove the ability to adapt reference or source"); now a
+        straight passthrough, kept as its own method rather than inlined
+        at every call site so there's still one obvious place to look."""
         if self._original_array is None:
             self._image_array = None
             self._image_array_downres = None
             self._image_array_scopes = None
             return
-        self._image_array = self._apply_adaptation_to_array(self._original_array)
+        self._image_array = self._original_array
         self._image_array_downres = self._make_downres_array(self._image_array)
         self._image_array_scopes = self._make_scopes_array(self._image_array)
         self._image_array_generation += 1
@@ -899,44 +661,21 @@ class SampleImagePanel(QWidget):
         return np.ascontiguousarray(decimated)
 
     def _recompute_reference_working_array(self):
+        """Straight passthrough (see _recompute_working_array's own
+        docstring on why this used to convert)."""
         if self._reference_original_array is None:
             self._reference_image_array = None
             return
-        self._reference_image_array = self._convert_if_enabled(
-            self._reference_original_array, self._reference_adapt_enabled,
-            self._reference_source_colourspace, self._reference_adapt_target_colourspace)
-
-    def import_image(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Choose a sample image", "",
-            "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff *.webp);;"
-            "All files (*)",
-        )
-        if path:
-            self.load_image(path)
+        self._reference_image_array = self._reference_original_array
 
     def load_image(self, path):
-        """Load, downsample, and preview an image, Unmanaged (no declared
-        color space) -- matches "imported ref images are Unmanaged by
-        default." Returns True on success. Safe to call directly without
-        going through the file dialog. For a startup default image with a
-        KNOWN declared color space, use load_default_image instead."""
+        """Load, downsample, and preview an image. Returns True on
+        success. Safe to call directly without going through a file
+        dialog."""
         return self._load_image_core(path)
 
-    def load_default_image(self, path, declared_source_colourspace=None):
-        """Like load_image, but pre-fills the Adapt dialog's declared
-        source color space (so opening it and checking Adapt is one less
-        step) WITHOUT turning adaptation on -- still starts Unmanaged, same
-        default as any other freshly loaded image, see this module's
-        docstring. Used at startup and by restore_default_image() for the
-        bundled default reference still."""
-        ok = self._load_image_core(path)
-        if ok and declared_source_colourspace:
-            self._source_colourspace = declared_source_colourspace
-        return ok
-
     def restore_default_image(self):
-        """"Load Default Sample" menu action -- (re)loads the bundled
+        """"Load Default Source" menu action -- (re)loads the bundled
         default reference image fresh, same as what happens automatically
         on first launch. Replaces the old destructive Clear -- see this
         module's docstring."""
@@ -946,8 +685,7 @@ class SampleImagePanel(QWidget):
                 self, "Default image missing",
                 f"Couldn't find the bundled default reference image at:\n{path}")
             return
-        self.load_default_image(
-            str(path), declared_source_colourspace=DEFAULT_SAMPLE_IMAGE_SOURCE_COLOURSPACE)
+        self.load_image(str(path))
 
     def set_canvas_aspect_ratio(self, ratio):
         """Passthrough to WipeCompareWidget.set_canvas_aspect_ratio -- the
@@ -972,9 +710,6 @@ class SampleImagePanel(QWidget):
 
         self._current_path = str(path)
         self._original_array = array
-        self._source_colourspace = None
-        self._adapt_enabled = False
-        self._adapt_target_colourspace = None
         self.status_label.setText("")
         self._recompute_working_array()
         self._recompute_sample_after()
@@ -994,14 +729,6 @@ class SampleImagePanel(QWidget):
             self._video_source = None
             self._video_frame_index = 0
         self._video_transport_widget.setVisible(False)
-
-    def import_video(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Choose a video", "",
-            "Video (*.mp4 *.mov *.mkv *.avi *.m4v);;All files (*)",
-        )
-        if path:
-            self.load_video(path)
 
     def load_video(self, path):
         """Opens `path` as a video source and loads its FIRST frame into
@@ -1063,9 +790,6 @@ class SampleImagePanel(QWidget):
         self._video_frame_index = frame_index
         self._current_path = self._video_source.path
         self._original_array = array
-        self._source_colourspace = None
-        self._adapt_enabled = False
-        self._adapt_target_colourspace = None
         self.status_label.setText("")
         self._recompute_working_array()
         self._recompute_sample_after()
@@ -1180,27 +904,11 @@ class SampleImagePanel(QWidget):
             out_point = self._video_source.frame_count - 1
         self.seek_video_frame(out_point)
 
-    def import_reference_image(self):
-        """"Load Reference Image..." menu action -- see this module's
-        docstring on Sample vs Reference. Unlike Sample, there's no
-        bundled default and no separate load_reference_image/
-        load_default_reference split -- Reference is always either
-        empty, loaded from a real file here, or loaded from the Image
-        Library (see load_reference_from_library_entry)."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load Reference Image", "",
-            "Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.exr);;All files (*)",
-        )
-        if path:
-            self._load_reference_image_core(path)
-
     def _load_reference_image_core(self, path):
         """Mirrors _load_image_core, but for the Reference slot -- see this
         module's docstring on why Reference has its own fully independent
-        state (own array, own Adapt dialog/state) rather than reusing
-        Sample's. Reference always starts Unmanaged on a fresh load (per
-        Tom), same default Sample gets, even though the two Adapt states
-        are otherwise unrelated."""
+        state (own array, own path tracking) rather than reusing
+        Source's."""
         try:
             array = load_image_as_array(path, max_dimension=None)  # native res -- see this module's "PREVIEW RESOLUTION" comment
         except Exception as e:  # noqa: BLE001 -- surface any decode failure to the user
@@ -1209,9 +917,6 @@ class SampleImagePanel(QWidget):
 
         self._reference_current_path = str(path)
         self._reference_original_array = array
-        self._reference_source_colourspace = None
-        self._reference_adapt_enabled = False
-        self._reference_adapt_target_colourspace = None
         self._recompute_reference_working_array()
         self._render_wipe()
         return True
@@ -1228,18 +933,12 @@ class SampleImagePanel(QWidget):
         For a STILL entry: the array is already decoded at native
         resolution (see image_library.py/image_library_panel.py's own
         load_image_as_array(..., max_dimension=None) call) -- used
-        directly, no resampling needed. Pre-fills the declared source
-        color space from the entry if it had one (same "save a step"
-        convenience load_default_image gives Sample's bundled default),
-        but Adapt itself still starts off, same as any other fresh load."""
+        directly, no resampling needed."""
         if entry.is_video:
             self.load_video(entry.source_path)
             return
         self._current_path = entry.source_path
         self._original_array = entry.array
-        self._source_colourspace = entry.source_colourspace
-        self._adapt_enabled = False
-        self._adapt_target_colourspace = None
         self.status_label.setText("")
         self._recompute_working_array()
         self._recompute_sample_after()
@@ -1251,9 +950,6 @@ class SampleImagePanel(QWidget):
         slot."""
         self._reference_current_path = entry.source_path
         self._reference_original_array = entry.array
-        self._reference_source_colourspace = entry.source_colourspace
-        self._reference_adapt_enabled = False
-        self._reference_adapt_target_colourspace = None
         self._recompute_reference_working_array()
         self._render_wipe()
 
@@ -1271,18 +967,14 @@ class SampleImagePanel(QWidget):
 
     def load_reference_from_array(self, array):
         """Loads an ALREADY-DECODED array directly into the Reference
-        slot, always Unmanaged (no source_colourspace/path to carry over)
-        -- used for a StackMemory's captured full_still (Stills Gallery,
-        Phase 3 follow-up, per Tom: "load the stack memory as reference"),
-        which has no source file to reload from at all (it's a graded
-        snapshot, decoded from PNG bytes by the caller -- see
-        app_logic.png_bytes_to_array), unlike load_reference_from_path's
-        GalleryStill case."""
+        slot -- used for a StackMemory's captured full_still (Stills
+        Gallery, Phase 3 follow-up, per Tom: "load the stack memory as
+        reference"), which has no source file to reload from at all
+        (it's a graded snapshot, decoded from PNG bytes by the caller --
+        see app_logic.png_bytes_to_array), unlike load_reference_from_
+        path's GalleryStill case."""
         self._reference_current_path = None
         self._reference_original_array = array
-        self._reference_source_colourspace = None
-        self._reference_adapt_enabled = False
-        self._reference_adapt_target_colourspace = None
         self._recompute_reference_working_array()
         self._render_wipe()
 
@@ -1407,10 +1099,16 @@ class SampleImagePanel(QWidget):
             self._last_after_was_downres = False
             return
         stack = self._stack_getter() if self._stack_getter else None
-        if stack is None or not stack.stages:
+        if stack is None:
             self._set_current_after_array(None)
             self._last_after_was_downres = False
             return
+        # An empty stack is a valid thing to preview (per Tom: "you
+        # should be able to preview an empty stack") -- NOT treated the
+        # same as "no stack at all" above. apply_stack_to_image_array's
+        # own docstring already guarantees an empty stack returns the
+        # image unchanged, so this just falls through to the normal
+        # apply path below rather than special-casing it.
         try:
             result = apply_stack_to_image_array(
                 stack, working_array,
@@ -1449,11 +1147,11 @@ class SampleImagePanel(QWidget):
         and for any GPU-ineligible stack)."""
         if key == WIPE_SOURCE_SAMPLE_BEFORE:
             if self._image_array is None:
-                return None, None, "Import a Sample image to preview"
+                return None, None, "Load a source image to preview"
             return self._image_array, None, ""
         if key == WIPE_SOURCE_SAMPLE_AFTER:
             if self._image_array is None:
-                return None, None, "Import a Sample image to preview"
+                return None, None, "Load a source image to preview"
             if gpu_stack is not None:
                 return self._image_array, gpu_stack, ""
             if self._current_after_array is None:
@@ -1471,9 +1169,9 @@ class SampleImagePanel(QWidget):
         module's docstring on why there's no separate "Show" state) into
         the WipeCompareWidget -- called after literally anything that
         could change what should be on screen: a stack edit
-        (refresh_preview), either image's Adapt state changing, a new
-        Sample/Reference image loading, a Left/Right menu selection
-        changing, or Enable Wipe being toggled. Always recomputes both
+        (refresh_preview), a new Source/Reference image loading, a
+        Left/Right menu selection changing, or Enable Wipe being
+        toggled. Always recomputes both
         potentially-visible sources (even in single mode, only Right
         matters, but it's the same cheap dispatch either way) rather than
         trying to track which one specifically changed -- see
@@ -1595,24 +1293,20 @@ class SampleImagePanel(QWidget):
         return self._current_path is not None
 
     def render_full_resolution_after(self, stack):
-        """Reload the sample image source at full resolution, apply the
-        current adaptation, then `stack` -- the actual computation shared
-        by export_still() (its own file-picker flow, below) and
-        MainWindow's Export dialog "Export Still" checkbox (per Tom), so
-        both produce an identically processed still without duplicating
-        the reload/adapt/apply sequence. Reloads the source file at full
-        resolution rather than reusing the (deliberately downsampled)
-        preview array -- see this module's docstring. Raises whatever
-        load_image_as_array/apply_stack_to_image_array itself raises on
-        failure -- callers surface that however fits their own UI.
-        Caller is responsible for the "a sample image is loaded"
-        precondition (see has_sample_image) -- this assumes
-        self._current_path is already set."""
+        """Reload the source image at full resolution, then apply `stack`
+        -- the actual computation shared by export_still() (its own
+        file-picker flow, below) and MainWindow's Export dialog "Export
+        Still" checkbox (per Tom), so both produce an identically
+        processed still without duplicating the reload/apply sequence.
+        Reloads the source file at full resolution rather than reusing
+        the (deliberately downsampled) preview array -- see this module's
+        docstring. Raises whatever load_image_as_array/
+        apply_stack_to_image_array itself raises on failure -- callers
+        surface that however fits their own UI. Caller is responsible for
+        the "a source image is loaded" precondition (see
+        has_sample_image) -- this assumes self._current_path is already
+        set."""
         full_res = load_image_as_array(self._current_path, max_dimension=None)
-        # Same adaptation currently active in the preview (Unmanaged or
-        # From->To) -- reapplied fresh to the full-res reload, not
-        # derived from the (deliberately downsampled) preview array.
-        full_res = self._apply_adaptation_to_array(full_res)
         return apply_stack_to_image_array(stack, full_res)
 
     def render_full_resolution_after_for_capture(self, stack):
@@ -1648,7 +1342,7 @@ class SampleImagePanel(QWidget):
         what's on screen, just at full quality instead of preview
         quality."""
         if not self.has_sample_image():
-            QMessageBox.warning(self, "No image", "Import a sample image first.")
+            QMessageBox.warning(self, "No image", "Load a source image first.")
             return
 
         stack = self._stack_getter() if self._stack_getter else None
@@ -1684,16 +1378,13 @@ class SampleImagePanel(QWidget):
 
     def clear(self):
         """No longer exposed in the UI (see restore_default_image/the
-        "Load Default Sample" menu action, which replaced the old Clear
+        "Load Default Source" menu action, which replaced the old Clear
         button) -- kept as a public method since clearing to nothing is still a
         reasonable thing for other code (e.g. a future session-load) to
         want, just not a standalone user-facing action anymore."""
         self._current_path = None
         self._original_array = None
         self._image_array = None
-        self._source_colourspace = None
-        self._adapt_enabled = False
-        self._adapt_target_colourspace = None
         self.status_label.setText("")
         self.compare.clear()
         self._set_current_after_array(None)
@@ -1705,89 +1396,77 @@ class SampleImagePanel(QWidget):
     # ---- session save/load (see session_io.py) -----------------------
 
     def get_session_state(self):
-        """Plain JSON-able dict describing the currently loaded Sample and
-        Reference images + their adaptation state, or None if Sample isn't
-        loaded (Reference-only, no Sample, isn't a state this app's
-        startup flow produces) -- used by main_window.py's Save Session.
-        Deliberately just paths + tags, never pixel data -- same "how to
-        rebuild it, not the built thing" principle as LUT stage provenance
-        in stack_panel.py. Reference's path (see image_library.py's
-        docstring on the Image-Library-vs-LUT/CDL-Library difference)
-        genuinely can go missing across a save/reload if its source file
-        has since moved -- unlike Sample, there's no bundled default to
-        gracefully fall back to, so a missing Reference on load just stays
-        empty (with a warning), not a hard failure for the rest of the
-        session. Wipe enable/side-selection state is deliberately NOT
-        included here -- same "session is project state, not screen
-        layout" call this module's docstring already makes for window
-        size/panel visibility; it resets to Enable Wipe / Sample Before /
-        Sample After on every session load."""
+        """Plain JSON-able dict describing the currently loaded Source and
+        Reference images, or None if Source isn't loaded (Reference-only,
+        no Source, isn't a state this app's startup flow produces) --
+        used by main_window.py's Save Session. Deliberately just paths +
+        tags, never pixel data -- same "how to rebuild it, not the built
+        thing" principle as LUT stage provenance in stack_panel.py.
+        Reference's path (see image_library.py's docstring on the
+        Image-Library-vs-LUT/CDL-Library difference) genuinely can go
+        missing across a save/reload if its source file has since moved
+        -- unlike Source, there's no bundled default to gracefully fall
+        back to, so a missing Reference on load just stays empty (with a
+        warning), not a hard failure for the rest of the session. Wipe
+        enable/side-selection state is deliberately NOT included here --
+        same "session is project state, not screen layout" call this
+        module's docstring already makes for window size/panel
+        visibility; it resets to Enable Wipe / Source Before / Source
+        After on every session load."""
         if self._current_path is None:
             return None
         state = {
             "path": self._current_path,
-            "source_colourspace": self._source_colourspace,
-            "adapt_enabled": self._adapt_enabled,
-            "adapt_target_colourspace": self._adapt_target_colourspace,
         }
         if self._video_source is not None:
-            # Sample is currently a parked VIDEO frame, not a still (Video
+            # Source is currently a parked VIDEO frame, not a still (Video
             # Support, Tom 2026-08-13) -- "path" above is the video file's
             # own path (see _load_video_frame_core), which load_session_
             # state must route through load_video, not the still-image
             # decoder (OIIO can't read a video container -- that's a real
             # bug this flag fixes, caught by round-trip testing a saved
-            # video Sample). video_frame_index restores parked position.
+            # video Source). video_frame_index restores parked position.
             state["is_video"] = True
             state["video_frame_index"] = self._video_frame_index
         if self._reference_current_path is not None:
             state["reference"] = {
                 "path": self._reference_current_path,
-                "source_colourspace": self._reference_source_colourspace,
-                "adapt_enabled": self._reference_adapt_enabled,
-                "adapt_target_colourspace": self._reference_adapt_target_colourspace,
             }
         return state
 
     def load_session_state(self, state):
-        """Restore a saved Sample (and, if present, Reference) state
-        exactly -- unlike load_image/load_default_image, does NOT reset
-        adaptation to Unmanaged; whatever was saved (including an active
-        Adapt conversion) is what gets restored. Falls back to the
-        bundled default image (with a warning) if the saved Sample path
-        no longer exists, same "don't let a missing reference wreck the
-        rest of the session" treatment session_io.py uses for LUT stages.
-        A missing Reference path degrades more simply -- there's no
-        bundled default for it, so it's just left empty, with a warning.
-        No-ops on state=None (a session saved with no sample image
-        loaded)."""
+        """Restore a saved Source (and, if present, Reference) state.
+        Falls back to the bundled default image (with a warning) if the
+        saved Source path no longer exists, same "don't let a missing
+        reference wreck the rest of the session" treatment session_io.py
+        uses for LUT stages. A missing Reference path degrades more
+        simply -- there's no bundled default for it, so it's just left
+        empty, with a warning. No-ops on state=None (a session saved with
+        no source image loaded). Tolerates (ignores) a pre-removal
+        session's leftover "source_colourspace"/"adapt_enabled"/
+        "adapt_target_colourspace" keys -- see this module's own docstring
+        on Adapt having been removed entirely (per Tom: "remove the
+        ability to adapt reference or source")."""
         if not state or not state.get("path"):
             return
         path = state["path"]
         if not Path(path).exists():
             QMessageBox.warning(
-                self, "Sample image missing",
-                f"Couldn't find the session's sample image at:\n{path}\n\n"
+                self, "Source image missing",
+                f"Couldn't find the session's source image at:\n{path}\n\n"
                 "Falling back to the default reference image.")
             self.restore_default_image()
             return
         if state.get("is_video"):
-            # See get_session_state's own note -- a video Sample must
+            # See get_session_state's own note -- a video Source must
             # reopen through load_video (real decode), never
             # _load_image_core (OIIO, can't read a video container).
-            # Adapt/source colourspace are never meaningful for video
-            # (see _load_video_frame_core, always Unmanaged) -- nothing
-            # to restore there, unlike the still-image branch below.
             if not self.load_video(path):
                 return
             self.seek_video_frame(state.get("video_frame_index", 0))
         else:
             if not self._load_image_core(path):
                 return
-            self._source_colourspace = state.get("source_colourspace")
-            self._adapt_enabled = bool(state.get("adapt_enabled", False))
-            self._adapt_target_colourspace = state.get("adapt_target_colourspace")
-            self._recompute_working_array()
 
         reference_state = state.get("reference")
         if reference_state and reference_state.get("path"):
@@ -1797,11 +1476,8 @@ class SampleImagePanel(QWidget):
                     self, "Reference image missing",
                     f"Couldn't find the session's reference image at:\n{ref_path}\n\n"
                     "Leaving Reference empty.")
-            elif self._load_reference_image_core(ref_path):
-                self._reference_source_colourspace = reference_state.get("source_colourspace")
-                self._reference_adapt_enabled = bool(reference_state.get("adapt_enabled", False))
-                self._reference_adapt_target_colourspace = reference_state.get("adapt_target_colourspace")
-                self._recompute_reference_working_array()
+            else:
+                self._load_reference_image_core(ref_path)
 
         self._recompute_sample_after()
         self._render_wipe()

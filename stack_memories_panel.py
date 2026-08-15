@@ -61,7 +61,7 @@ STILLS GALLERY (Phase 3, per Tom: "Stack library should not be part of
     this feature existed, or saved with no Sample loaded) shows an
     explanatory message instead of silently doing nothing.
   - a NEW GalleryStill (stack_memory.py) -- an externally-imported
-    reference still, via the new "Import Still..." action -- Load as
+    reference still, via the mono "Import..." action -- Load as
     Reference sends it to the Viewer's Reference slot (via
     sample_image_panel.load_reference_from_path, since a GalleryStill
     doesn't keep a decoded array in memory the way an ImageLibraryEntry
@@ -70,30 +70,56 @@ STILLS GALLERY (Phase 3, per Tom: "Stack library should not be part of
 Deliberately kept OUT of the real Media Library (image_library.py/
 image_library_panel.py) -- Tom's own instruction: "for now just relevant
 that we're not folding it into the media library." Update/Export/Import
-.ltm only make sense for a memory row -- selecting a still row and
+.ltm only make sense for a memory row -- selecting a still or CDL row and
 invoking one of those is a guarded no-op with an explanatory message,
 same "wrong-kind selection" treatment image_library_panel.py's own
 video-vs-still asymmetry (Load as Reference) already uses. Rename/Delete
-work generically across both kinds. Double-clicking (or Enter) a row
+work generically across all three kinds. Double-clicking (or Enter) a row
 does whichever action is that row's own PRIMARY one -- Recall for a
 memory (Load as Reference stays a secondary, menu-only action for a
-memory row, see _on_item_double_clicked), Load as Reference for a still.
+memory row, see _on_item_double_clicked), Load as Reference for a still,
+Apply to Stack for a CDL entry.
+
+CDL LIBRARY, FOLDED IN (per Tom: "CDL library should also be rolled into
+the gallery") -- a THIRD row kind, cdl_library.CDLEntry, owned here via
+its own self.cdl_library (a cdl_library.CDLLibrary, unchanged class --
+only which panel owns/displays it moved). Two ways an entry gets added,
+identical to how cdl_library_panel.py used to work before this fold-in:
+saved from the currently-selected CDL stage in the Stack (StackPanel's
+"Save to CDL Library..." button, still that label, now routed into
+save_cdl_entry instead), or imported from a real .cc/.cdl/.ccc file
+(the mono "Import..." action, dispatched by extension, a CDL file
+dragged in from the Browser via _GalleryDropListWidget, or
+double-clicking one in the Browser -- see
+import_cdl_from_path). Its own primary action is "Apply to Stack"
+(apply_cdl_requested, routed by MainWindow into StackPanel.
+apply_cdl_entry exactly as before) -- has no thumbnail, no Update/
+Export/Import .ltm/Load as Reference (all guarded no-ops/explanatory
+messages for a CDL row, same treatment a still row already gets for the
+actions that don't apply to IT). session_io.py's cdl_library_to_session_
+list/_from_session_list are UNCHANGED -- same "cdl_library" session key,
+same CDLLibrary shape -- a session saved before this fold-in loads its
+CDL entries here exactly as it used to load them into the old standalone
+CDLLibraryPanel.
 
 NOT TESTED IN THIS ENVIRONMENT -- same PySide6/libEGL wall as the rest of
 the GUI layer (see browser_panel.py's docstring). Only py_compile
-syntax-checked. Please run main_window.py and confirm: (1) Save Current
-Stack... prompts for a name and adds an entry showing its stage count,
-(2) double-clicking or Load recalls it into the working Stack without
-disturbing the saved memory when you edit afterward, (3) Update
-overwrites the selected memory with whatever the stack currently looks
-like, (4) Rename/Delete work and ask before Delete, (5) memories survive
-Save Session -> Open Session, (6) Export... writes a .ltm file and
-Import... on that same file adds back an equivalent memory, including
-into a DIFFERENT session/app instance.
+syntax-checked. Please run main_window.py and confirm: (1) Grab Still
+prompts for a name (pre-filled with a source-name+timestamp suggestion)
+and adds an entry showing its stage count, (2) right-clicking a row
+shows Recall/Update Still/Apply CDL to Stack/Load as Reference/
+Rename.../Delete/Export..., each acting on that row (double-click also
+does Recall/Load as Reference/Apply to Stack for its own row kind), (3)
+Update overwrites the selected memory with whatever the stack currently
+looks like, (4) Rename/Delete work and ask before Delete, (5) memories
+survive Save Session -> Open Session, (6) Export... writes a .ltm file
+and Import... on that same file adds back an equivalent memory,
+including into a DIFFERENT session/app instance.
 """
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QListWidget, QListWidgetItem,
@@ -101,31 +127,88 @@ from PySide6.QtWidgets import (
 )
 
 from stack_memory import StackMemoryLibrary, GalleryStill, GalleryStillLibrary
+from cdl_library import CDLLibrary, CDLEntry
+import cdl_file_io
 from app_logic import load_image_as_array, array_to_png_bytes, png_bytes_to_array
 import stack_memory_file_io
 import hover_inspector
 import media_cache
 import thumbnail
+from browser_panel import CDL_PATH_MIME
 
 MEMORY_FILE_FILTER = "LUTier Stack Memory (*.ltm);;All files (*)"
 STILL_FILE_FILTER = (
     "Image files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.exr)"
     ";;All files (*)"
 )
+CDL_FILE_FILTER = "ASC CDL (*.cc *.cdl *.ccc);;All files (*)"
+STILL_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".exr"}
+CDL_EXTENSIONS = {".cc", ".cdl", ".ccc"}
+# One mono Import... action (per Tom) covers all three importable file
+# kinds this panel understands -- dispatched by extension in
+# _on_import_clicked, see that method.
+IMPORT_FILE_FILTER = (
+    "All supported (*.ltm *.cc *.cdl *.ccc *.png *.jpg *.jpeg *.tif *.tiff "
+    "*.bmp *.exr);;"
+    "LUTier Stack Memory (*.ltm);;"
+    "ASC CDL (*.cc *.cdl *.ccc);;"
+    "Image files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.exr);;"
+    "All files (*)"
+)
+
+
+class _GalleryDropListWidget(QListWidget):
+    """QListWidget that also accepts a CDL file dragged in from the
+    Browser panel (see browser_panel.py's CDL_PATH_MIME/
+    _DraggableFileListWidget, same mechanism cdl_library_panel.py's own
+    _CDLDropListWidget used before CDL Library was folded into this
+    Gallery, per Tom) -- drops straight through to the panel's own
+    import_cdl_from_path, same import path the mono "Import..." action
+    and a CDL double-click in the Browser both use."""
+
+    def __init__(self, panel, parent=None):
+        super().__init__(parent)
+        self._panel = panel
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(CDL_PATH_MIME):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat(CDL_PATH_MIME):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        mime = event.mimeData()
+        if not mime.hasFormat(CDL_PATH_MIME):
+            event.ignore()
+            return
+        path = bytes(mime.data(CDL_PATH_MIME)).decode("utf-8")
+        event.acceptProposedAction()
+        self._panel.import_cdl_from_path(path)
 
 
 class StackMemoriesPanel(QWidget):
     recall_requested = Signal(object)  # a ready-to-use stack.Stack (already copied)
     load_as_reference_requested = Signal(object)  # a stack_memory.GalleryStill
     load_full_still_as_reference_requested = Signal(object)  # a decoded (H,W,3) float array
+    apply_cdl_requested = Signal(object)  # a cdl_library.CDLEntry
+    insert_in_stack_requested = Signal(object)  # a stack_memory.StackMemory or a cdl_library.CDLEntry
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.library = StackMemoryLibrary()
         self.gallery_library = GalleryStillLibrary()
+        self.cdl_library = CDLLibrary()
         self._stack_getter = None
         self._still_capture_getter = None
-        self._rows = []  # combined [memory, ..., still, ...] -- see _refresh_list
+        self._source_name_getter = None
+        self._rows = []  # combined [memory, ..., still, ..., cdl, ...] -- see _refresh_list
         self._build_layout()
         self._refresh_list()
 
@@ -137,7 +220,7 @@ class StackMemoriesPanel(QWidget):
 
     def set_still_capture_getter(self, getter):
         """getter: a zero-arg callable returning a full CANVAS-resolution
-        graded array (or None if there's nothing to capture -- no Sample
+        graded array (or None if there's nothing to capture -- no source
         loaded, empty stack, or the render itself failed), used to
         capture a StackMemory's thumbnail AND full_still at save time
         (Phase 3 follow-up, per Tom: "also capture full canvas-res
@@ -149,12 +232,28 @@ class StackMemoriesPanel(QWidget):
         update, not two."""
         self._still_capture_getter = getter
 
+    def set_source_name_getter(self, getter):
+        """getter: a zero-arg callable returning SampleImagePanel's
+        current source filename stem (or None if nothing's loaded) --
+        used by _on_save_clicked to pre-fill the Grab Still name prompt
+        with "<source name> <date> <time>" (per Tom: "automatic still
+        naming with the source name + date/time should show up in text
+        box as a suggestion for file name when grabbing a still"). Just a
+        starting suggestion, not enforced -- the text field stays fully
+        editable/clearable before confirming."""
+        self._source_name_getter = getter
+
     def _build_layout(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
 
-        self.list_widget = QListWidget()
+        self.list_widget = _GalleryDropListWidget(self)
         self.list_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
+        # Per-item actions live on a right-click context menu, not the
+        # "..." header menu -- see populate_menu/_on_context_menu_requested's
+        # own docstrings.
+        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self._on_context_menu_requested)
         layout.addWidget(self.list_widget, stretch=1)
         hover_inspector.register(self.list_widget, self._hover_info_for_item)
 
@@ -164,7 +263,10 @@ class StackMemoriesPanel(QWidget):
         """Alt+hover info card content (see hover_inspector.py) -- a
         stage-by-stage breakdown for a memory row (which the row's own
         compact "N stages" label, see _refresh_list, doesn't show at
-        all), or provenance for a gallery still row."""
+        all), provenance for a gallery still row, or full SOP/SAT values
+        for a CDL row (same detail cdl_library_panel.py's own hover card
+        used to show, before CDL Library was folded into this Gallery,
+        per Tom)."""
         row = self.list_widget.row(item)
         if not (0 <= row < len(self._rows)):
             return None
@@ -174,6 +276,23 @@ class StackMemoriesPanel(QWidget):
             if entry.source_path:
                 lines.append(entry.source_path)
             return "\n".join(lines)
+        if isinstance(entry, CDLEntry):
+            lines = [entry.name]
+            if entry.source_path:
+                lines.append(entry.source_path)
+            r, g, b = entry.slope
+            ro, go, bo = entry.offset
+            rp, gp, bp = entry.power
+            lines.append(f"Slope: {r:.4f}, {g:.4f}, {b:.4f}")
+            lines.append(f"Offset: {ro:.4f}, {go:.4f}, {bo:.4f}")
+            lines.append(f"Power: {rp:.4f}, {gp:.4f}, {bp:.4f}")
+            lines.append(f"Saturation: {entry.sat:.4f}")
+            lines.append(f"Style: {entry.style}")
+            if not entry.sop_enabled:
+                lines.append("SOP: bypassed")
+            if not entry.sat_enabled:
+                lines.append("SAT: bypassed")
+            return "\n".join(lines)
         lines = [entry.name, f"{len(entry.stack.stages)} stage(s):"]
         for i, stage in enumerate(entry.stack.stages, start=1):
             state = "on" if stage.enabled else "OFF"
@@ -182,10 +301,9 @@ class StackMemoriesPanel(QWidget):
 
     def _build_menu_button(self):
         """The Stack Memories panel's "..." header menu (see corner_widget
-        on PanelFrame, main_window.py) -- replaces the old always-visible
-        Save/Load/Update/Rename/Delete/Export/Import button rows with menu
-        actions instead, per Tom, same treatment Stack's/CDL Library's/LUT
-        Library's own header menus already got. Double-clicking a list
+        on PanelFrame, main_window.py) -- panel-level actions only now
+        (see populate_menu's own docstring on why the per-item ones moved
+        to a right-click context menu instead). Double-clicking a list
         entry (Load) still works independent of this menu."""
         self.menu_button = QToolButton()
         self.menu_button.setObjectName("panelMenuButton")
@@ -201,41 +319,64 @@ class StackMemoriesPanel(QWidget):
         corner button above and MainWindow's top-level "Stack Memories"
         menu-bar menu (per Tom, making the "..." menu redundant rather
         than the only way in), so both stay in sync automatically since
-        they're wired to the exact same methods."""
-        save_action = menu.addAction("Save Current Stack...", self._on_save_clicked)
+        they're wired to the exact same methods. Only PANEL-LEVEL actions
+        live here now (Grab Still and the one mono Import..., neither of
+        which need a selected row) -- Recall/Update Still/Apply CDL to
+        Stack/Load as Reference/Rename/Delete/Export... all moved to the
+        right-click context menu instead (per Tom: "recall, update, load
+        as reference, rename, delete and export in the gallery should be
+        on right click of a still/memory" -- extended to the CDL entry
+        actions too for the same reason, once CDL folded in here), see
+        _on_context_menu_requested."""
+        save_action = menu.addAction("Grab Still", self._on_save_clicked)
         save_action.setShortcut(QKeySequence("Ctrl+G"))
-        recall_action = menu.addAction("Recall", self._on_recall_clicked)
-        recall_action.setShortcut(QKeySequence("Ctrl+Shift+G"))
-        update_action = menu.addAction("Update", self._on_update_clicked)
-        update_action.setShortcut(QKeySequence("Ctrl+U"))
         menu.addSeparator()
-        import_still_action = menu.addAction("Import Still...", self._on_import_still_clicked)
-        import_still_action.setToolTip(
-            "Add an external reference still to the gallery (Phase 3) -- "
-            "kept separate from the Image Library, see this panel's own "
-            "docstring.")
-        load_as_reference_action = menu.addAction(
-            "Load as Reference", self._on_load_as_reference_clicked)
+        import_action = menu.addAction("Import...", self._on_import_clicked)
+        import_action.setToolTip(
+            "Import a still image, a .ltm (Export... file), or a "
+            ".cc/.cdl/.ccc CDL file -- the right kind of gallery entry is "
+            "picked from the file's own extension, see _on_import_clicked.")
+
+    def _on_context_menu_requested(self, pos):
+        """Right-click menu for a specific row (per Tom, see populate_menu's
+        own docstring) -- Recall/Update Still/Apply CDL to Stack/Load as
+        Reference/Rename/Delete/Export..., all of which act on whichever
+        row was clicked. Each handler already guards for the row's actual
+        kind (StackMemory/GalleryStill/CDLEntry) internally -- see e.g.
+        _on_recall_clicked -- so showing every action regardless of kind
+        here (rather than a different menu per kind) is safe: the wrong-
+        kind ones just no-op or explain themselves via QMessageBox, same
+        as they always have. No menu when the click lands on empty space
+        below the last row (`itemAt` returns None there)."""
+        item = self.list_widget.itemAt(pos)
+        if item is None:
+            return
+        self.list_widget.setCurrentItem(item)
+        menu = QMenu(self.list_widget)
+        menu.addAction("Recall", self._on_recall_clicked)
+        menu.addAction("Update Still", self._on_update_clicked)
+        menu.addAction("Apply CDL to Stack", self._on_apply_cdl_clicked)
+        insert_action = menu.addAction("Insert in Stack", self._on_insert_in_stack_clicked)
+        insert_action.setToolTip(
+            "Adds this entry's operator(s) into the working Stack, "
+            "immediately after whichever stage is currently selected -- "
+            "never replaces or overwrites anything already there (unlike "
+            "Recall/Apply CDL to Stack above).")
+        menu.addAction("Load as Reference", self._on_load_as_reference_clicked)
         menu.addSeparator()
         menu.addAction("Rename...", self._on_rename_clicked)
         menu.addAction("Delete", self._on_delete_clicked)
         menu.addSeparator()
-        export_action = menu.addAction("Export...", self._on_export_clicked)
-        export_action.setShortcut(QKeySequence("Ctrl+Shift+E"))
-        export_action.setToolTip(
-            "Save the selected memory to its own .ltm file -- lets you "
-            "share it or move it into another session without exporting "
-            "the whole session.")
-        import_action = menu.addAction("Import...", self._on_import_clicked)
-        import_action.setToolTip("Load a .ltm file saved by Export... as a new memory.")
+        menu.addAction("Export...", self._on_export_clicked)
+        menu.exec(self.list_widget.mapToGlobal(pos))
 
     # ---- list -----------------------------------------------------------
 
     def _selected_entry(self):
-        """Returns the selected row's own object -- a StackMemory OR a
-        GalleryStill (see _rows/_refresh_list) -- or None if nothing's
-        selected. Callers that only make sense for one kind check
-        isinstance themselves (see e.g. _on_recall_clicked)."""
+        """Returns the selected row's own object -- a StackMemory, a
+        GalleryStill, or a CDLEntry (see _rows/_refresh_list) -- or None
+        if nothing's selected. Callers that only make sense for one kind
+        check isinstance themselves (see e.g. _on_recall_clicked)."""
         row = self.list_widget.currentRow()
         if row < 0 or row >= len(self._rows):
             return None
@@ -244,15 +385,22 @@ class StackMemoriesPanel(QWidget):
     def _refresh_list(self, keep_selection=None):
         self.list_widget.blockSignals(True)
         self.list_widget.clear()
-        self._rows = list(self.library.memories) + list(self.gallery_library.stills)
+        self._rows = (list(self.library.memories) + list(self.gallery_library.stills)
+                      + list(self.cdl_library.entries))
         for entry in self._rows:
             if isinstance(entry, GalleryStill):
                 item = QListWidgetItem(f"{entry.name}  [reference still]")
+            elif isinstance(entry, CDLEntry):
+                item = QListWidgetItem(f"{entry.name}  [CDL]")
             else:
                 stage_count = len(entry.stack.stages)
                 suffix = "stage" if stage_count == 1 else "stages"
                 item = QListWidgetItem(f"{entry.name}  ({stage_count} {suffix})")
-            png_bytes = media_cache.load_thumbnail(entry.thumbnail) if entry.thumbnail else None
+            # CDLEntry has no thumbnail concept at all (see cdl_library.py)
+            # -- getattr rather than a bare attribute access so a CDL row
+            # just renders icon-less instead of raising.
+            thumbnail_descriptor = getattr(entry, "thumbnail", None)
+            png_bytes = media_cache.load_thumbnail(thumbnail_descriptor) if thumbnail_descriptor else None
             if png_bytes:
                 pixmap = QPixmap()
                 if pixmap.loadFromData(png_bytes, "PNG"):
@@ -266,11 +414,13 @@ class StackMemoriesPanel(QWidget):
 
     def _on_item_double_clicked(self, *_args):
         """Double-click does whichever action is that row's own PRIMARY
-        one -- Recall for a memory, Load as Reference for a still (see
-        module docstring)."""
+        one -- Recall for a memory, Load as Reference for a still, Apply
+        to Stack for a CDL entry (see module docstring)."""
         entry = self._selected_entry()
         if isinstance(entry, GalleryStill):
             self._on_load_as_reference_clicked()
+        elif isinstance(entry, CDLEntry):
+            self._on_apply_cdl_clicked()
         elif entry is not None:
             self._on_recall_clicked()
 
@@ -280,13 +430,24 @@ class StackMemoriesPanel(QWidget):
         stack = self._stack_getter()
         if not stack.stages:
             QMessageBox.warning(
-                self, "Empty stack", "Add stages to the Stack before saving a memory.")
+                self, "Empty stack", "Add stages to the Stack before grabbing a still.")
             return
-        name, ok = QInputDialog.getText(self, "Save Stack Memory", "Name:")
+        name, ok = QInputDialog.getText(
+            self, "Grab Still", "Name:", text=self._suggested_still_name())
         name = name.strip()
         if not ok or not name:
             return
         self.save_memory(name, stack)
+
+    def _suggested_still_name(self):
+        """"<source name> <date> <time>" (per Tom, see set_source_name_
+        getter's own docstring) -- just a starting suggestion for the
+        Grab Still name prompt, not enforced. Falls back to a bare
+        timestamp if no source_name_getter is wired up or nothing's
+        currently loaded, rather than leaving the field empty."""
+        source_name = self._source_name_getter() if self._source_name_getter else None
+        timestamp = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+        return f"{source_name} {timestamp}" if source_name else timestamp
 
     def _capture_still_and_thumbnail(self, name_hint):
         """Best-effort: no capture getter wired up, or nothing to capture
@@ -312,7 +473,7 @@ class StackMemoriesPanel(QWidget):
     def save_memory(self, name, stack):
         """Save `stack` as a new named Stack Memory -- the actual save +
         list-refresh _on_save_clicked does after its own name prompt,
-        pulled out so MainWindow's Export dialog "Save Stack Memory"
+        pulled out so MainWindow's Export dialog "Grab Still"
         checkbox (per Tom) can reuse it directly with a name it derives
         itself (see main_window.py's export_current_lut), no second
         name-prompt dialog stacked in the middle of Export. Returns the
@@ -333,13 +494,43 @@ class StackMemoriesPanel(QWidget):
 
     def _on_recall_clicked(self, *_args):
         entry = self._selected_entry()
-        if not isinstance(entry, GalleryStill) and entry is not None:
+        if not isinstance(entry, (GalleryStill, CDLEntry)) and entry is not None:
             memory = entry
             # StackMemoryLibrary.recall already returns a fresh copy --
             # safe to hand straight to whoever's listening (MainWindow ->
             # set_stack) without this panel needing to know or care what
             # they do with it.
             self.recall_requested.emit(self.library.recall(memory.id))
+
+    def _on_apply_cdl_clicked(self, *_args):
+        """A CDLEntry's own primary action (mirrors CDLLibraryPanel's old
+        "Apply to Stack" -- see apply_cdl_requested, routed by MainWindow
+        into StackPanel.apply_cdl_entry: updates the selected 'cdl' stage
+        in place if one's selected, otherwise adds a new one). Silently
+        no-ops for any other row kind, same convention _on_recall_clicked
+        already uses for a still."""
+        entry = self._selected_entry()
+        if isinstance(entry, CDLEntry):
+            self.apply_cdl_requested.emit(entry)
+
+    def _on_insert_in_stack_clicked(self, *_args):
+        """"Insert in Stack" (per Tom, see insert_in_stack_requested's
+        own docstring) -- valid for a StackMemory (inserts every one of
+        its stages) or a CDLEntry (inserts one new 'cdl' stage); a
+        GalleryStill has no operators to insert, so gets an explanatory
+        message instead, same "wrong-kind selection" treatment Update
+        Still/Export.../Load as Reference already use elsewhere on this
+        panel."""
+        entry = self._selected_entry()
+        if entry is None:
+            return
+        if isinstance(entry, GalleryStill):
+            QMessageBox.information(
+                self, "Insert in Stack",
+                "Insert in Stack only applies to a saved still (its stages) "
+                "or a CDL entry, not an imported reference still.")
+            return
+        self.insert_in_stack_requested.emit(entry)
 
     def _on_load_as_reference_clicked(self):
         """A GalleryStill always supports this (load_as_reference_requested,
@@ -350,10 +541,17 @@ class StackMemoriesPanel(QWidget):
         separate signal (load_full_still_as_reference_requested) to
         sample_image_panel.load_reference_from_array, since a memory's
         capture has no source file to reload from the way a GalleryStill
-        does."""
+        does. A CDLEntry has no image at all -- shows an explanatory
+        message instead, same "wrong-kind selection" treatment
+        Update Still/Export.../Import... below already use."""
         entry = self._selected_entry()
         if isinstance(entry, GalleryStill):
             self.load_as_reference_requested.emit(entry)
+            return
+        if isinstance(entry, CDLEntry):
+            QMessageBox.information(
+                self, "Load as Reference",
+                "Load as Reference only applies to a still, not a CDL entry.")
             return
         if entry is not None:
             memory = entry
@@ -363,17 +561,10 @@ class StackMemoriesPanel(QWidget):
                     self, "Load as Reference",
                     f'"{memory.name}" has no captured still to load -- '
                     "either it was saved before this feature existed, or "
-                    "no Sample image was loaded at save time.")
+                    "no source image was loaded at save time.")
                 return
             array = png_bytes_to_array(png_bytes)
             self.load_full_still_as_reference_requested.emit(array)
-
-    def _on_import_still_clicked(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import Reference Still", "", STILL_FILE_FILTER)
-        if not path:
-            return
-        self.import_still_from_path(path)
 
     def import_still_from_path(self, path):
         """Decode `path` just long enough to generate a thumbnail -- a
@@ -392,23 +583,91 @@ class StackMemoriesPanel(QWidget):
             name, thumb, str(path), source_filename=Path(path).name)
         self.gallery_library.add_still(still)
         # New still lands at the end of the stills SEGMENT of _rows
-        # (memories first, then gallery stills -- see _refresh_list).
+        # (memories first, then gallery stills, then CDL entries -- see
+        # _refresh_list).
         new_index = len(self.library.memories) + len(self.gallery_library.stills) - 1
         self._refresh_list(keep_selection=new_index)
 
+    # ---- CDL (folded in from cdl_library_panel.py, per Tom: "CDL library
+    # should also be rolled into the gallery") -------------------------
+
+    def save_cdl_entry(self, name, params):
+        """Called by MainWindow in response to StackPanel.
+        cdl_save_requested (see stack_panel.py's "Save to CDL Library..."
+        button, its label unchanged even though the destination is now
+        this Gallery) -- `params` is that stage's own params dict
+        (slope/offset/power/sat/style/sop_enabled/sat_enabled). No
+        source_filename/source_path -- this entry came from a live
+        stage, not an imported file. Mirrors the old CDLLibraryPanel.
+        save_entry exactly, just landing in self.cdl_library instead."""
+        self.cdl_library.save(
+            name,
+            params.get("slope", (1.0, 1.0, 1.0)),
+            params.get("offset", (0.0, 0.0, 0.0)),
+            params.get("power", (1.0, 1.0, 1.0)),
+            params.get("sat", 1.0),
+            style=params.get("style", "asc"),
+            sop_enabled=params.get("sop_enabled", True),
+            sat_enabled=params.get("sat_enabled", True),
+        )
+        new_index = (len(self.library.memories) + len(self.gallery_library.stills)
+                     + len(self.cdl_library.entries) - 1)
+        self._refresh_list(keep_selection=new_index)
+
+    def import_cdl_from_path(self, path):
+        """Shared by the mono "Import..." action (dispatched by
+        extension, see _on_import_clicked), a CDL file dragged in from
+        the Browser panel (_GalleryDropListWidget), and
+        BrowserPanel.cdl_file_selected on double-click (see
+        main_window.py's wiring) -- all three land here so behavior
+        can't drift between them. Mirrors the old CDLLibraryPanel.
+        import_from_path exactly, just landing in self.cdl_library
+        instead."""
+        try:
+            parsed = cdl_file_io.parse_cdl_file(path)
+        except Exception as e:  # noqa: BLE001 -- surface any parse failure to the user
+            QMessageBox.critical(self, "Failed to import CDL", str(e))
+            return
+        if not parsed:
+            QMessageBox.warning(
+                self, "Nothing found",
+                f"No ColorCorrection entries found in:\n{path}")
+            return
+
+        stem = Path(path).stem
+        filename = Path(path).name
+        multiple = len(parsed) > 1
+        last_index = None
+        for i, data in enumerate(parsed):
+            # Prefer the file's own id/description; fall back to the
+            # filename (suffixed with its position if the file held more
+            # than one entry, so several unnamed entries from the same
+            # file don't all collide on one identical name).
+            name = data.get("id") or data.get("description") or (
+                f"{stem} #{i + 1}" if multiple else stem)
+            entry = CDLEntry(
+                name, data["slope"], data["offset"], data["power"], data["sat"],
+                style=data.get("style", "asc"),
+                source_filename=filename, source_path=str(path),
+            )
+            self.cdl_library.add_entry(entry)
+            last_index = (len(self.library.memories) + len(self.gallery_library.stills)
+                          + len(self.cdl_library.entries) - 1)
+        self._refresh_list(keep_selection=last_index)
+
     def _on_update_clicked(self):
         entry = self._selected_entry()
-        if isinstance(entry, GalleryStill):
+        if isinstance(entry, (GalleryStill, CDLEntry)):
             QMessageBox.information(
-                self, "Update",
-                "Update only applies to a saved Stack Memory, not a "
-                "gallery still.")
+                self, "Update Still",
+                "Update Still only applies to a grabbed still, not an "
+                "imported reference still or a CDL entry.")
             return
         memory = entry
         if memory is None or self._stack_getter is None:
             return
         reply = QMessageBox.question(
-            self, "Update Memory",
+            self, "Update Still",
             f'Overwrite "{memory.name}" with the current stack?',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
@@ -423,13 +682,20 @@ class StackMemoriesPanel(QWidget):
         entry = self._selected_entry()
         if entry is None:
             return
-        title = "Rename Reference Still" if isinstance(entry, GalleryStill) else "Rename Memory"
+        if isinstance(entry, GalleryStill):
+            title = "Rename Reference Still"
+        elif isinstance(entry, CDLEntry):
+            title = "Rename CDL"
+        else:
+            title = "Rename Still"
         name, ok = QInputDialog.getText(self, title, "Name:", text=entry.name)
         name = name.strip()
         if not ok or not name:
             return
         if isinstance(entry, GalleryStill):
             self.gallery_library.rename(entry.id, name)
+        elif isinstance(entry, CDLEntry):
+            self.cdl_library.rename(entry.id, name)
         else:
             self.library.rename(entry.id, name)
         self._refresh_list(keep_selection=self.list_widget.currentRow())
@@ -438,7 +704,12 @@ class StackMemoriesPanel(QWidget):
         entry = self._selected_entry()
         if entry is None:
             return
-        noun = "reference still" if isinstance(entry, GalleryStill) else "memory"
+        if isinstance(entry, GalleryStill):
+            noun = "reference still"
+        elif isinstance(entry, CDLEntry):
+            noun = "CDL entry"
+        else:
+            noun = "still"
         reply = QMessageBox.question(
             self, "Delete",
             f'Delete "{entry.name}" ({noun})? This can\'t be undone.',
@@ -451,6 +722,10 @@ class StackMemoriesPanel(QWidget):
             self.gallery_library.remove(entry.id)
             self._refresh_list()
             return
+        if isinstance(entry, CDLEntry):
+            self.cdl_library.remove(entry.id)
+            self._refresh_list()
+            return
         self.library.remove(entry.id)
         self._refresh_list()
 
@@ -459,35 +734,56 @@ class StackMemoriesPanel(QWidget):
 
     def _on_export_clicked(self):
         entry = self._selected_entry()
-        if isinstance(entry, GalleryStill):
+        if isinstance(entry, (GalleryStill, CDLEntry)):
             QMessageBox.information(
                 self, "Export",
-                "Export... only applies to a saved Stack Memory, not a "
-                "gallery still.")
+                "Export... only applies to a grabbed still, not an "
+                "imported reference still or a CDL entry.")
             return
         memory = entry
         if memory is None:
             return
         default_name = f"{memory.name}.ltm"
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Stack Memory", default_name, MEMORY_FILE_FILTER)
+            self, "Export Still (.ltm)", default_name, MEMORY_FILE_FILTER)
         if not path:
             return
         try:
             stack_memory_file_io.export_memory(memory, path)
         except Exception as e:  # noqa: BLE001 -- surface any write failure to the user
-            QMessageBox.critical(self, "Failed to export memory", str(e))
+            QMessageBox.critical(self, "Failed to export still", str(e))
             return
 
     def _on_import_clicked(self):
+        """One mono Import... action (per Tom, replacing the previous
+        separate Import Still.../Import CDL.../Import... trio) -- a
+        single file dialog whose filter covers all three kinds this
+        panel understands, dispatched to the right import path by the
+        chosen file's own extension rather than asking the user to
+        pick the right button first."""
         path, _ = QFileDialog.getOpenFileName(
-            self, "Import Stack Memory", "", MEMORY_FILE_FILTER)
+            self, "Import", "", IMPORT_FILE_FILTER)
         if not path:
             return
+        suffix = Path(path).suffix.lower()
+        if suffix in CDL_EXTENSIONS:
+            self.import_cdl_from_path(path)
+        elif suffix == ".ltm":
+            self.import_memory_from_path(path)
+        elif suffix in STILL_EXTENSIONS:
+            self.import_still_from_path(path)
+        else:
+            QMessageBox.warning(
+                self, "Unrecognized file",
+                f"Don't know how to import this file:\n{path}\n\n"
+                "Expected a still image, a .ltm file, or a .cc/.cdl/.ccc "
+                "CDL file.")
+
+    def import_memory_from_path(self, path):
         try:
             memory, warnings = stack_memory_file_io.import_memory(path)
         except Exception as e:  # noqa: BLE001 -- surface any read/parse failure to the user
-            QMessageBox.critical(self, "Failed to import memory", str(e))
+            QMessageBox.critical(self, "Failed to import still", str(e))
             return
         # Imported memories are appended with a fresh id (see
         # stack_memory_file_io.import_memory) -- never collides with an
@@ -520,4 +816,19 @@ class StackMemoriesPanel(QWidget):
         pattern as load_library, a separate method since the two are
         independent libraries persisted independently (see session_io.py)."""
         self.gallery_library = gallery_library
+        self._refresh_list()
+
+    def get_cdl_library(self):
+        return self.cdl_library
+
+    def load_cdl_library(self, cdl_library):
+        """Replace the whole CDLLibrary wholesale -- same pattern as
+        load_library/load_gallery_library. Session persistence itself is
+        UNCHANGED (see session_io.py's cdl_library_to_session_list/
+        _from_session_list, still their own independent "cdl_library"
+        session key) -- only which panel OWNS the library moved, per Tom
+        folding CDL Library into this Gallery; a session saved before
+        that move loads here exactly the same as it loaded into the old
+        standalone CDLLibraryPanel."""
+        self.cdl_library = cdl_library
         self._refresh_list()

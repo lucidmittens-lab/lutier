@@ -165,7 +165,7 @@ class ScopesPanel(QWidget):
         self.stack.addWidget(self._build_vectorscope_view())
 
         self.no_image_label = QLabel(
-            "Import a sample image (Sample Image panel) to see scopes.")
+            "Load a source image (Media Library) to see scopes.")
         self.no_image_label.setStyleSheet(f"color: {HINT_TEXT_HEX}; font-size: 11px;")
         layout.addWidget(self.no_image_label)
 

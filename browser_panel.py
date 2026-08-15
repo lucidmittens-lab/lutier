@@ -33,20 +33,22 @@ receiving end, see stack_panel.py's docstring. Still worth a real
 on-screen pass for actual mouse-driven drag ergonomics, which offscreen
 can't meaningfully exercise.
 """
+import os
+from datetime import datetime
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QListWidget,
-    QListWidgetItem, QPushButton, QLabel, QFileDialog, QInputDialog,
+    QListWidgetItem, QToolButton, QLabel, QFileDialog,
 )
 
 from app_logic import scan_lut_folder
 from cdl_file_io import CDL_EXTENSIONS
-
-IDENTITY_LUT_SIZES = [9, 17, 25, 33, 45, 65, 97]
+import hover_inspector
 
 # Custom MIME types carrying just the dragged file's full path -- used so
-# a drop target (Stack panel for LUTs, CDL Library for CDLs) can tell "a
+# a drop target (Stack panel for LUTs, the Gallery for CDLs) can tell "a
 # file got dragged in from the Browser" apart from its own internal
 # drags, and pull the path back out without depending on QListWidget's
 # default model-index MIME payload (which doesn't survive across two
@@ -84,16 +86,11 @@ class _DraggableFileListWidget(QListWidget):
 class BrowserPanel(QWidget):
     """Emits file_selected(str) with the full path whenever the user picks a
     LUT from the list, cdl_file_selected(str) when a CDL file (.cc/.cdl/
-    .ccc) is picked instead (routed to the CDL Library, see this module's
-    docstring), and identity_lut_requested(int) when "New Identity LUT..."
-    is used instead -- MainWindow treats the latter as an alternate way to
-    get a current LUT loaded that doesn't require an existing file, e.g.
-    to apply an ACES DRT bake "to nothing" rather than on top of some
-    other grade."""
+    .ccc) is picked instead (routed to the Gallery, see this module's
+    docstring)."""
 
     file_selected = Signal(str)
     cdl_file_selected = Signal(str)
-    identity_lut_requested = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -107,12 +104,12 @@ class BrowserPanel(QWidget):
         folder_row = QHBoxLayout()
         self.folder_label = QLabel("No folder selected")
         folder_row.addWidget(self.folder_label, stretch=1)
-        browse_button = QPushButton("Choose Folder...")
+        browse_button = QToolButton()
+        browse_button.setObjectName("chooseFolderButton")
+        browse_button.setAutoRaise(True)
+        browse_button.setText("Choose Folder...")
         browse_button.clicked.connect(self.choose_folder)
         folder_row.addWidget(browse_button)
-        identity_button = QPushButton("New Identity LUT...")
-        identity_button.clicked.connect(self._on_new_identity_lut_clicked)
-        folder_row.addWidget(identity_button)
         layout.addLayout(folder_row)
 
         self.search_box = QLineEdit()
@@ -127,6 +124,7 @@ class BrowserPanel(QWidget):
         self.list_widget.setDragEnabled(True)
         self.list_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
         layout.addWidget(self.list_widget, stretch=1)
+        hover_inspector.register(self.list_widget, self._hover_info_for_item)
 
         self.status_label = QLabel("")
         layout.addWidget(self.status_label)
@@ -196,6 +194,34 @@ class BrowserPanel(QWidget):
             count_text += f", {cdl_count} CDL file{'s' if cdl_count != 1 else ''}"
         self.status_label.setText(count_text)
 
+    def _hover_info_for_item(self, item):
+        """Alt+hover info card content (see hover_inspector.py) -- the
+        full path (the row itself only shows the filename, elided for
+        CDLs with a "[CDL]" suffix) plus a live stat() of the actual file
+        on disk (size, last modified) -- these entries aren't ingested
+        into any in-memory library the way Image/LUT/CDL Library rows
+        are, so there's no already-loaded metadata to show; re-reading
+        the file's own stat is cheap and always current."""
+        path = item.data(Qt.ItemDataRole.UserRole)
+        if not path:
+            return None
+        kind = "CDL" if item.data(_ROLE_KIND) == _KIND_CDL else "LUT"
+        lines = [os.path.basename(path), path, kind]
+        try:
+            st = os.stat(path)
+        except OSError:
+            return "\n".join(lines)
+        size = st.st_size
+        if size < 1024:
+            size_text = f"{size} B"
+        elif size < 1024 * 1024:
+            size_text = f"{size / 1024:.1f} KB"
+        else:
+            size_text = f"{size / (1024 * 1024):.1f} MB"
+        modified = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+        lines.append(f"{size_text} -- modified {modified}")
+        return "\n".join(lines)
+
     def _on_item_double_clicked(self, item):
         path = item.data(Qt.ItemDataRole.UserRole)
         if not path:
@@ -204,19 +230,3 @@ class BrowserPanel(QWidget):
             self.cdl_file_selected.emit(path)
         else:
             self.file_selected.emit(path)
-
-    def _on_new_identity_lut_clicked(self):
-        size_str, ok = QInputDialog.getItem(
-            self, "New Identity LUT", "Grid size:",
-            [str(s) for s in IDENTITY_LUT_SIZES],
-            current=IDENTITY_LUT_SIZES.index(33), editable=True,
-        )
-        if not ok or not size_str:
-            return
-        try:
-            size = int(size_str)
-        except ValueError:
-            return
-        if size < 2:
-            return
-        self.identity_lut_requested.emit(size)

@@ -232,6 +232,29 @@ def test_isolated_edit_on_gpu_ineligible_stack_does_not_trigger_a_redundant_sett
           "settle timer fires -- OK")
 
 
+def test_empty_stack_previews_the_source_image_unchanged():
+    """Per Tom: "New identity lut should be removed and you should be
+    able to preview an empty stack" -- an empty stack (zero stages) must
+    NOT be treated the same as "no stack at all"; refresh_preview should
+    compute and show the source image unmodified, not clear the after
+    array to None."""
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_image(size=(64, 48))
+    ok = panel.load_image(path)
+    assert ok, "test setup: image failed to load"
+    empty_stack = Stack()
+    panel.set_stack_getter(lambda: empty_stack)
+
+    panel.refresh_preview()
+
+    after = panel.get_current_after_array()
+    assert after is not None
+    np.testing.assert_array_equal(after, panel._image_array)
+    print("SampleImagePanel: an empty stack previews the source image "
+          "unchanged, rather than clearing the after array -- OK")
+
+
 def test_gpu_eligible_stack_always_gets_full_resolution_even_mid_burst():
     """GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 5: a GPU-eligible stack
     (this test's CDL-only stack qualifies, see gpu_stack_renderer.
@@ -609,11 +632,8 @@ def test_load_reference_from_array_loads_directly_into_reference_slot():
     panel.load_reference_from_array(array)
     assert panel._reference_original_array is array
     assert panel._reference_current_path is None
-    assert panel._reference_source_colourspace is None
-    assert panel._reference_adapt_enabled is False
     print("SampleImagePanel.load_reference_from_array: loads an "
-          "already-decoded array directly into the Reference slot, "
-          "always Unmanaged -- OK")
+          "already-decoded array directly into the Reference slot -- OK")
 
 
 def test_render_full_resolution_after_for_capture_delegates_for_a_still():
@@ -727,6 +747,7 @@ if __name__ == "__main__":
     test_gpu_eligible_stack_always_recomputes_at_scopes_resolution()
     test_gpu_eligible_stack_settle_does_not_trigger_a_redundant_rerender()
     test_isolated_edit_on_gpu_ineligible_stack_does_not_trigger_a_redundant_settle_rerender()
+    test_empty_stack_previews_the_source_image_unchanged()
     test_gpu_eligible_stack_always_gets_full_resolution_even_mid_burst()
     test_downres_array_is_a_grow_only_decimation_of_the_working_array()
     test_scopes_array_is_capped_at_the_target_dimension()

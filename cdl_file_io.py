@@ -27,7 +27,7 @@ Returns plain dicts (id/description/slope/offset/power/sat/style), not
 cdl_library.CDLEntry objects -- this module's only job is "read a file,
 hand back what was in it," same integration point as
 app_logic.load_lut_any_format returning a plain colour.LUT3D/LUT1D rather
-than anything about the Stack or a Stage. cdl_library_panel.py is what
+than anything about the Stack or a Stage. stack_memories_panel.py is what
 turns these dicts into CDLEntry objects (deciding names, recording
 source_filename/source_path) and adds them to the library.
 """
@@ -39,7 +39,7 @@ OCIO_IMPORT_ERROR = cdl.OCIO_IMPORT_ERROR
 # The three ASC CDL container extensions this module (via OCIO) reads --
 # same role app_logic.SUPPORTED_EXTENSIONS plays for LUT files. Used by
 # browser_panel.py to recognize/scan for these alongside LUT files, and
-# by cdl_library_panel.py for its Import... file dialog filter.
+# by stack_memories_panel.py for its Import CDL... file dialog filter.
 CDL_EXTENSIONS = {".cc", ".cdl", ".ccc"}
 
 
@@ -73,7 +73,7 @@ def parse_cdl_file(path):
     "id"/"description" come straight from the file's own
     <ColorCorrection id="..."> attribute / <SOPNode><Description>, either
     of which may be an empty string if the file didn't set them --
-    cdl_library_panel.py is what decides on a fallback display name for
+    stack_memories_panel.py is what decides on a fallback display name for
     that case, not this module.
 
     Raises whatever OCIO itself raises for a malformed/unreadable file --

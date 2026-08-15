@@ -1,17 +1,19 @@
 """
-image_library_panel.py -- the "Image Library" panel (left column by
+image_library_panel.py -- the "Media Libraries" panel (left column by
 default, between Browser and LUT Library, per Tom -- see main_window.py's
 _build_default_dock_layout; freely draggable elsewhere since the docking
 migration, see RUNNING.md #40), a named shelf of reference images
 ingested into session memory: Import...
 decodes any image file Pillow supports and keeps the full decoded pixel
 array itself (not just its file path) -- see image_library.py's docstring
-on what that does and doesn't guarantee. Mirrors lut_library_panel.py's/
-cdl_library_panel.py's "named shelf" pattern -- import/apply/rename/delete,
-all in the "..." header menu -- but "apply" here means "load into the
-Viewer's Sample or Reference slot" (two separate actions, see
+on what that does and doesn't guarantee. Mirrors lut_library_panel.py's
+"named shelf" pattern, but "apply" here means "load into the
+Viewer's Source or Reference slot" (two separate actions, see
 sample_image_panel.py's docstring on those two roles) rather than "add a
-Stack stage."
+Stack stage." Import... (panel-level, no selection needed) lives in the
+"..." header menu; Load as Source/Load as Reference/Rename/Delete (all
+per-item) live on a right-click context menu instead (per Tom, see
+_on_context_menu_requested).
 
 No drag-and-drop from the Browser (unlike LUT Library/CDL Library) --
 BrowserPanel only ever lists LUT/CDL files, it has no notion of images, so
@@ -19,23 +21,24 @@ this panel's only ingestion path is its own Import... file dialog.
 
 VIDEO ENTRIES (Media Library Phase 2, per Tom's "comprehensive media
 library" request) -- Import... now also accepts video files (same
-extension set sample_image_panel.import_video already supports), opened
-via video_source.VideoSource just long enough to read its metadata and
-decode its first frame (for the thumbnail/row preview -- see
-image_library.py's docstring on why only that one frame is kept, not the
-whole clip), then closed immediately; the real file is reopened fresh by
-whatever later consumes it (see load_video's own already-existing
-open/close lifecycle). "Load as Sample" on a video entry hands off to
-sample_image_panel.load_sample_from_library_entry's own video branch
-(opens the full video with transport, not a frozen frame) -- "Load as
-Reference" stays disabled for a selected video entry, since Reference
-has never supported video and adding that is out of scope here.
+extension set as VIDEO_EXTENSIONS below), opened via video_source.
+VideoSource just long enough to read its metadata and decode its first
+frame (for the thumbnail/row preview -- see image_library.py's docstring
+on why only that one frame is kept, not the whole clip), then closed
+immediately; the real file is reopened fresh by whatever later consumes
+it (see load_video's own already-existing open/close lifecycle). "Load
+as Source" on a video entry hands off to sample_image_panel.
+load_sample_from_library_entry's own video branch (opens the full video
+with transport, not a frozen frame) -- "Load as Reference" stays
+disabled for a selected video entry, since Reference has never supported
+video and adding that is out of scope here.
 
 NOT TESTED IN THIS ENVIRONMENT -- same PySide6/libEGL wall as the rest of
 the GUI layer. Please run main_window.py and confirm: (1) Import... on a
-real image file adds an entry showing its pixel dimensions, (2) "Load as
-Sample"/"Load as Reference" (and double-click, which does "Load as
-Sample") route to the right slot in the Viewer and the preview updates,
+real image file adds an entry showing its pixel dimensions, (2) right-
+clicking a row shows "Load as Source"/"Load as Reference"/"Rename..."/
+"Delete", each acting on that row (and double-click, which does "Load as
+Source") route to the right slot in the Viewer and the preview updates,
 (3) Rename/Delete work and ask before Delete, (4) an entry survives Save
 Session -> Open Session on the same machine (see image_library.py's
 docstring on why this is a same-session-plus-same-machine guarantee, not
@@ -43,7 +46,7 @@ the "can't ever go missing" one LUT/CDL Library entries have).
 """
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QListWidget, QListWidgetItem,
@@ -56,10 +59,9 @@ import hover_inspector
 import media_cache
 import thumbnail
 import video_source
+import timecode
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".exr")
-# Same set sample_image_panel.import_video already supports -- see that
-# module's own file filter.
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".avi", ".m4v")
 
 IMAGE_FILE_FILTER = (
@@ -92,12 +94,20 @@ class ImageLibraryPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
 
         self.list_widget = QListWidget()
-        # Double-click defaults to "Load as Sample" -- the more common of
-        # the two roles (every existing Import Image/Adapt/Export Still
-        # workflow already assumes a Sample image), same "double-click is
-        # the fast path for the common action" convention LUT Library
-        # (Apply to Stack) and CDL Library (Apply to Stack) already use.
+        # Double-click defaults to "Load as Source" -- the more common of
+        # the two roles (every existing Import/Export Still workflow
+        # already assumes a Source image), same "double-click is the fast
+        # path for the common action" convention LUT Library (Apply to
+        # Stack) and CDL Library (Apply to Stack) already use.
         self.list_widget.itemDoubleClicked.connect(self._on_load_as_sample_clicked)
+        # Per-item actions (Load as Source/Load as Reference/Rename/
+        # Delete) live on a right-click context menu, not the "..."
+        # header menu (per Tom: "rename, load as source, delete and load
+        # as ref should move to right clicking a particular clip") --
+        # see _on_context_menu_requested. Only Import... (panel-level,
+        # not tied to a selection) stays in populate_menu below.
+        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self._on_context_menu_requested)
         layout.addWidget(self.list_widget, stretch=1)
         hover_inspector.register(self.list_widget, self._hover_info_for_item)
 
@@ -120,7 +130,11 @@ class ImageLibraryPanel(QWidget):
         """Add this panel's actions to `menu` -- shared by the "..."
         corner button above and MainWindow's top-level "Image Library"
         menu-bar menu, same redundant-on-purpose arrangement every other
-        panel's populate_menu already follows."""
+        panel's populate_menu already follows. Only Import... lives here
+        now -- Load as Source/Load as Reference/Rename/Delete moved to
+        the right-click context menu (see _on_context_menu_requested),
+        since they all need a selected row and don't make sense as a
+        standing header-menu action the way Import... does."""
         import_action = menu.addAction("Import...", self._on_import_clicked)
         import_action.setShortcut(QKeySequence("Ctrl+I"))
         import_action.setToolTip(
@@ -128,13 +142,24 @@ class ImageLibraryPanel(QWidget):
             "is copied in, not just referenced (see this panel's own "
             "docstring for the one caveat: this guarantee doesn't survive "
             "a session save/reload if the source file has since moved).")
-        load_as_sample_action = menu.addAction("Load as Sample", self._on_load_as_sample_clicked)
-        load_as_sample_action.setShortcut(QKeySequence("Ctrl+L"))
-        load_as_reference_action = menu.addAction("Load as Reference", self._on_load_as_reference_clicked)
-        load_as_reference_action.setShortcut(QKeySequence("Ctrl+R"))
+
+    def _on_context_menu_requested(self, pos):
+        """Right-click menu for a specific row (per Tom, see populate_menu's
+        own docstring) -- Load as Source/Load as Reference/Rename/Delete.
+        No menu at all when the click lands on empty space below the last
+        row (`itemAt` returns None there), same as every other panel's
+        list widget already leaves empty space unclickable."""
+        item = self.list_widget.itemAt(pos)
+        if item is None:
+            return
+        self.list_widget.setCurrentItem(item)
+        menu = QMenu(self.list_widget)
+        menu.addAction("Load as Source", self._on_load_as_sample_clicked)
+        menu.addAction("Load as Reference", self._on_load_as_reference_clicked)
         menu.addSeparator()
         menu.addAction("Rename...", self._on_rename_clicked)
         menu.addAction("Delete", self._on_delete_clicked)
+        menu.exec(self.list_widget.mapToGlobal(pos))
 
     # ---- list -----------------------------------------------------------
 
@@ -170,6 +195,11 @@ class ImageLibraryPanel(QWidget):
             lines.append(f"{w}x{h}")
         if entry.is_video:
             lines.append(f"Duration: {_format_duration(entry.duration)}")
+            if entry.frame_rate:
+                start_tc = timecode.frames_to_timecode(0, entry.frame_rate)
+                end_frame = max(0, (entry.frame_count or 1) - 1)
+                end_tc = timecode.frames_to_timecode(end_frame, entry.frame_rate)
+                lines.append(f"Start: {start_tc}  End: {end_tc}")
         else:
             lines.append(f"Color space: {entry.source_colourspace or 'Unmanaged'}")
         return "\n".join(lines)
@@ -199,11 +229,11 @@ class ImageLibraryPanel(QWidget):
 
     def import_from_path(self, path):
         """Decodes `path` at full native resolution (no preview downsample
-        -- this is the one-time ingest a Sample/Reference slot later
+        -- this is the one-time ingest a Source/Reference slot later
         downsamples FROM as needed, see sample_image_panel.py's
         load_sample_from_library_entry/load_reference_from_library_entry,
         the same "ingest at full quality, downsample per-consumer" split
-        Export Still already uses for the Sample image itself). Dispatches
+        Export Still already uses for the Source image itself). Dispatches
         to a still or video import based on `path`'s extension (see
         VIDEO_EXTENSIONS/module docstring)."""
         if Path(path).suffix.lower() in VIDEO_EXTENSIONS:
@@ -265,7 +295,7 @@ class ImageLibraryPanel(QWidget):
             QMessageBox.information(
                 self, "Load as Reference",
                 "The Reference slot doesn't support video -- use \"Load as "
-                "Sample\" instead.")
+                "Source\" instead.")
             return
         self.load_as_reference_requested.emit(entry)
 
@@ -303,6 +333,6 @@ class ImageLibraryPanel(QWidget):
     def load_library(self, library):
         """Replace the whole library wholesale -- used by MainWindow for
         session load, same "wholesale replace + rebuild the list" pattern
-        as LUTLibraryPanel.load_library/CDLLibraryPanel.load_library."""
+        as LUTLibraryPanel.load_library/StackMemoriesPanel.load_library."""
         self.library = library
         self._refresh_list()
