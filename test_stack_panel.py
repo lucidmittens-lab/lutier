@@ -19,6 +19,7 @@ so this is a test-only requirement, not something the class itself needs.
 """
 import sys
 
+import numpy as np
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QDragLeaveEvent
 from PySide6.QtTest import QTest
@@ -1486,6 +1487,59 @@ def test_highlight_checkbox_syncs_when_switching_between_two_keyers():
           "when switching to a different keyer -- OK")
 
 
+def test_ky_pick_clicked_requests_the_eyedropper_with_a_callback():
+    panel, stage = _panel_with_one_keyer_stage()
+    requests = []
+    panel.set_eyedropper_requester(lambda callback: requests.append(callback))
+    panel._on_ky_pick_clicked()
+    assert len(requests) == 1 and callable(requests[0])
+    print("StackPanel: clicking Pick requests the Viewer's own eyedropper "
+          "via the wired requester -- OK")
+
+
+def test_ky_pick_clicked_is_a_noop_without_a_wired_requester():
+    panel, stage = _panel_with_one_keyer_stage()
+    panel._on_ky_pick_clicked()  # never wired -- must not raise
+    print("StackPanel: Pick is a no-op when no eyedropper requester was "
+          "ever wired -- OK")
+
+
+def test_ky_pixel_picked_sets_hue_center_only():
+    panel, stage = _panel_with_one_keyer_stage()
+    panel.ky_chroma_min_spin.setValue(0.05)
+    panel.ky_softness_spin.setValue(0.4)
+
+    expected_hue = _oklch_hue_of((0.6, 0.2, 0.2), cw.DISPLAY_ENCODED_SRGB_SPACE)
+    panel._on_ky_pixel_picked(stage.id, (0.6, 0.2, 0.2))
+
+    # ky_hue_center_spin has 1 decimal of precision (see _build_keyer_
+    # inspector), so the stored value is expected_hue rounded to 0.1, not
+    # bit-exact.
+    assert abs(stage.params["hue_center"] - expected_hue) < 0.05
+    assert stage.params["chroma_min"] == 0.05, "picking must not disturb chroma/lightness/softness"
+    assert stage.params["softness"] == 0.4
+    print(f"StackPanel: a picked pixel sets Hue Center only "
+          f"({expected_hue:.2f}), leaving every other field alone -- OK")
+
+
+def test_ky_pixel_picked_is_ignored_if_selection_moved_to_a_different_stage():
+    panel, stage = _panel_with_one_keyer_stage()
+    original_hue = stage.params["hue_center"]
+    other = st.make_cdl_stage()
+    panel._add_stage(other)  # selection moves to `other`
+
+    panel._on_ky_pixel_picked(stage.id, (0.6, 0.2, 0.2))
+    assert stage.params["hue_center"] == original_hue
+    print("StackPanel: a stale pick (selection moved away before the "
+          "Viewer click landed) is silently ignored -- OK")
+
+
+def _oklch_hue_of(rgb, working_colourspace):
+    sample = np.array(rgb, dtype=np.float64).reshape(1, 1, 3)
+    _, _, h = cw.decode_working_colourspace_to_oklch(sample, working_colourspace)
+    return float(h[0, 0])
+
+
 def test_keyer_refresh_on_select_does_not_corrupt_stored_values():
     panel, stage = _panel_with_one_keyer_stage()
     panel.ky_hue_center_spin.setValue(77.0)
@@ -1724,6 +1778,10 @@ if __name__ == "__main__":
     test_selecting_a_different_stage_auto_clears_highlight()
     test_reselecting_the_same_highlighted_stage_does_not_clear_it()
     test_highlight_checkbox_syncs_when_switching_between_two_keyers()
+    test_ky_pick_clicked_requests_the_eyedropper_with_a_callback()
+    test_ky_pick_clicked_is_a_noop_without_a_wired_requester()
+    test_ky_pixel_picked_sets_hue_center_only()
+    test_ky_pixel_picked_is_ignored_if_selection_moved_to_a_different_stage()
     test_keyer_refresh_on_select_does_not_corrupt_stored_values()
     test_keyer_row_hides_its_own_matte_combo()
     test_keyer_row_shows_its_own_matte_letter_badge()

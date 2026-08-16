@@ -1026,6 +1026,17 @@ class SampleImagePanel(QWidget):
         for where this is actually read."""
         self._highlight_getter = getter
 
+    def pick_pixel_color(self, callback):
+        """Eyedropper entry point (per Tom) -- thin pass-through to
+        self.compare.arm_eyedropper (see that method's own docstring for
+        the actual one-shot click-to-sample mechanism). StackPanel
+        doesn't hold a WipeCompareWidget reference of its own -- panels
+        only ever talk via getters/signals through main_window.py, same
+        as set_stack_getter/set_highlight_getter above -- so it reaches
+        the Viewer through THIS panel instead, via
+        StackPanel.set_eyedropper_requester."""
+        self.compare.arm_eyedropper(callback)
+
     def refresh_preview(self):
         """Public trigger for 'something this panel doesn't own directly
         changed, re-render' -- used for StackPanel.stack_changed, since

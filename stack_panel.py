@@ -1477,6 +1477,11 @@ class StackPanel(QObject):
         # it, so it can never silently stay "on" for a stage you've
         # clicked away from.
         self._highlight_stage_id = None
+        # Zero-arg-callback-in, callback-out getter for the Viewer's own
+        # eyedropper (per Tom) -- see set_eyedropper_requester's own
+        # docstring for why this indirection exists (StackPanel doesn't
+        # hold a WipeCompareWidget reference of its own).
+        self._eyedropper_requester = None
         self._row_stage_ids = []
         self._row_insert_index = []
         # stage_id -> _StageRowWidget, rebuilt every _refresh_list() call
@@ -4628,6 +4633,20 @@ class StackPanel(QObject):
         hue_row.addWidget(_ParamLabel(
             "Hue Width:", lambda: self.ky_hue_width_spin.setValue(ky.DEFAULT_HUE_WIDTH)))
         hue_row.addWidget(self.ky_hue_width_spin, stretch=1)
+
+        # Eyedropper (per Tom) -- arms WipeCompareWidget's own one-shot
+        # click-to-sample (see set_eyedropper_requester's own docstring
+        # for the getter-based cross-panel wiring), sets Hue Center ONLY
+        # from whatever's actually on screen at the clicked pixel (see
+        # _on_ky_pixel_picked) -- width/chroma/lightness stay whatever
+        # the user already has them, a deliberate "click to say which
+        # hue, sliders stay a deliberate choice" v1 scope decision.
+        self.ky_pick_button = QPushButton("Pick")
+        self.ky_pick_button.setToolTip(
+            "Click, then click a pixel in the Viewer to set Hue Center "
+            "from it.")
+        self.ky_pick_button.clicked.connect(self._on_ky_pick_clicked)
+        hue_row.addWidget(self.ky_pick_button)
         outer.addLayout(hue_row)
 
         chroma_row = QHBoxLayout()
@@ -4756,6 +4775,42 @@ class StackPanel(QObject):
             return
         self._highlight_stage_id = stage.id if checked else None
         self._emit_changed()
+
+    def _on_ky_pick_clicked(self):
+        """Arms the Viewer's own eyedropper (see set_eyedropper_requester's
+        own docstring) for the CURRENTLY selected keyer stage -- captures
+        its own Stage.id now, at click time, rather than re-reading
+        self._selected_stage() from inside the picked-pixel callback,
+        since the selection could have moved on by the time the user
+        actually clicks a pixel in the Viewer."""
+        if self._eyedropper_requester is None:
+            return
+        stage = self._selected_stage()
+        if stage is None or stage.kind != "keyer":
+            return
+        stage_id = stage.id
+        self._eyedropper_requester(lambda rgb: self._on_ky_pixel_picked(stage_id, rgb))
+
+    def _on_ky_pixel_picked(self, stage_id, rgb):
+        """Callback from WipeCompareWidget.arm_eyedropper, via Sample
+        ImagePanel.pick_pixel_color -- `rgb` is a plain (r, g, b) float
+        tuple sampled off the ACTUAL on-screen pixel (see read_back_
+        after_frame's own docstring), decoded here through color_warper.
+        DISPLAY_ENCODED_SRGB_SPACE specifically -- a FIXED display space,
+        never this stage's own configurable working_colourspace, since a
+        screen pixel is display-referred regardless of what encoding the
+        grading pipeline used internally (see that constant's own
+        docstring). Sets Hue Center ONLY -- see the Pick button's own
+        tooltip for why width/chroma/lightness are left alone. No-ops if
+        the keyer that requested the pick is no longer selected -- the
+        stage_id captured at click time may not resolve to anything
+        meaningful anymore by the time the Viewer click actually lands."""
+        stage = self._selected_stage()
+        if stage is None or stage.id != stage_id or stage.kind != "keyer":
+            return
+        sample = np.array(rgb, dtype=np.float64).reshape(1, 1, 3)
+        _, _, hue = cw.decode_working_colourspace_to_oklch(sample, cw.DISPLAY_ENCODED_SRGB_SPACE)
+        self.ky_hue_center_spin.setValue(float(hue[0, 0]))
 
     # ---- inspector: fork_split stage ------------------------------------
 
@@ -5222,6 +5277,19 @@ class StackPanel(QObject):
         viewing preference, not something a saved session should
         remember was "on.\""""
         return self._highlight_stage_id
+
+    def set_eyedropper_requester(self, requester):
+        """requester: a callable taking one arg (a callback) that arms
+        the Viewer's own eyedropper -- SampleImagePanel.pick_pixel_color,
+        wired in from main_window.py alongside set_stack_getter/set_
+        highlight_getter. Unlike those two, this one is PUSH rather than
+        PULL: StackPanel can't reach the Viewer's WipeCompareWidget
+        directly (panels only ever talk through main_window.py), so this
+        stores a way to ASK it to arm itself instead of a value to read.
+        None (never wired, or in a standalone/test StackPanel) makes
+        _on_ky_pick_clicked a no-op -- same defensive convention every
+        other cross-panel getter/callback in this class already uses."""
+        self._eyedropper_requester = requester
 
     def get_baked_lut(self, name=None):
         """Bake the current stack into a flat colour.LUT3D -- used by

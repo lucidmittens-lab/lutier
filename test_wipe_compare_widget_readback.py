@@ -19,7 +19,8 @@ collect_ignore for exactly that reason.
 import sys
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -116,6 +117,59 @@ def test_read_back_after_frame_works_for_a_gpu_ineligible_already_graded_array()
           "verbatim for a GPU-ineligible stack -- OK")
 
 
+def _click(target, pos, button=Qt.MouseButton.LeftButton):
+    """Same synthetic-QMouseEvent approach test_wipe_compare_widget.py's
+    own _press uses -- calling this directly (not QTest.mouseClick, which
+    needs actual OS event delivery to the shown window) is enough since
+    mousePressEvent is a plain Qt virtual method."""
+    event = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(*pos), QPointF(*pos),
+                         button, button, Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(target, event)
+
+
+def test_arm_eyedropper_samples_the_real_on_screen_pixel():
+    """The one thing test_wipe_compare_widget.py's own offscreen
+    eyedropper tests can't cover (read_back_after_frame always returns
+    None there) -- an armed click against a REAL painted frame samples
+    the actual on-screen pixel and hands it to the callback."""
+    w = _shown_widget()
+    array = np.zeros((48, 64, 3), dtype=np.float32)
+    array[:, :32] = (0.6, 0.2, 0.2)  # left half reddish
+    array[:, 32:] = (0.2, 0.2, 0.6)  # right half bluish
+    w.set_after(array, gpu_stack=None)
+    QTest.qWait(_PAINT_WAIT_MS)
+
+    picked = []
+    w.arm_eyedropper(lambda rgb: picked.append(rgb))
+    image_rect = w._image_rect()
+    left_pos = (image_rect.left() + image_rect.width() * 0.25, image_rect.center().y())
+    _click(w, left_pos)
+
+    assert len(picked) == 1
+    assert np.allclose(picked[0], (0.6, 0.2, 0.2), atol=1e-2), picked[0]
+    assert w._eyedropper_armed is False
+    print(f"WipeCompareWidget.arm_eyedropper: a click samples the real "
+          f"on-screen pixel, got {picked[0]} -- OK")
+
+
+def test_arm_eyedropper_disarms_after_exactly_one_pick():
+    w = _shown_widget()
+    array = np.full((48, 64, 3), (0.5, 0.5, 0.5), dtype=np.float32)
+    w.set_after(array, gpu_stack=None)
+    QTest.qWait(_PAINT_WAIT_MS)
+
+    picked = []
+    w.arm_eyedropper(lambda rgb: picked.append(rgb))
+    image_rect = w._image_rect()
+    pos = (image_rect.center().x(), image_rect.center().y())
+    _click(w, pos)
+    _click(w, pos)  # second click, after disarming -- must not sample again
+
+    assert len(picked) == 1
+    print("WipeCompareWidget.arm_eyedropper: one-shot -- a second click "
+          "after the first pick samples nothing -- OK")
+
+
 def test_read_back_after_frame_returns_none_after_clear():
     w = _shown_widget()
     array = np.random.default_rng(3).uniform(0, 1, size=(48, 64, 3)).astype(np.float32)
@@ -136,6 +190,8 @@ if __name__ == "__main__":
     test_read_back_after_frame_matches_cpu_grading_gpu_eligible()
     test_read_back_after_frame_reflects_a_live_stack_edit()
     test_read_back_after_frame_works_for_a_gpu_ineligible_already_graded_array()
+    test_arm_eyedropper_samples_the_real_on_screen_pixel()
+    test_arm_eyedropper_disarms_after_exactly_one_pick()
     test_read_back_after_frame_returns_none_after_clear()
     print()
     print("All wipe_compare_widget_readback tests passed.")

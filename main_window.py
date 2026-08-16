@@ -1069,6 +1069,11 @@ class MainWindow(QMainWindow):
         # in a Keyer's own inspector already emits stack_changed, so no
         # separate signal/connection is needed for it to take effect.
         self.sample_image.set_highlight_getter(self.stack_panel.get_highlight_stage_id)
+        # Eyedropper (per Tom: "we really need an eyedropper") -- PUSH
+        # rather than pull (see set_eyedropper_requester's own docstring):
+        # a Keyer inspector's own Pick button calls this to arm the
+        # Viewer's one-shot click-to-sample.
+        self.stack_panel.set_eyedropper_requester(self.sample_image.pick_pixel_color)
         self.stack_panel.stack_changed.connect(self.sample_image.refresh_preview)
         # Locks the Stack panel for the duration of realtime video
         # playback (Tom, 2026-08-13: playback shows the grade, but the

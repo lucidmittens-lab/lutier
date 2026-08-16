@@ -422,6 +422,84 @@ def test_left_drag_still_moves_the_wipe_divider_not_pan():
           "divider, doesn't pan -- OK")
 
 
+# --- eyedropper (arm/disarm + mousePressEvent dispatch) -------------------
+# read_back_after_frame itself needs a REAL shown window (paintGL never
+# runs under QT_QPA_PLATFORM=offscreen -- see test_wipe_compare_widget_
+# readback.py's own docstring), so it always returns None here -- these
+# tests cover the arm/disarm STATE MACHINE and mousePressEvent's own
+# dispatch/preemption instead (an armed click never falls through to pan
+# or the wipe-divider drag, regardless of whether a real pixel got
+# sampled). The actual end-to-end pixel-sampling behavior is covered
+# separately in test_wipe_compare_widget_readback.py, which already runs
+# with a real window.
+
+def test_arm_eyedropper_sets_armed_state_and_cross_cursor():
+    w = _widget()
+    w.arm_eyedropper(lambda rgb: None)
+    assert w._eyedropper_armed is True
+    assert w.cursor().shape() == Qt.CursorShape.CrossCursor
+    print("WipeCompareWidget.arm_eyedropper: sets armed state and a "
+          "cross cursor -- OK")
+
+
+def test_disarm_eyedropper_clears_armed_state_and_cursor():
+    w = _widget()
+    w.arm_eyedropper(lambda rgb: None)
+    w.disarm_eyedropper()
+    assert w._eyedropper_armed is False
+    assert w._eyedropper_callback is None
+    assert w.cursor().shape() == Qt.CursorShape.ArrowCursor
+    print("WipeCompareWidget.disarm_eyedropper: clears armed state and "
+          "restores the arrow cursor -- OK")
+
+
+def test_armed_click_inside_the_image_disarms_and_does_not_pan_or_drag():
+    w = _widget()
+    picked = []
+    w.arm_eyedropper(lambda rgb: picked.append(rgb))
+    image_rect = w._image_rect()
+    pos = (image_rect.center().x(), image_rect.center().y())
+
+    _press(w, pos, button=Qt.MouseButton.LeftButton)
+
+    assert w._eyedropper_armed is False, "one click disarms, even though read_back_after_frame returns None offscreen"
+    assert w._panning is False
+    assert w._dragging is False
+    print("WipeCompareWidget: an armed click inside the image disarms "
+          "and never falls through to pan/wipe-drag -- OK")
+
+
+def test_armed_click_outside_the_image_disarms_without_sampling():
+    w = _widget()
+    picked = []
+    w.arm_eyedropper(lambda rgb: picked.append(rgb))
+    _press(w, (1, 1), button=Qt.MouseButton.LeftButton)  # top-left letterbox margin
+    assert w._eyedropper_armed is False
+    assert picked == []
+    print("WipeCompareWidget: an armed click outside the image disarms "
+          "without ever calling the callback -- OK")
+
+
+def test_armed_middle_click_disarms_and_does_not_start_panning():
+    w = _widget()
+    w.arm_eyedropper(lambda rgb: None)
+    _press(w, (200, 150), button=Qt.MouseButton.MiddleButton)
+    assert w._eyedropper_armed is False
+    assert w._panning is False, "an armed eyedropper preempts the middle-button pan gesture too"
+    print("WipeCompareWidget: an armed middle-click still disarms and "
+          "does not start panning -- OK")
+
+
+def test_unarmed_click_behaves_exactly_as_before():
+    w = _widget()
+    image_rect = w._image_rect()
+    pos = (image_rect.center().x(), image_rect.center().y())
+    _press(w, pos, button=Qt.MouseButton.LeftButton)
+    assert w._dragging is True
+    print("WipeCompareWidget: mousePressEvent behaves exactly as before "
+          "when the eyedropper was never armed -- OK")
+
+
 if __name__ == "__main__":
     test_default_zoom_matches_original_fit_behavior()
     test_zoom_scales_the_image_rect_relative_to_fit()
@@ -447,5 +525,11 @@ if __name__ == "__main__":
     test_middle_double_click_resets_zoom_and_pan()
     test_left_double_click_still_resets_wipe_not_view()
     test_left_drag_still_moves_the_wipe_divider_not_pan()
+    test_arm_eyedropper_sets_armed_state_and_cross_cursor()
+    test_disarm_eyedropper_clears_armed_state_and_cursor()
+    test_armed_click_inside_the_image_disarms_and_does_not_pan_or_drag()
+    test_armed_click_outside_the_image_disarms_without_sampling()
+    test_armed_middle_click_disarms_and_does_not_start_panning()
+    test_unarmed_click_behaves_exactly_as_before()
     print()
     print("All wipe_compare_widget tests passed.")

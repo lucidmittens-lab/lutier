@@ -349,6 +349,13 @@ class WipeCompareWidget(QOpenGLWidget):
         self._panning = False
         self._pan_start_mouse = None
         self._pan_start_offset = None
+        # Eyedropper (per Tom: "we really need an eyedropper") -- ONE-SHOT
+        # armed mode, see arm_eyedropper's own docstring. First click-
+        # consuming mode this widget has ever had, so it's checked FIRST
+        # in mousePressEvent, ahead of both panning and the wipe-divider
+        # drag -- an armed eyedropper always wins the next click.
+        self._eyedropper_armed = False
+        self._eyedropper_callback = None
         # None (default) -- _image_rect fits the image directly into the
         # widget, exactly as before Canvas Settings existed. When set (see
         # set_canvas_aspect_ratio), the image instead fits into a
@@ -923,7 +930,59 @@ class WipeCompareWidget(QOpenGLWidget):
 
     # ---- mouse interaction ----------------------------------------------
 
+    def arm_eyedropper(self, callback):
+        """Arms ONE-SHOT click-to-sample mode: the next left-button click
+        on the image samples whatever pixel is actually on screen there
+        (via read_back_after_frame -- the final, already-composited
+        result, correct for both the GPU and CPU render paths, see that
+        method's own docstring) and calls `callback(rgb)` with a plain
+        (r, g, b) float tuple, then disarms itself automatically (not a
+        persistent mode -- one pick per arm, matching a typical
+        eyedropper tool's own click-once-then-done behavior). A click
+        outside the image, or any button other than left, disarms
+        WITHOUT sampling (the standard "cancel" gesture) -- callback is
+        simply never invoked in that case."""
+        self._eyedropper_armed = True
+        self._eyedropper_callback = callback
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def disarm_eyedropper(self):
+        self._eyedropper_armed = False
+        self._eyedropper_callback = None
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def _sample_pixel_at_fraction(self, x_frac, y_frac):
+        """(x_frac, y_frac) in [0,1], SAME top-down convention as
+        widget_pos_to_image_fraction's own return value -- read_back_
+        after_frame's row 0 is the image's own top row (upload_rgba32f_
+        texture places array row 0 at texture row y=0 with no flip, and
+        this method's own glReadPixels reads the texture directly, not a
+        post-draw screen framebuffer, so no vertex-shader texcoord flip
+        ever enters into it -- row order in equals row order out).
+        Returns an (r, g, b) float tuple, or None if there's nothing to
+        read back yet."""
+        array = self.read_back_after_frame()
+        if array is None:
+            return None
+        h, w = array.shape[:2]
+        x = min(w - 1, max(0, int(x_frac * w)))
+        y = min(h - 1, max(0, int(y_frac * h)))
+        return tuple(float(v) for v in array[y, x])
+
     def mousePressEvent(self, event):
+        if self._eyedropper_armed:
+            callback = self._eyedropper_callback
+            rgb = None
+            if event.button() == Qt.MouseButton.LeftButton:
+                image_rect = self._image_rect()
+                frac = widget_pos_to_image_fraction(event.position(), image_rect) if image_rect else None
+                if frac is not None:
+                    rgb = self._sample_pixel_at_fraction(*frac)
+            self.disarm_eyedropper()
+            if rgb is not None and callback is not None:
+                callback(rgb)
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.MiddleButton:
             # Panning (per Tom) -- middle button specifically, so it can
             # never conflict with the left-button wipe-divider drag right

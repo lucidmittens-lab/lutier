@@ -58,6 +58,16 @@ import colorspace
 
 DEFAULT_WORKING_COLOURSPACE = "ACEScct"
 REFERENCE_LINEAR_SPACE = "Linear Rec.709 (sRGB)"
+# A picked-off-screen pixel (see wipe_compare_widget.WipeCompareWidget.
+# read_back_after_frame) is DISPLAY-referred, regardless of whatever
+# working_colourspace the grading pipeline that produced it used
+# internally -- decoding it needs this FIXED entry, never a stage's own
+# configurable working_colourspace. Same OCIO-vs-colour-science name
+# split every working-colourspace-aware list in this app already needs
+# (see test_color_warper.py's own SRGB_LIKE_SPACE, the same convention
+# copied here as a real, importable constant instead of a test-only
+# local).
+DISPLAY_ENCODED_SRGB_SPACE = "sRGB Encoded Rec.709 (sRGB)" if aces_drt.OCIO_AVAILABLE else "sRGB"
 
 MAX_POINTS = 12
 DEFAULT_WAKE = 35.0
