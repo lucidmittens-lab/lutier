@@ -1839,6 +1839,43 @@ def test_matte_combine_refresh_on_select_does_not_corrupt_stored_values():
           "does not corrupt the stage's stored params -- OK")
 
 
+def test_matte_combine_highlight_checkbox_toggles_get_highlight_stage_id():
+    panel, k1, k2, combine = _panel_with_two_keyers_and_a_matte_combine()
+    assert panel.get_highlight_stage_id() is None
+    panel.mc_highlight_checkbox.setChecked(True)
+    assert panel.get_highlight_stage_id() == combine.id
+    panel.mc_highlight_checkbox.setChecked(False)
+    assert panel.get_highlight_stage_id() is None
+    print("StackPanel Matte Combine inspector: the Highlight checkbox "
+          "toggles get_highlight_stage_id() -- OK")
+
+
+def test_matte_combine_highlight_checkbox_resyncs_on_refresh():
+    panel, k1, k2, combine = _panel_with_two_keyers_and_a_matte_combine()
+    panel.mc_highlight_checkbox.setChecked(True)
+    panel._on_row_clicked(k1.id)  # switches away -- auto-clears (shared _on_selection_changed logic)
+    panel._on_row_clicked(combine.id)  # back to matte_combine
+    assert panel.mc_highlight_checkbox.isChecked() is False
+    print("StackPanel Matte Combine inspector: the Highlight checkbox "
+          "itself resyncs (unchecked) after switching away and back -- OK")
+
+
+def test_highlight_auto_clears_switching_between_different_matte_kinds():
+    """The auto-clear in _on_selection_changed is deliberately kind-
+    agnostic (compares stage ids, not kinds) -- confirmed here across
+    TWO DIFFERENT matte-producing kinds specifically (keyer -> matte_
+    combine), not just keyer-to-keyer as the pre-existing tests cover."""
+    panel, k1, k2, combine = _panel_with_two_keyers_and_a_matte_combine()
+    panel._on_row_clicked(k1.id)
+    panel.ky_highlight_checkbox.setChecked(True)
+    assert panel.get_highlight_stage_id() == k1.id
+
+    panel._on_row_clicked(combine.id)
+    assert panel.get_highlight_stage_id() is None
+    print("StackPanel: Highlight auto-clears when selection moves from "
+          "a 'keyer' to a 'matte_combine' -- OK")
+
+
 if __name__ == "__main__":
     test_short_text_that_fits_is_not_elided_and_has_no_tooltip()
     test_long_text_at_narrow_width_is_elided_with_ellipsis_and_gets_a_tooltip()
@@ -1944,5 +1981,8 @@ if __name__ == "__main__":
     test_matte_combine_inspector_title_shows_its_own_matte_letter()
     test_matte_combine_row_hides_its_own_matte_combo()
     test_matte_combine_refresh_on_select_does_not_corrupt_stored_values()
+    test_matte_combine_highlight_checkbox_toggles_get_highlight_stage_id()
+    test_matte_combine_highlight_checkbox_resyncs_on_refresh()
+    test_highlight_auto_clears_switching_between_different_matte_kinds()
     print()
     print("All stack_panel tests passed.")

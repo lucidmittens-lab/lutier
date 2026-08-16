@@ -4971,6 +4971,23 @@ class StackPanel(QObject):
         op_row.addWidget(self.mc_op_combo, stretch=1)
         outer.addLayout(op_row)
 
+        # Highlight -- same generic mechanism the Keyer inspector's own
+        # checkbox already drives (self._highlight_stage_id/
+        # get_highlight_stage_id/sample_image_panel.py's "MATTE
+        # HIGHLIGHT" compositing never cared which kind produced the
+        # matte), just a second entry point onto it -- see
+        # _build_keyer_inspector's own highlight_row comment for the
+        # full rationale.
+        highlight_row = QHBoxLayout()
+        self.mc_highlight_checkbox = QCheckBox("Highlight")
+        self.mc_highlight_checkbox.setToolTip(
+            "Show this stage's own combined matte in the Viewer -- full "
+            "color where selected, grayscale elsewhere.")
+        self.mc_highlight_checkbox.toggled.connect(self._on_mc_highlight_toggled)
+        highlight_row.addWidget(self.mc_highlight_checkbox)
+        highlight_row.addStretch(1)
+        outer.addLayout(highlight_row)
+
         outer.addStretch(1)
 
         self.inspector_stack.addWidget(self._wrap_inspector_page(group))
@@ -4990,6 +5007,19 @@ class StackPanel(QObject):
         stage.params["matte_b_source_id"] = self.mc_b_combo.currentData()
         stage.params["op"] = self.mc_op_combo.currentData()
         self._update_row_content(stage.id)
+        self._emit_changed()
+
+    def _on_mc_highlight_toggled(self, checked):
+        """Same convention as _on_ky_highlight_toggled -- guarded by
+        _refreshing_inspector, does NOT write into stage.params (ephemeral
+        UI state, see get_highlight_stage_id's own docstring), still
+        calls _emit_changed() so the Viewer actually re-renders."""
+        if self._refreshing_inspector:
+            return
+        stage = self._selected_stage()
+        if stage is None or stage.kind != "matte_combine":
+            return
+        self._highlight_stage_id = stage.id if checked else None
         self._emit_changed()
 
     # ---- inspector: fork_split stage ------------------------------------
@@ -5454,6 +5484,10 @@ class StackPanel(QObject):
 
             idx = self.mc_op_combo.findData(p.get("op", matte_combine.DEFAULT_OP))
             self.mc_op_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+            self.mc_highlight_checkbox.blockSignals(True)
+            self.mc_highlight_checkbox.setChecked(self._highlight_stage_id == stage.id)
+            self.mc_highlight_checkbox.blockSignals(False)
 
             # Own matte letter in the group title, same convention as
             # the Keyer inspector's own title just above.
