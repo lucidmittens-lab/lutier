@@ -4795,21 +4795,32 @@ class StackPanel(QObject):
         """Callback from WipeCompareWidget.arm_eyedropper, via Sample
         ImagePanel.pick_pixel_color -- `rgb` is a plain (r, g, b) float
         tuple sampled off the ACTUAL on-screen pixel (see read_back_
-        after_frame's own docstring), decoded here through color_warper.
-        DISPLAY_ENCODED_SRGB_SPACE specifically -- a FIXED display space,
-        never this stage's own configurable working_colourspace, since a
-        screen pixel is display-referred regardless of what encoding the
-        grading pipeline used internally (see that constant's own
-        docstring). Sets Hue Center ONLY -- see the Pick button's own
-        tooltip for why width/chroma/lightness are left alone. No-ops if
-        the keyer that requested the pick is no longer selected -- the
-        stage_id captured at click time may not resolve to anything
-        meaningful anymore by the time the Viewer click actually lands."""
+        after_frame's own docstring). Decoded here through THIS stage's
+        OWN working_colourspace -- NOT a fixed display space (an earlier
+        version of this method assumed the on-screen pixel was always
+        display-encoded sRGB, which is simply wrong: this app's Viewer
+        applies no unconditional display transform of its own --
+        gpu_stack_renderer.render_chain runs only the stages actually IN
+        the user's stack, so read_back_after_frame hands back whatever
+        encoding the working pipeline is already in, e.g. ACEScct,
+        exactly matching what compute_matte's own decode_working_
+        colourspace_to_oklch call already assumes for THIS SAME stage's
+        params. Using working_colourspace here makes the eyedropper key
+        off the pixel's real perceptually-uniform OKLCh position exactly
+        as this keyer's own qualifier would see it, rather than off
+        whatever raw code values happened to be on screen misinterpreted
+        through the wrong transfer function.) Sets Hue Center ONLY -- see
+        the Pick button's own tooltip for why width/chroma/lightness are
+        left alone. No-ops if the keyer that requested the pick is no
+        longer selected -- the stage_id captured at click time may not
+        resolve to anything meaningful anymore by the time the Viewer
+        click actually lands."""
         stage = self._selected_stage()
         if stage is None or stage.id != stage_id or stage.kind != "keyer":
             return
+        working_colourspace = stage.params.get("working_colourspace", ky.DEFAULT_WORKING_COLOURSPACE)
         sample = np.array(rgb, dtype=np.float64).reshape(1, 1, 3)
-        _, _, hue = cw.decode_working_colourspace_to_oklch(sample, cw.DISPLAY_ENCODED_SRGB_SPACE)
+        _, _, hue = cw.decode_working_colourspace_to_oklch(sample, working_colourspace)
         self.ky_hue_center_spin.setValue(float(hue[0, 0]))
 
     # ---- inspector: fork_split stage ------------------------------------

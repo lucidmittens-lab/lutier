@@ -27,6 +27,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow
 
 import stack as st
 import color_warper as cw
+import keyer as ky
 from stack_panel import (
     _ElidingLabel, _StackListWidget, StackPanel, _stage_kind_badge_text,
     _ForkBranchGridRowWidget, _StageRowWidget, _ParamLabel, GRADING_TONE_RANGE_LABELS,
@@ -1377,7 +1378,6 @@ def test_keyer_badge_text():
 
 
 def test_add_keyer_starts_at_defaults():
-    import keyer as ky
     panel, stage = _panel_with_one_keyer_stage()
     assert stage.kind == "keyer"
     assert stage.params["hue_center"] == ky.DEFAULT_HUE_CENTER
@@ -1505,11 +1505,19 @@ def test_ky_pick_clicked_is_a_noop_without_a_wired_requester():
 
 
 def test_ky_pixel_picked_sets_hue_center_only():
+    """The picked RGB is decoded through THIS STAGE'S OWN working_
+    colourspace (its default, ACEScct, since _panel_with_one_keyer_stage
+    never changes it) -- matching exactly what keyer.compute_matte
+    itself would decode for the same pixel, NOT a fixed display space
+    (see _on_ky_pixel_picked's own docstring for why an earlier version
+    assuming display-encoded sRGB was a real bug: this app's Viewer
+    applies no unconditional display transform, so the on-screen pixel
+    is already in the SAME encoding the keyer's own qualifier reads)."""
     panel, stage = _panel_with_one_keyer_stage()
     panel.ky_chroma_min_spin.setValue(0.05)
     panel.ky_softness_spin.setValue(0.4)
 
-    expected_hue = _oklch_hue_of((0.6, 0.2, 0.2), cw.DISPLAY_ENCODED_SRGB_SPACE)
+    expected_hue = _oklch_hue_of((0.6, 0.2, 0.2), ky.DEFAULT_WORKING_COLOURSPACE)
     panel._on_ky_pixel_picked(stage.id, (0.6, 0.2, 0.2))
 
     # ky_hue_center_spin has 1 decimal of precision (see _build_keyer_
@@ -1520,6 +1528,29 @@ def test_ky_pixel_picked_sets_hue_center_only():
     assert stage.params["softness"] == 0.4
     print(f"StackPanel: a picked pixel sets Hue Center only "
           f"({expected_hue:.2f}), leaving every other field alone -- OK")
+
+
+def test_ky_pixel_picked_decodes_through_this_stages_own_working_colourspace():
+    """Direct regression coverage for the fix: two keyers with DIFFERENT
+    working_colourspace values must decode the SAME picked RGB to
+    DIFFERENT hues -- proving the decode genuinely reads each stage's
+    own param rather than any single fixed space."""
+    panel, stage = _panel_with_one_keyer_stage()
+    reference_space = cw.REFERENCE_LINEAR_SPACE
+    idx = panel.ky_space_combo.findText(reference_space)
+    assert idx >= 0
+    panel.ky_space_combo.setCurrentIndex(idx)
+    assert stage.params["working_colourspace"] == reference_space
+
+    picked_rgb = (0.6, 0.2, 0.2)
+    hue_in_aces = _oklch_hue_of(picked_rgb, ky.DEFAULT_WORKING_COLOURSPACE)
+    hue_in_reference = _oklch_hue_of(picked_rgb, reference_space)
+    assert abs(hue_in_aces - hue_in_reference) > 0.5, "the two spaces must actually decode differently for this test to mean anything"
+
+    panel._on_ky_pixel_picked(stage.id, picked_rgb)
+    assert abs(stage.params["hue_center"] - hue_in_reference) < 0.05
+    print("StackPanel: the picked pixel decodes through THIS stage's own "
+          "working_colourspace, not a fixed one -- OK")
 
 
 def test_ky_pixel_picked_is_ignored_if_selection_moved_to_a_different_stage():
@@ -1781,6 +1812,7 @@ if __name__ == "__main__":
     test_ky_pick_clicked_requests_the_eyedropper_with_a_callback()
     test_ky_pick_clicked_is_a_noop_without_a_wired_requester()
     test_ky_pixel_picked_sets_hue_center_only()
+    test_ky_pixel_picked_decodes_through_this_stages_own_working_colourspace()
     test_ky_pixel_picked_is_ignored_if_selection_moved_to_a_different_stage()
     test_keyer_refresh_on_select_does_not_corrupt_stored_values()
     test_keyer_row_hides_its_own_matte_combo()
