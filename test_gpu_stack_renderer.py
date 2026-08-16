@@ -22,9 +22,10 @@ import app_logic
 import gpu_shader_prototype as gsp
 import gpu_stack_renderer
 from stack import (Stack, apply_stack_to_image_array, make_aces_drt_stage, make_cdl_stage,
-                    make_custom_drt_stage, make_exposure_contrast_stage, make_fork_merge_stage,
-                    make_fork_split_stage, make_grading_primary_stage, make_grading_rgb_curve_stage,
-                    make_grading_tone_stage, make_lut_stage, make_printer_lights_stage)
+                    make_color_warper_stage, make_custom_drt_stage, make_exposure_contrast_stage,
+                    make_fork_merge_stage, make_fork_split_stage, make_grading_primary_stage,
+                    make_grading_rgb_curve_stage, make_grading_tone_stage, make_lut_stage,
+                    make_printer_lights_stage)
 
 
 def _random_lut3d(size=9, seed=0):
@@ -134,6 +135,16 @@ def test_is_stack_gpu_eligible():
     custom_drt_bogus_space = Stack()
     custom_drt_bogus_space.add_stage(make_custom_drt_stage("not a real colourspace"))
     assert gpu_stack_renderer.is_stack_gpu_eligible(custom_drt_bogus_space) is False, (
+        "an unresolvable working_colourspace falls the whole stack back to CPU, not a crash")
+
+    color_warper_eligible = Stack()
+    color_warper_eligible.add_stage(make_color_warper_stage("ACEScct"))
+    assert gpu_stack_renderer.is_stack_gpu_eligible(color_warper_eligible) is True, (
+        "color_warper with a real working_colourspace should be GPU-eligible")
+
+    color_warper_bogus_space = Stack()
+    color_warper_bogus_space.add_stage(make_color_warper_stage("not a real colourspace"))
+    assert gpu_stack_renderer.is_stack_gpu_eligible(color_warper_bogus_space) is False, (
         "an unresolvable working_colourspace falls the whole stack back to CPU, not a crash")
 
     print("gpu_stack_renderer.is_stack_gpu_eligible: correctly gates on "
@@ -488,6 +499,43 @@ def test_printer_lights_then_aces_drt_chain_matches_cpu():
           f"max|delta|={delta.max():.6f} -- OK")
 
 
+def test_single_color_warper_stage_matches_cpu():
+    _app, context, surface = gsp._make_offscreen_gl_context()
+    image = _test_image()
+    points = [{"h0": 35.0, "c0": 0.15, "h": 55.0, "c": 0.22},
+              {"h0": 250.0, "c0": 0.1, "h": 250.0, "c": 0.02}]
+    s = Stack()
+    s.add_stage(make_color_warper_stage(
+        "ACEScct", points=points, wake=40.0, dropoff=0.3))
+
+    cpu_result = apply_stack_to_image_array(s, image)
+    gpu_result = _render_stack_on_gpu(s, image)
+    delta = np.abs(cpu_result.astype(np.float64) - gpu_result.astype(np.float64))
+    assert delta.max() < 1e-2, delta.max()
+    context.doneCurrent()
+    print(f"GpuStackRenderer: single color_warper stage matches CPU, "
+          f"max|delta|={delta.max():.6f} -- OK")
+
+
+def test_color_warper_then_aces_drt_chain_matches_cpu():
+    _app, context, surface = gsp._make_offscreen_gl_context()
+    image = _test_image()
+    display, view = aces_drt.get_default_display_and_view(aces_drt.DEFAULT_CONFIG_NAME)
+    points = [{"h0": 142.5, "c0": 0.2, "h": 120.0, "c": 0.3}]
+    s = Stack()
+    s.add_stage(make_color_warper_stage(
+        "ACEScct", points=points, wake=25.0, dropoff=0.6))
+    s.add_stage(make_aces_drt_stage("ACEScct", display, view))
+
+    cpu_result = apply_stack_to_image_array(s, image)
+    gpu_result = _render_stack_on_gpu(s, image)
+    delta = np.abs(cpu_result.astype(np.float64) - gpu_result.astype(np.float64))
+    assert delta.max() < 1e-2, delta.max()
+    context.doneCurrent()
+    print(f"GpuStackRenderer: color_warper -> ACES DRT chain matches CPU, "
+          f"max|delta|={delta.max():.6f} -- OK")
+
+
 def test_stage_opacity_blend_matches_cpu():
     _app, context, surface = gsp._make_offscreen_gl_context()
     image = _test_image()
@@ -696,6 +744,8 @@ if __name__ == "__main__":
     test_grading_rgb_curve_then_aces_drt_chain_matches_cpu()
     test_single_printer_lights_stage_matches_cpu()
     test_printer_lights_then_aces_drt_chain_matches_cpu()
+    test_single_color_warper_stage_matches_cpu()
+    test_color_warper_then_aces_drt_chain_matches_cpu()
     test_single_custom_drt_stage_matches_cpu()
     test_custom_drt_with_tuned_values_matches_cpu()
     test_single_lut_stage_matches_cpu()

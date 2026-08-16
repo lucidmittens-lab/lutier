@@ -123,6 +123,7 @@ from retarget import retarget_io
 from printer_lights import apply_printer_lights_in_working_space
 import aces_drt
 import cdl
+import color_warper
 import colorspace_convert
 import custom_drt
 import exposure_contrast
@@ -132,7 +133,7 @@ import grading_tone
 
 STAGE_KINDS = ("lut", "printer_lights", "aces_drt", "custom_drt", "cdl", "colorspace",
                "grading_primary", "exposure_contrast", "grading_tone",
-               "grading_rgb_curve", "fork_split", "fork_merge")
+               "grading_rgb_curve", "color_warper", "fork_split", "fork_merge")
 
 _id_counter = itertools.count(1)
 
@@ -441,6 +442,26 @@ def make_grading_rgb_curve_stage(style=grading_rgb_curve.DEFAULT_STYLE,
     return Stage("grading_rgb_curve", label or "Grading RGB Curve", params, enabled, opacity)
 
 
+def make_color_warper_stage(working_colourspace=color_warper.DEFAULT_WORKING_COLOURSPACE,
+                             points=None, wake=color_warper.DEFAULT_WAKE,
+                             dropoff=color_warper.DEFAULT_DROPOFF,
+                             label=None, enabled=True, opacity=1.0):
+    """A stage that applies WARPier's perceptually-uniform (OKLCh)
+    hue/chroma warp, same math as
+    color_warper.apply_color_warper_in_working_space -- see that module's
+    docstring for the control-point shape and the wake/dropoff falloff.
+    `points` defaults to an empty list (no seeded anchors, per Tom), so a
+    freshly-added stage is an exact no-op until the user actually adds a
+    point (points_are_identity is vacuously true for an empty list)."""
+    resolved_points = [dict(p) for p in points] if points is not None else []
+    params = {
+        "working_colourspace": working_colourspace,
+        "points": resolved_points,
+        "wake": float(wake), "dropoff": float(dropoff),
+    }
+    return Stage("color_warper", label or "WARPier", params, enabled, opacity)
+
+
 def make_colorspace_stage(src, dst, config_name=None, label=None, enabled=True, opacity=1.0):
     """A stage that applies a plain (non-DRT) color space conversion, same
     math as colorspace_convert.apply_colorspace_conversion -- see that
@@ -603,6 +624,14 @@ def _apply_stage_to_array(stage, array):
             array,
             style=p.get("style", grading_rgb_curve.DEFAULT_STYLE),
             red=p.get("red"), green=p.get("green"), blue=p.get("blue"), master=p.get("master"),
+        )
+
+    if stage.kind == "color_warper":
+        p = stage.params
+        return color_warper.apply_color_warper_in_working_space(
+            array, p["working_colourspace"], p.get("points", []),
+            wake=p.get("wake", color_warper.DEFAULT_WAKE),
+            dropoff=p.get("dropoff", color_warper.DEFAULT_DROPOFF),
         )
 
     if stage.kind in ("fork_split", "fork_merge"):  # pragma: no cover -- see docstring above

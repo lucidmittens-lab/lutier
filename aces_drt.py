@@ -328,6 +328,24 @@ def decode_to_linear(image_array, working_colourspace, config_name=DEFAULT_CONFI
     return _apply_ocio_processor(cpu, image_array)
 
 
+def convert_colourspace(image_array, src_colourspace, dst_colourspace,
+                         config_name=DEFAULT_CONFIG_NAME):
+    """Convert `image_array` between two named color spaces in this
+    config's registry, in one OCIO-composed hop -- UNLIKE decode_to_linear/
+    encode_from_linear above (deliberately same-gamut only, see
+    _find_native_linear_colourspace's own docstring on why a diagonal
+    printer-lights-style gain needs that), this DOES apply a full
+    primaries/gamut matrix whenever src and dst differ in gamut, which is
+    exactly what a caller asking to convert between two named spaces
+    wants. Exists for color_warper.py: OKLab's matrices are only valid for
+    one specific fixed set of primaries (linear Rec.709/sRGB), so it needs
+    a real gamut conversion from whatever the working color space's own
+    native gamut is, not just an encoding-curve strip."""
+    _require_ocio()
+    cpu = _get_colourspace_conversion_processor(config_name, src_colourspace, dst_colourspace)
+    return _apply_ocio_processor(cpu, image_array)
+
+
 def encode_from_linear(image_array, working_colourspace, config_name=DEFAULT_CONFIG_NAME):
     """Inverse of decode_to_linear -- `image_array` is scene-linear values
     in `working_colourspace`'s own native gamut, converted to encoded code

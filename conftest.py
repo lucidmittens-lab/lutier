@@ -70,6 +70,7 @@ collect_ignore = [
     "test_gpu_lut_shader.py", "test_wipe_compare_widget_gpu_state.py",
     "test_gpu_printer_lights_shader.py", "test_gpu_aces_drt_shader.py",
     "test_gpu_fork_merge_shader.py", "test_gpu_custom_drt_shader.py",
+    "test_gpu_color_warper_shader.py",
     # Needs a REAL windowing system, not just a real offscreen GL context
     # -- QOpenGLWidget.isValid() is always False and paintGL never runs
     # at all under QT_QPA_PLATFORM=offscreen (confirmed directly). Run

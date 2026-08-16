@@ -236,6 +236,29 @@ control.
   GPU-accelerated via `gpu_ocio_dynamic.py` — all four curves push
   through one dynamic property's array-typed uniforms.
 
+- **WARPier** — a hue/saturation warp equivalent to Resolve's Color
+  Warper, built on OKLCh (a perceptually uniform color space) instead of
+  raw HSL — equal steps around the wheel correspond to equal perceived
+  color difference, unlike HSL's famously uneven hue spacing. Click empty
+  space on the wheel to drop a new warp point (up to 12), drag any point
+  both around the ring (hue) and toward/away from the white center
+  (saturation), right-click a point to remove it. **Wake** controls how
+  far a point's influence spreads to neighboring hues (shown as a
+  translucent wash on the wheel); **Drop-off** controls how hard or soft
+  that falloff is, from a plain gradual taper to a plateau that holds
+  strength across most of the wake radius before cutting off sharply.
+  "Reset to Identity" restores the three default seed points and default
+  Wake/Drop-off. Working Color Space aware — the warp happens in a fixed
+  perceptual reference space regardless of what gamut/encoding the
+  footage is actually in, converting there and back around the warp
+  itself. **Source:** `color_warper.py` (OKLab/OKLCh math, ported from
+  the published Ottosson reference constants, plus the working-space-
+  aware apply); `color_warper_wheel.py` (the wheel widget, same
+  Qt-free-math/thin-Qt-wrapper split as `color_wheel_widget.py`).
+  GPU-accelerated via `gpu_color_warper_shader.py` — point/Wake/Drop-off
+  values are plain uniforms, so dragging a point never recompiles the
+  shader.
+
 - **ACES DRT** — engages the selected ACES DRT (Display Rendering
   Transform — the RRT+ODT chain, or ACES 2.0's unified Output Transform)
   for the scene-to-display transform, via OpenColorIO's built-in ACES

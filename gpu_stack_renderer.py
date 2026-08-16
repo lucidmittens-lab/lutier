@@ -93,10 +93,12 @@ import OpenGL.GL as gl
 
 import aces_drt
 import cdl
+import color_warper
 import colorspace_convert
 import custom_drt
 import gpu_aces_drt_shader
 import gpu_cdl_shader
+import gpu_color_warper_shader
 import gpu_custom_drt_shader
 import gpu_fork_merge_shader as gfm
 import gpu_lut_shader
@@ -112,7 +114,7 @@ import printer_lights
 
 GPU_ELIGIBLE_KINDS = frozenset({"cdl", "aces_drt", "custom_drt", "colorspace", "grading_primary",
                                 "exposure_contrast", "grading_tone", "grading_rgb_curve",
-                                "lut", "printer_lights"})
+                                "lut", "printer_lights", "color_warper"})
 
 
 def is_stack_gpu_eligible(stack):
@@ -184,6 +186,19 @@ def is_stack_gpu_eligible(stack):
             final_target = stage.params.get("final_target")
             if not gpu_custom_drt_shader.is_custom_drt_gpu_eligible(
                     config_name, working_colourspace, mastering_display, final_target):
+                return False
+        if stage.kind == "color_warper":
+            # See gpu_color_warper_shader.py's own docstring -- requires
+            # OCIO (color_warper.py's colour-science fallback has no GPU
+            # equivalent) and a working_colourspace whose conversion to/
+            # from REFERENCE_LINEAR_SPACE needs no baked texture. Safe to
+            # call with no current GL context, same "generate/inspect
+            # GLSL text only" convention printer_lights'/CAMier's own
+            # eligibility checks follow.
+            working_colourspace = stage.params.get(
+                "working_colourspace", color_warper.DEFAULT_WORKING_COLOURSPACE)
+            if not gpu_color_warper_shader.is_color_warper_gpu_eligible(
+                    aces_drt.DEFAULT_CONFIG_NAME, working_colourspace):
                 return False
     if fork_state is not None:
         return False  # unmatched split at the end of the stack -- already invalid
@@ -286,6 +301,7 @@ class GpuStackRenderer:
         self._lut3d_cache = gpu_lut_shader.Lut3DGpuCache()
         self._printer_lights_cache = gpu_printer_lights_shader.PrinterLightsGpuCache()
         self._custom_drt_cache = gpu_custom_drt_shader.CustomDrtGpuCache()
+        self._color_warper_cache = gpu_color_warper_shader.ColorWarperGpuCache()
         self._vbo = None
         # Ping-pong pair, sized lazily to the first render_chain call's
         # actual image dimensions and recreated whenever that changes
@@ -365,6 +381,11 @@ class GpuStackRenderer:
                 p.get("config_name", custom_drt.DEFAULT_CONFIG_NAME), p["working_colourspace"],
                 p.get("mastering_display", custom_drt.DEFAULT_MASTERING_DISPLAY),
                 p.get("final_target"))
+            return entry.program
+        if stage.kind == "color_warper":
+            working_colourspace = stage.params.get(
+                "working_colourspace", color_warper.DEFAULT_WORKING_COLOURSPACE)
+            entry = self._color_warper_cache.get_entry(aces_drt.DEFAULT_CONFIG_NAME, working_colourspace)
             return entry.program
         raise AssertionError(  # pragma: no cover -- caller must check is_stack_gpu_eligible first
             f"{stage.kind!r} is not GPU-eligible; caller should have "
@@ -585,6 +606,19 @@ class GpuStackRenderer:
                 gpu_custom_drt_shader.set_custom_drt_uniforms(gl, program, **kwargs)
                 gl.glUniform1f(gl.glGetUniformLocation(program, "uStageOpacity"), opacity)
             return _set_custom_drt_uniforms
+
+        if stage.kind == "color_warper":
+            # Point/wake/dropoff are plain hand-written GLSL uniforms
+            # (see gpu_color_warper_shader.py's own docstring) -- same
+            # "never recompile on a point drag" bar printer_lights/CDL/
+            # CAMier meet.
+            p = stage.params
+            return functools.partial(
+                gpu_color_warper_shader.set_color_warper_uniforms, gl,
+                points=p.get("points", []),
+                wake=p.get("wake", color_warper.DEFAULT_WAKE),
+                dropoff=p.get("dropoff", color_warper.DEFAULT_DROPOFF),
+                opacity=stage.opacity)
 
         def _set_opacity_only(program):
             gl.glUniform1f(gl.glGetUniformLocation(program, "uStageOpacity"), stage.opacity)
@@ -869,3 +903,4 @@ class GpuStackRenderer:
         self._lut3d_cache.clear()
         self._printer_lights_cache.clear()
         self._custom_drt_cache.clear()
+        self._color_warper_cache.clear()

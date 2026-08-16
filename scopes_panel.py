@@ -59,13 +59,17 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedWidget, QToolButton,
-    QMenu, QDialog, QSlider, QPushButton,
+    QMenu, QDialog, QSlider, QPushButton, QComboBox,
 )
 
 from scopes import (
     compute_histogram, compute_waveform, compute_vectorscope,
     pq_graticule_stops, mv_graticule_stops, percent_graticule_stops,
 )
+import aces_drt
+from app_logic import list_available_colourspaces
+from volumetric_scope import sample_pixels_to_oklch, DEFAULT_VOLUMETRIC_COLOURSPACE
+from volumetric_scope_widget import VolumetricScopeWidget
 from floating_dialog import make_floating_tool_window, show_floating
 # style.HINT_TEXT_HEX -- see style.py's FOURTEENTH PASS docstring: QSS's
 # palette(placeholder-text) doesn't reliably survive Qt's style-polish
@@ -77,6 +81,11 @@ from style import HINT_TEXT_HEX
 SCOPE_HISTOGRAM = "Histogram"
 SCOPE_WAVEFORM = "Waveform"
 SCOPE_VECTORSCOPE = "Vectorscope"
+# Volumetric (per Tom) -- the only scope with any color-space awareness
+# at all, see volumetric_scope.py's own docstring on why: every other
+# scope here plots raw [0,1] numbers with no decode step, but OKLCh
+# specifically needs to know what space to decode FROM first.
+SCOPE_VOLUMETRIC = "Volumetric"
 # Number of vertical buckets compute_waveform bins into -- a module-level
 # constant (rather than a bare 256 inline) since every graticule's line
 # positions (see _build_waveform_view) need to use the EXACT same value
@@ -163,6 +172,7 @@ class ScopesPanel(QWidget):
         self.stack.addWidget(self._build_histogram_view())
         self.stack.addWidget(self._build_waveform_view())
         self.stack.addWidget(self._build_vectorscope_view())
+        self.stack.addWidget(self._build_volumetric_view())
 
         self.no_image_label = QLabel(
             "Load a source image (Media Library) to see scopes.")
@@ -210,11 +220,12 @@ class ScopesPanel(QWidget):
         # conversation in RUNNING.md for the fuller reasoning).
         scope_shortcuts = {
             SCOPE_HISTOGRAM: "Ctrl+1", SCOPE_WAVEFORM: "Ctrl+2", SCOPE_VECTORSCOPE: "Ctrl+3",
+            SCOPE_VOLUMETRIC: "Ctrl+4",
         }
         action_group = QActionGroup(menu)
         action_group.setExclusive(True)
         actions = {}
-        for name in (SCOPE_HISTOGRAM, SCOPE_WAVEFORM, SCOPE_VECTORSCOPE):
+        for name in (SCOPE_HISTOGRAM, SCOPE_WAVEFORM, SCOPE_VECTORSCOPE, SCOPE_VOLUMETRIC):
             action = menu.addAction(name)
             action.setShortcut(QKeySequence(scope_shortcuts[name]))
             action.setCheckable(True)
@@ -364,6 +375,37 @@ class ScopesPanel(QWidget):
         self.vectorscope_plot.setRange(xRange=(-0.6, 0.6), yRange=(-0.6, 0.6), padding=0)
         return self.vectorscope_plot
 
+    def _build_volumetric_view(self):
+        """The only scope with any color-space awareness at all (see
+        volumetric_scope.py's own docstring on why) -- a "Color Space:"
+        combo, same OCIO-vs-colour-science dispatch every other working-
+        space combo in this app already uses (e.g. stack_panel.py's own
+        cw_space_combo for WARPier), stacked above the live 3D point
+        cloud."""
+        container = QWidget()
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        space_row = QHBoxLayout()
+        space_row.addWidget(QLabel("Color Space:"))
+        self.volumetric_space_combo = QComboBox()
+        self._volumetric_using_ocio = aces_drt.OCIO_AVAILABLE
+        if self._volumetric_using_ocio:
+            self.volumetric_space_combo.addItems(aces_drt.list_working_colourspaces())
+        else:
+            self.volumetric_space_combo.addItems(list_available_colourspaces())
+        index = self.volumetric_space_combo.findText(DEFAULT_VOLUMETRIC_COLOURSPACE)
+        if index >= 0:
+            self.volumetric_space_combo.setCurrentIndex(index)
+        self.volumetric_space_combo.currentTextChanged.connect(self._render_volumetric)
+        space_row.addWidget(self.volumetric_space_combo, stretch=1)
+        outer.addLayout(space_row)
+
+        self.volumetric_widget = VolumetricScopeWidget()
+        outer.addWidget(self.volumetric_widget, stretch=1)
+
+        return container
+
     def _build_graticule_opacity_dialog(self):
         """"Graticule Intensity..." dialog (per Tom) -- a single slider
         controlling how opaque the currently-built graticule line items
@@ -443,7 +485,7 @@ class ScopesPanel(QWidget):
             if action is not None and not action.isChecked():
                 action.setChecked(True)
         index = {SCOPE_HISTOGRAM: 0, SCOPE_WAVEFORM: 1,
-                  SCOPE_VECTORSCOPE: 2}[scope_name]
+                  SCOPE_VECTORSCOPE: 2, SCOPE_VOLUMETRIC: 3}[scope_name]
         self.stack.setCurrentIndex(index)
         self._render_current_scope()
 
@@ -490,8 +532,10 @@ class ScopesPanel(QWidget):
             self._render_histogram()
         elif scope_name == SCOPE_WAVEFORM:
             self._render_waveform()
-        else:
+        elif scope_name == SCOPE_VECTORSCOPE:
             self._render_vectorscope()
+        else:
+            self._render_volumetric()
 
     def _render_histogram(self):
         hist = compute_histogram(self._image_array, bins=256)
@@ -554,6 +598,18 @@ class ScopesPanel(QWidget):
         display_data = np.log1p(density)
         self.vectorscope_image_item.setImage(display_data, autoLevels=True)
         self.vectorscope_image_item.setRect(pg.QtCore.QRectF(lo, lo, hi - lo, hi - lo))
+
+    def _render_volumetric(self, _text=None):
+        """`_text` absorbed from QComboBox.currentTextChanged (unused --
+        volumetric_space_combo.currentText() below is read directly so
+        this also works as a plain no-arg call from _render_current_scope
+        on every live-edit tick)."""
+        if self._image_array is None:
+            return
+        working_colourspace = self.volumetric_space_combo.currentText()
+        positions, colors = sample_pixels_to_oklch(
+            self._image_array, working_colourspace=working_colourspace)
+        self.volumetric_widget.set_points(positions, colors)
 
     @staticmethod
     def _normalize_for_display(count_array):

@@ -166,6 +166,7 @@ import stack as st
 import canvas as cv
 import video_source
 import cdl
+import color_warper
 import custom_drt
 import exposure_contrast
 import grading_primary
@@ -380,6 +381,11 @@ def stage_to_session_dict(stage):
         for channel in grading_rgb_curve.RGB_CHANNELS:
             points = stage.params.get(channel) or grading_rgb_curve.DEFAULT_CONTROL_POINTS
             entry[channel] = [list(point) for point in points]
+    elif stage.kind == "color_warper":
+        entry["working_colourspace"] = stage.params.get("working_colourspace")
+        entry["points"] = [dict(p) for p in stage.params.get("points") or []]
+        entry["wake"] = stage.params.get("wake", color_warper.DEFAULT_WAKE)
+        entry["dropoff"] = stage.params.get("dropoff", color_warper.DEFAULT_DROPOFF)
     elif stage.kind == "fork_split":
         pass  # no extra fields -- see module docstring, STACK FORKING
     elif stage.kind == "fork_merge":
@@ -562,6 +568,16 @@ def stage_from_session_dict(entry):
             style=entry.get("style", grading_rgb_curve.DEFAULT_STYLE),
             red=entry.get("red"), green=entry.get("green"),
             blue=entry.get("blue"), master=entry.get("master"),
+            label=label,
+            enabled=entry.get("enabled", True),
+            opacity=entry.get("opacity", 1.0),
+        )
+    elif kind == "color_warper":
+        stage = st.make_color_warper_stage(
+            working_colourspace=entry.get("working_colourspace", color_warper.DEFAULT_WORKING_COLOURSPACE),
+            points=entry.get("points"),
+            wake=entry.get("wake", color_warper.DEFAULT_WAKE),
+            dropoff=entry.get("dropoff", color_warper.DEFAULT_DROPOFF),
             label=label,
             enabled=entry.get("enabled", True),
             opacity=entry.get("opacity", 1.0),

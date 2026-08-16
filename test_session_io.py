@@ -18,6 +18,7 @@ import colour
 from PIL import Image
 
 import canvas as cv
+import color_warper
 import custom_drt
 import exposure_contrast
 import grading_primary
@@ -343,6 +344,54 @@ def test_grading_rgb_curve_stage_round_trips():
     assert np.allclose(original_baked.table, rebuilt_baked.table, atol=1e-9)
     print("stack_to_session_dict/stack_from_session_dict: a 'grading_rgb_curve' "
           "stage round-trips through plain JSON and bakes identically -- OK")
+
+
+def test_color_warper_stage_round_trips():
+    points = [
+        {"h0": 35.0, "c0": 0.15, "h": 55.0, "c": 0.22},
+        {"h0": 250.0, "c0": 0.1, "h": 250.0, "c": 0.02},
+    ]
+    stage = st.make_color_warper_stage(
+        working_colourspace="ACEScg", points=points, wake=42.0, dropoff=0.4,
+        label="My Warp", opacity=0.7)
+    stack = st.Stack(stages=[stage])
+
+    data = stack_to_session_dict_round_trip_via_json(stack)
+    rebuilt_stack, warnings = session_io.stack_from_session_dict(data)
+
+    assert warnings == []
+    assert len(rebuilt_stack.stages) == 1
+    r = rebuilt_stack.stages[0]
+    assert r.kind == "color_warper" and r.label == "My Warp" and r.opacity == 0.7
+    assert r.params["working_colourspace"] == "ACEScg"
+    assert r.params["wake"] == 42.0
+    assert r.params["dropoff"] == 0.4
+    assert r.params["points"] == points
+
+    original_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=stack.stages))
+    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=rebuilt_stack.stages))
+    assert np.allclose(original_baked.table, rebuilt_baked.table, atol=1e-9)
+    print("stack_to_session_dict/stack_from_session_dict: a 'color_warper' "
+          "stage round-trips through plain JSON and bakes identically -- OK")
+
+
+def test_color_warper_stage_default_points_round_trip():
+    """A freshly-added stage (no explicit points arg -- an empty list,
+    no seeded defaults, per Tom) should still round-trip -- entry.get(
+    "points") on load must not silently turn an empty list into None or
+    something else."""
+    stage = st.make_color_warper_stage(working_colourspace="ACEScct")
+    stack = st.Stack(stages=[stage])
+
+    data = stack_to_session_dict_round_trip_via_json(stack)
+    rebuilt_stack, warnings = session_io.stack_from_session_dict(data)
+
+    assert warnings == []
+    r = rebuilt_stack.stages[0]
+    assert r.params["points"] == []
+    assert color_warper.points_are_identity(r.params["points"])
+    print("stack_to_session_dict/stack_from_session_dict: a freshly-added "
+          "'color_warper' stage's empty points list round-trips -- OK")
 
 
 def test_branch_tagged_stage_skipped_individually_when_it_cant_reconstruct():
@@ -924,6 +973,8 @@ if __name__ == "__main__":
     test_custom_drt_stage_round_trips()
     test_grading_tone_stage_round_trips()
     test_grading_rgb_curve_stage_round_trips()
+    test_color_warper_stage_round_trips()
+    test_color_warper_stage_default_points_round_trip()
     test_branch_tagged_stage_skipped_individually_when_it_cant_reconstruct()
     test_stack_to_session_dict_raises_loudly_for_unreconstructable_lut_stage()
     test_load_session_with_unknown_future_stage_kind_still_loads_others()

@@ -17,6 +17,7 @@ from app_logic import bake_retargeted_lut, create_identity_lut, resample_lut
 from printer_lights import bake_printer_lights_on_lut
 import aces_drt
 import cdl
+import color_warper
 import colorspace_convert as csc
 import exposure_contrast
 import grading_primary
@@ -267,6 +268,37 @@ def test_grading_primary_stage_matches_direct_apply():
     assert np.allclose(baked.table, expected, atol=1e-9)
     print("bake_stack_to_lut3d: single 'grading_primary' stage matches "
           "grading_primary.apply_grading_primary directly on the identity grid -- OK")
+
+
+def test_color_warper_stage_matches_direct_apply():
+    if not aces_drt.OCIO_AVAILABLE:
+        print("SKIPPED test_color_warper_stage_matches_direct_apply -- PyOpenColorIO not installed")
+        return
+    size = 9
+    points = [{"h0": 35.0, "c0": 0.15, "h": 55.0, "c": 0.22}]
+    wake, dropoff = 40.0, 0.2
+
+    stack = st.Stack(size=size)
+    stack.add_stage(st.make_color_warper_stage(points=points, wake=wake, dropoff=dropoff))
+    baked = st.bake_stack_to_lut3d(stack)
+
+    identity_grid = colour.LUT3D(size=size).table
+    expected = color_warper.apply_color_warper_in_working_space(
+        identity_grid, color_warper.DEFAULT_WORKING_COLOURSPACE, points, wake=wake, dropoff=dropoff)
+    assert np.allclose(baked.table, expected, atol=1e-9)
+    print("bake_stack_to_lut3d: single 'color_warper' stage matches "
+          "color_warper.apply_color_warper_in_working_space directly on the identity grid -- OK")
+
+
+def test_color_warper_stage_default_is_identity():
+    size = 5
+    stack = st.Stack(size=size)
+    stack.add_stage(st.make_color_warper_stage())
+    baked = st.bake_stack_to_lut3d(stack)
+    identity_grid = colour.LUT3D(size=size).table
+    assert np.array_equal(baked.table, identity_grid)
+    print("bake_stack_to_lut3d: a freshly-added 'color_warper' stage "
+          "(no seeded points, empty list) is an exact no-op -- OK")
 
 
 def test_grading_primary_stage_composes_after_a_lut_stage():
@@ -1174,6 +1206,8 @@ if __name__ == "__main__":
     test_aces_drt_stage_matches_bake_aces_output_transform_to_lut3d()
     test_cdl_stage_matches_direct_apply_cdl()
     test_cdl_stage_composes_after_a_lut_stage()
+    test_color_warper_stage_matches_direct_apply()
+    test_color_warper_stage_default_is_identity()
     test_grading_primary_stage_matches_direct_apply()
     test_grading_primary_stage_composes_after_a_lut_stage()
     test_exposure_contrast_stage_matches_direct_apply()

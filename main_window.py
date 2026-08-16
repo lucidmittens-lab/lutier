@@ -1150,6 +1150,11 @@ class MainWindow(QMainWindow):
         # separate re-derivation.
         self.sample_image.after_image_changed.connect(self.scopes_panel.set_image_array)
         self.scopes_panel.set_image_array(self.sample_image.get_current_after_array())
+        # NOTE: WARPier's own embedded cloud widget (stack_panel.py's
+        # cw_cloud) deliberately does NOT get this feed -- it shows an
+        # idealized OKLCh gamut reference blob
+        # (color_warper.warped_gamut_blob_points), not a measurement of
+        # the loaded image, per Tom.
 
         # Graph -- its own panel again (see scopes_panel.py's docstring).
         # Renamed from "3D Viewer" per Tom, once LutViewer3D grew a 1D

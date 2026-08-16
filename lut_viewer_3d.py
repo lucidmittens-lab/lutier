@@ -18,8 +18,10 @@ breaks, especially anything OpenGL/rendering related since that's the least
 certain part.
 
 CRASH FIX (per Tom's report, closing/redocking a floated panel segfaulted):
-gl_view is `_SafeGLViewWidget`, not a plain `gl.GLViewWidget` -- see its
-docstring below for the actual guard. main_window.py's `_float_panel`/
+gl_view is `_SafeGLViewWidget`, not a plain `gl.GLViewWidget` -- see
+safe_gl_view_widget.py's own docstring for the actual guard (extracted
+there so the volumetric scope, see scopes_panel.py, can reuse the exact
+same class). main_window.py's `_float_panel`/
 `_dock_panel` pair this with their own `_reparent_gl_safely` helper, which
 suspends paint delivery to every QOpenGLWidget under a panel for the
 duration of the reparent that floating/docking always does. Both halves
@@ -177,6 +179,7 @@ from PySide6.QtWidgets import (
 import pyqtgraph.opengl as gl
 
 from floating_dialog import make_floating_tool_window, show_floating
+from safe_gl_view_widget import _SafeGLViewWidget
 
 from app_logic import (
     extract_3d_points_for_visualization,
@@ -212,37 +215,6 @@ VIEW_CHOICES = (VIEW_3D, VIEW_1D_Y, VIEW_1D_R, VIEW_1D_G, VIEW_1D_B)
 _VIEW_TO_CURVE_CHANNEL = {
     VIEW_1D_Y: "y", VIEW_1D_R: "r", VIEW_1D_G: "g", VIEW_1D_B: "b",
 }
-
-
-class _SafeGLViewWidget(gl.GLViewWidget):
-    """Identical to pyqtgraph's GLViewWidget, except paintGL() bails out
-    before issuing a single native GL call if the widget doesn't
-    currently have a valid GL context/framebuffer.
-
-    Why this exists: pyqtgraph.opengl.GLViewWidget.paintGL() calls
-    straight into raw ctypes-bound GL calls (glClear/glDrawArrays/etc via
-    PyOpenGL's `GL` module) with no guard of its own. Floating or docking
-    a panel means reparenting this widget (see main_window.py's
-    _float_panel/_dock_panel) -- on macOS that reparent can make Qt
-    deliver a paint event for this widget while its GL context is
-    mid-teardown or mid-recreate, i.e. before initializeGL() has run
-    against whatever context it ends up with. Calling real GL functions
-    at that moment is what produced the SIGSEGV/EXC_BAD_ACCESS Tom
-    reported -- a hard native crash, not a Python exception, so no amount
-    of try/except here would have caught it after the fact. isValid() is
-    Qt's own supported "do I actually have a usable context right now"
-    check, and it's the only point at which this is preventable: check it
-    BEFORE calling super().paintGL(), never after.
-
-    Silently skips (no error, no log) rather than raising when invalid --
-    this isn't an error condition, it's an expected transient state during
-    reparenting, and Qt will simply deliver another real paint event once
-    the widget has settled into its new parent with a valid context."""
-
-    def paintGL(self):
-        if not self.isValid():
-            return
-        super().paintGL()
 
 
 class LutViewer3D(QWidget):

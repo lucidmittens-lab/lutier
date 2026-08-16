@@ -25,6 +25,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMainWindow
 
 import stack as st
+import color_warper as cw
 from stack_panel import (
     _ElidingLabel, _StackListWidget, StackPanel, _stage_kind_badge_text,
     _ForkBranchGridRowWidget, _StageRowWidget, _ParamLabel, GRADING_TONE_RANGE_LABELS,
@@ -271,6 +272,15 @@ def _panel_with_one_grading_tone_stage():
     _app()
     panel = StackPanel()
     panel._on_add_grading_tone_clicked()
+    stage = panel.stack.stages[0]
+    panel._on_row_clicked(stage.id)
+    return panel, stage
+
+
+def _panel_with_one_color_warper_stage():
+    _app()
+    panel = StackPanel()
+    panel._on_add_color_warper_clicked()
     stage = panel.stack.stages[0]
     panel._on_row_clicked(stage.id)
     return panel, stage
@@ -1259,6 +1269,96 @@ def test_exposure_contrast_field_label_double_click_resets_that_field():
           "'Exposure:' resets just that field -- OK")
 
 
+# ---- WARPier (color_warper) inspector -----------------------------------
+
+def test_add_color_warper_starts_at_identity():
+    panel, stage = _panel_with_one_color_warper_stage()
+    assert stage.kind == "color_warper"
+    assert cw.points_are_identity(stage.params["points"])
+    assert stage.params["wake"] == cw.DEFAULT_WAKE
+    assert stage.params["dropoff"] == cw.DEFAULT_DROPOFF
+    print("StackPanel: a freshly-added 'color_warper' stage starts at "
+          "identity (no seeded points, default wake/dropoff) -- OK")
+
+
+def test_color_warper_wheel_drag_applies_live():
+    panel, stage = _panel_with_one_color_warper_stage()
+    # No seeded points (per Tom) -- add one directly (same shape a real
+    # click-then-drag on the wheel would produce) rather than relying on
+    # points()[0] already existing.
+    dragged = {"h0": 35.0, "c0": 0.15, "h": 55.0, "c": 0.2}
+    panel.cw_wheel.set_points([dragged])  # emits points_changed -> live apply
+    assert stage.params["points"][0]["h"] == dragged["h"]
+    assert stage.params["points"][0]["c"] == dragged["c"]
+    print("StackPanel WARPier inspector: setting a wheel point writes "
+          "straight into the selected stage's params -- OK")
+
+
+def test_color_warper_wake_and_dropoff_spins_apply_live():
+    panel, stage = _panel_with_one_color_warper_stage()
+    panel.cw_wake_spin.setValue(60.0)
+    panel.cw_dropoff_spin.setValue(0.75)
+    assert stage.params["wake"] == 60.0
+    assert stage.params["dropoff"] == 0.75
+    assert panel.cw_wheel._wake == 60.0, "the wheel's own wash rendering must stay in sync"
+    assert panel.cw_wheel._dropoff == 0.75
+    print("StackPanel WARPier inspector: Wake/Drop-off spinboxes apply "
+          "live and keep the wheel's wash overlay in sync -- OK")
+
+
+def test_color_warper_space_combo_applies_live():
+    panel, stage = _panel_with_one_color_warper_stage()
+    other_space = "ACEScg"
+    idx = panel.cw_space_combo.findText(other_space)
+    assert idx >= 0, f"{other_space!r} should be in the working-space combo"
+    panel.cw_space_combo.setCurrentIndex(idx)
+    assert stage.params["working_colourspace"] == other_space
+    print("StackPanel WARPier inspector: changing Working Color Space "
+          "applies live -- OK")
+
+
+def test_color_warper_reset_restores_identity():
+    panel, stage = _panel_with_one_color_warper_stage()
+    panel.cw_wake_spin.setValue(80.0)
+    panel.cw_dropoff_spin.setValue(0.9)
+    panel.cw_wheel.set_points([{"h0": 35.0, "c0": 0.15, "h": 50.0, "c": 0.15}])
+    assert not cw.points_are_identity(stage.params["points"])
+
+    panel._on_cw_reset_clicked()
+    assert stage.params["points"] == []
+    assert cw.points_are_identity(stage.params["points"])
+    assert stage.params["wake"] == cw.DEFAULT_WAKE
+    assert stage.params["dropoff"] == cw.DEFAULT_DROPOFF
+    print("StackPanel WARPier inspector: Reset to Identity clears back "
+          "to no points and default wake/dropoff -- OK")
+
+
+def test_color_warper_refresh_on_select_does_not_corrupt_stored_values():
+    """Switching AWAY from a color_warper stage and back must not treat
+    the resulting widget resync as a live edit -- same class of bug the
+    Grading Primary/Tone refresh-guard tests already cover."""
+    panel, stage = _panel_with_one_color_warper_stage()
+    panel.cw_wheel.set_points([{"h0": 99.0, "c0": 0.08, "h": 99.0, "c": 0.08}])
+    panel.cw_wake_spin.setValue(50.0)
+    stored_points = [dict(p) for p in stage.params["points"]]
+    stored_wake = stage.params["wake"]
+
+    other = st.make_printer_lights_stage()
+    panel.stack.add_stage(other)
+    panel._on_row_clicked(other.id)
+    panel._on_row_clicked(stage.id)  # back to the color_warper stage
+
+    assert stage.params["points"] == stored_points
+    assert stage.params["wake"] == stored_wake
+    print("StackPanel WARPier inspector: switching away and back does "
+          "not corrupt the stage's stored points/wake -- OK")
+
+
+def test_color_warper_badge_text():
+    assert _stage_kind_badge_text("color_warper") == "WRP"
+    print("_stage_kind_badge_text('color_warper') == 'WRP' -- OK")
+
+
 if __name__ == "__main__":
     test_short_text_that_fits_is_not_elided_and_has_no_tooltip()
     test_long_text_at_narrow_width_is_elided_with_ellipsis_and_gets_a_tooltip()
@@ -1324,5 +1424,12 @@ if __name__ == "__main__":
     test_grading_tone_start_width_labels_reset_individually()
     test_grading_tone_channel_label_double_click_resets_just_that_channel()
     test_exposure_contrast_field_label_double_click_resets_that_field()
+    test_add_color_warper_starts_at_identity()
+    test_color_warper_wheel_drag_applies_live()
+    test_color_warper_wake_and_dropoff_spins_apply_live()
+    test_color_warper_space_combo_applies_live()
+    test_color_warper_reset_restores_identity()
+    test_color_warper_refresh_on_select_does_not_corrupt_stored_values()
+    test_color_warper_badge_text()
     print()
     print("All stack_panel tests passed.")
