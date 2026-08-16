@@ -1063,6 +1063,12 @@ class MainWindow(QMainWindow):
         # re-rendering on every stack_changed the same way it used to for
         # ConcatenatePanel's chain_changed.
         self.sample_image.set_stack_getter(self.stack_panel.get_stack)
+        # Matte Highlight mode (per Tom: "a way to preview the mask
+        # similar to resolve's highlight mode") -- same pull-based
+        # convention as set_stack_getter just above; toggling Highlight
+        # in a Keyer's own inspector already emits stack_changed, so no
+        # separate signal/connection is needed for it to take effect.
+        self.sample_image.set_highlight_getter(self.stack_panel.get_highlight_stage_id)
         self.stack_panel.stack_changed.connect(self.sample_image.refresh_preview)
         # Locks the Stack panel for the duration of realtime video
         # playback (Tom, 2026-08-13: playback shows the grade, but the

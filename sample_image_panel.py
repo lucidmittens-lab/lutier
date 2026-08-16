@@ -185,6 +185,23 @@ WIPE_SOURCE_CHOICES = [
 ]
 
 
+def _compose_highlight_overlay(graded_array, matte):
+    """MATTE HIGHLIGHT (per Tom: "a way to preview the mask similar to
+    resolve's highlight mode") -- `graded_array` (H,W,3) where `matte`
+    (H,W, same convention every matte-producing stage kind already
+    returns -- see stack.py's docstring, "MATTE CHANNELS") is high,
+    Rec.709 luma-only grayscale where it's low, smoothly blended in
+    between by the matte's own soft edge. Pure numpy, no Qt -- called
+    from _array_and_gpu_stack_for_source's own "MATTE HIGHLIGHT" branch,
+    kept as its own free function so it's directly unit-testable without
+    constructing a real SampleImagePanel."""
+    luma = (0.2126 * graded_array[..., 0] + 0.7152 * graded_array[..., 1]
+            + 0.0722 * graded_array[..., 2])
+    gray = np.stack([luma, luma, luma], axis=-1)
+    m = matte[..., np.newaxis]
+    return graded_array * m + gray * (1.0 - m)
+
+
 class SampleImagePanel(QWidget):
     """Emits after_image_changed(array_or_None) every time the previewed
     "after" result is (re)computed -- ScopesPanel subscribes to this so its
@@ -263,6 +280,10 @@ class SampleImagePanel(QWidget):
         self._image_array_scopes = None
         self._preview_cache_scopes = StageCache()
         self._stack_getter = None  # zero-arg callable -> the live stack.Stack
+        # zero-arg callable -> the currently Highlight-toggled stage's own
+        # id, or None -- see set_highlight_getter/_array_and_gpu_stack_
+        # for_source's own "MATTE HIGHLIGHT" comment.
+        self._highlight_getter = None
         self._current_after_array = None  # last successfully rendered "after" result, or None
         # Whether _current_after_array was rendered from the EDIT_
         # DOWNRES_FACTOR-halved array (see _recompute_sample_after) --
@@ -985,6 +1006,17 @@ class SampleImagePanel(QWidget):
         enabled state, everything) exactly as it stands right now."""
         self._stack_getter = getter
 
+    def set_highlight_getter(self, getter):
+        """getter: a zero-arg callable returning the Stage.id currently
+        Highlight-toggled in StackPanel's own Keyer (or other matte-
+        producing) inspector, or None -- same "callback, not a stored
+        value" convention set_stack_getter uses just above, for the
+        same reason (StackPanel's own toggle state can change without
+        this panel needing to be told explicitly every time). See
+        _array_and_gpu_stack_for_source's own "MATTE HIGHLIGHT" comment
+        for where this is actually read."""
+        self._highlight_getter = getter
+
     def refresh_preview(self):
         """Public trigger for 'something this panel doesn't own directly
         changed, re-render' -- used for StackPanel.stack_changed, since
@@ -1122,6 +1154,30 @@ class SampleImagePanel(QWidget):
         self._last_after_was_downres = downres
         self._set_current_after_array(result)
 
+    def _highlighted_after_array_or_none(self):
+        """None unless a matte-producing stage is currently Highlight-
+        toggled (self._highlight_getter, see set_highlight_getter) AND
+        that stage actually resolved to a matte in the most recent run
+        that produced self._current_after_array -- both "no highlight
+        toggled" and "the toggled stage was removed/disabled/hasn't run"
+        fall back to None here, same silent no-error convention the rest
+        of the matte system already uses everywhere (see stack.py's
+        docstring, "MATTE CHANNELS"). Picks whichever StageCache tier
+        actually produced self._current_after_array -- see
+        _recompute_sample_after's own tier-selection comment, mirrored
+        here via self._last_after_was_downres rather than duplicating
+        that selection logic a third way."""
+        if self._highlight_getter is None:
+            return None
+        highlight_stage_id = self._highlight_getter()
+        if highlight_stage_id is None or self._current_after_array is None:
+            return None
+        cache = self._preview_cache_downres if self._last_after_was_downres else self._preview_cache
+        matte = cache.last_mattes().get(highlight_stage_id)
+        if matte is None:
+            return None
+        return _compose_highlight_overlay(self._current_after_array, matte)
+
     def _array_and_gpu_stack_for_source(self, key, gpu_stack):
         """(array, stage_for_widget_to_grade_or_None, placeholder_message)
         for one of WIPE_SOURCE_CHOICES' three keys -- shared by the
@@ -1144,7 +1200,23 @@ class SampleImagePanel(QWidget):
         itself; when `gpu_stack` is None, it hands back the already-CPU-
         computed self._current_after_array instead (see
         _recompute_sample_after, still the source of truth for Scopes
-        and for any GPU-ineligible stack)."""
+        and for any GPU-ineligible stack).
+
+        MATTE HIGHLIGHT (per Tom: "a way to preview the mask similar to
+        resolve's highlight mode"): the CPU branch below is the single
+        shared dispatch point Left/Right/Show all funnel through for
+        this source, so compositing the highlight HERE (rather than in
+        _recompute_sample_after) means it applies correctly regardless
+        of wipe layout with no per-side special-casing, and deliberately
+        never touches self._current_after_array itself -- Scopes and
+        export keep seeing the real graded array; only what gets handed
+        to the WIDGET for display is composited. Only ever relevant on
+        this CPU branch: a highlight is only meaningful when the
+        highlighted stage is an enabled matte-producing stage actually
+        in the CURRENT stack, and any such stack is already forced onto
+        the CPU path (see stack.MATTE_PRODUCING_KINDS' own docstring on
+        why), so `gpu_stack` is already guaranteed None whenever a
+        highlight could actually resolve to anything."""
         if key == WIPE_SOURCE_SAMPLE_BEFORE:
             if self._image_array is None:
                 return None, None, "Load a source image to preview"
@@ -1156,6 +1228,9 @@ class SampleImagePanel(QWidget):
                 return self._image_array, gpu_stack, ""
             if self._current_after_array is None:
                 return None, None, "Add stages to the Stack to preview"
+            highlighted = self._highlighted_after_array_or_none()
+            if highlighted is not None:
+                return highlighted, None, ""
             return self._current_after_array, None, ""
         if key == WIPE_SOURCE_REFERENCE:
             if self._reference_image_array is None:

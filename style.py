@@ -1153,6 +1153,23 @@ QLabel#stageKindBadge {{
     min-width: 22px;
 }}
 
+/* Matte-channel letter badge (_StageRowWidget.matte_letter_badge, per
+   Tom: "it needs to be clear what the letter code for each matte is")
+   -- shown only on a matte-PRODUCING row (a "keyer"/"segment_mask"
+   stage). Accent-colored, UNLIKE the muted kind badge just above --
+   this one IS meant to read as "the thing to remember," since it's
+   exactly what a downstream row's own matte_combo dropdown shows to
+   match it up against. */
+QLabel#stageMatteLetterBadge {{
+    font-size: 10px;
+    font-weight: 700;
+    color: palette(highlighted-text);
+    background-color: palette(accent);
+    border-radius: 7px;
+    padding: 1px 5px;
+    min-width: 14px;
+}}
+
 /* Per-row opacity spin (_StageRowWidget.opacity_spin) -- moved in-row
    next to the stage name per Tom (2026-08-12 round two; the old
    "Opacity:" control lived below the whole list and only ever acted on

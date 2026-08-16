@@ -101,12 +101,11 @@ inspector correctly afterward.
 from pathlib import Path
 from itertools import zip_longest
 from collections import namedtuple
-import colorsys
 
 import numpy as np
 import shiboken6
 from PySide6.QtCore import Qt, QObject, QSize, QPoint, Signal, QVariantAnimation, QEasingCurve
-from PySide6.QtGui import QPainter, QPen, QDrag, QPixmap, QColor, QImage
+from PySide6.QtGui import QPainter, QPen, QDrag, QPixmap, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QDoubleSpinBox,
@@ -379,11 +378,14 @@ def _stage_kind_badge_text(kind):
     return STAGE_KIND_BADGES.get(kind, kind[:3].upper())
 
 
-def _matte_options_by_index(stages):
-    """options[i] -- every "keyer" stage at a position STRICTLY BEFORE
-    index i in `stages`, as (letter, stage_id) pairs in stack order (see
-    stack.py's docstring, "MATTE CHANNELS", and stack.matte_letters_for
-    for why letters are always freshly computed, never stored). Computed
+def _matte_options_by_index(stages, letters):
+    """options[i] -- every MATTE_PRODUCING_KINDS stage (currently
+    "keyer"/"segment_mask") at a position STRICTLY BEFORE index i in
+    `stages`, as (letter, stage_id) pairs in stack order (see stack.py's
+    docstring, "MATTE CHANNELS"). `letters` is the SAME dict
+    stack.matte_letters_for(stages) already produced for this same
+    stages list -- passed in rather than recomputed here so
+    _refresh_list only calls that function once per rebuild. Computed
     once per _refresh_list() call rather than per row: each row's own
     "which matte channels can I reference" only depends on its OWN
     original position in the flat stages list, so a single upfront pass
@@ -393,12 +395,11 @@ def _matte_options_by_index(stages):
     are paired by POSITION WITHIN a branch, not by original index) --
     look its own options up in O(1) by that original index, with no
     fork-aware bookkeeping needed here at all."""
-    letters = st.matte_letters_for(stages)
     options = []
     seen_so_far = []
     for stage in stages:
         options.append(list(seen_so_far))
-        if stage.kind == "keyer":
+        if stage.kind in st.MATTE_PRODUCING_KINDS:
             seen_so_far.append((letters[stage.id], stage.id))
     return options
 
@@ -675,7 +676,7 @@ class _StageRowWidget(QFrame):
 
     def __init__(self, stage, on_row_clicked, on_enabled_clicked, on_delete_clicked,
                  on_opacity_changed=None, matte_options=None, on_matte_changed=None,
-                 compact=False, parent=None):
+                 own_matte_letter=None, compact=False, parent=None):
         super().__init__(parent)
         self.stage_id = stage.id
         self.compact = compact
@@ -738,6 +739,27 @@ class _StageRowWidget(QFrame):
         self.badge_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.badge_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(self.badge_widget)
+
+        # Matte-channel letter badge (per Tom: "it needs to be clear what
+        # the letter code for each matte is") -- shown ONLY on a matte-
+        # PRODUCING row (a "keyer"/"segment_mask" stage currently, see
+        # stack.MATTE_PRODUCING_KINDS), right next to the kind badge, so
+        # you can tell "this row is Matte A" at a glance without having
+        # to open some OTHER row's matte_combo to find out. Accent-
+        # colored (not the kind badge's own muted pill) since this is
+        # the one piece of identity a downstream row's dropdown actually
+        # needs to match up -- see style.py's QLabel#stageMatteLetterBadge
+        # rule. `own_matte_letter` is None for every other stage kind,
+        # in which case this widget is built but hidden -- simpler than
+        # conditionally not constructing it, and matches matte_combo's
+        # own "always exists, sometimes hidden" convention just below.
+        self.matte_letter_badge = QLabel(own_matte_letter or "")
+        self.matte_letter_badge.setObjectName("stageMatteLetterBadge")
+        self.matte_letter_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.matte_letter_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.matte_letter_badge.setToolTip("This stage's own matte-channel letter")
+        self.matte_letter_badge.setVisible(own_matte_letter is not None)
+        layout.addWidget(self.matte_letter_badge)
 
         self._text_col = QVBoxLayout()
         self._text_col.setSpacing(0)
@@ -970,7 +992,8 @@ class _ForkBranchGridRowWidget(QFrame):
 
     def __init__(self, left_stage, right_stage, on_row_clicked, on_enabled_clicked,
                  on_delete_clicked, on_opacity_changed, left_matte_options=None,
-                 right_matte_options=None, on_matte_changed=None, parent=None):
+                 right_matte_options=None, on_matte_changed=None,
+                 left_matte_letter=None, right_matte_letter=None, parent=None):
         super().__init__(parent)
         self.setObjectName("stackForkGridRow")
         layout = QHBoxLayout(self)
@@ -979,23 +1002,24 @@ class _ForkBranchGridRowWidget(QFrame):
 
         self.left_widget = self._build_cell(
             left_stage, on_row_clicked, on_enabled_clicked, on_delete_clicked,
-            on_opacity_changed, left_matte_options, on_matte_changed)
+            on_opacity_changed, left_matte_options, on_matte_changed, left_matte_letter)
         layout.addWidget(self.left_widget, stretch=1)
 
         self.right_widget = self._build_cell(
             right_stage, on_row_clicked, on_enabled_clicked, on_delete_clicked,
-            on_opacity_changed, right_matte_options, on_matte_changed)
+            on_opacity_changed, right_matte_options, on_matte_changed, right_matte_letter)
         layout.addWidget(self.right_widget, stretch=1)
 
     @staticmethod
     def _build_cell(stage, on_row_clicked, on_enabled_clicked, on_delete_clicked,
-                     on_opacity_changed, matte_options=None, on_matte_changed=None):
+                     on_opacity_changed, matte_options=None, on_matte_changed=None,
+                     own_matte_letter=None):
         if stage is None:
             return _EmptyBranchCell()
         return _StageRowWidget(
             stage, on_row_clicked, on_enabled_clicked, on_delete_clicked,
             on_opacity_changed=on_opacity_changed, matte_options=matte_options,
-            on_matte_changed=on_matte_changed, compact=True)
+            on_matte_changed=on_matte_changed, own_matte_letter=own_matte_letter, compact=True)
 
     def set_selected(self, selected_stage_id):
         """Highlights whichever cell (if either) matches the currently
@@ -1441,6 +1465,18 @@ class StackPanel(QObject):
         # _on_selection_changed/_update_row_selection_styling/
         # _on_stage_reordered/_on_lut_path_dropped.
         self._selected_stage_id = None
+        # The stage (if any) currently Highlight-toggled in its own
+        # inspector (per Tom: "a way to preview the mask similar to
+        # resolve's highlight mode") -- see get_highlight_stage_id,
+        # _on_ky_highlight_toggled, and SampleImagePanel.set_highlight_
+        # getter, which is what actually reads this. Deliberately
+        # ephemeral UI state, NOT persisted with the stage/session (see
+        # get_highlight_stage_id's own docstring) -- and, like the row
+        # selection above, only one at a time; auto-cleared in
+        # _on_selection_changed whenever the selection moves away from
+        # it, so it can never silently stay "on" for a stage you've
+        # clicked away from.
+        self._highlight_stage_id = None
         self._row_stage_ids = []
         self._row_insert_index = []
         # stage_id -> _StageRowWidget, rebuilt every _refresh_list() call
@@ -1920,11 +1956,16 @@ class StackPanel(QObject):
         stage_id_to_row = {}
 
         stages = self.stack.stages
-        # See _matte_options_by_index's own docstring -- computed once
-        # here, consumed by index in _add_stage_row_item/_flush_fork_grid
+        # See _matte_options_by_index's own docstring -- both computed
+        # once here (letters shared between the two, so
+        # stack.matte_letters_for only ever runs once per rebuild),
+        # consumed by index in _add_stage_row_item/_flush_fork_grid
         # below, so every row's matte_combo offers exactly the upstream
-        # keyers, regardless of where that row ends up rendered.
-        self._matte_options = _matte_options_by_index(stages)
+        # matte-producing stages, and a matte-PRODUCING row can show its
+        # own current letter (see _StageRowWidget's own_letter param),
+        # regardless of where that row ends up rendered.
+        self._matte_letters = st.matte_letters_for(stages)
+        self._matte_options = _matte_options_by_index(stages, self._matte_letters)
         n = len(stages)
         i = 0
         while i < n:
@@ -2055,7 +2096,8 @@ class StackPanel(QObject):
             stage, self._on_row_clicked, self._on_row_enabled_clicked,
             self._on_row_delete_clicked, on_opacity_changed=self._on_row_opacity_changed,
             matte_options=self._matte_options[stack_index],
-            on_matte_changed=self._on_row_matte_changed)
+            on_matte_changed=self._on_row_matte_changed,
+            own_matte_letter=self._matte_letters.get(stage.id))
         item.setSizeHint(row_widget.sizeHint())
         self.list_widget.addItem(item)
         self.list_widget.setItemWidget(item, row_widget)
@@ -2106,7 +2148,9 @@ class StackPanel(QObject):
                 self._on_row_delete_clicked, self._on_row_opacity_changed,
                 left_matte_options=self._matte_options[a_index] if a_index is not None else None,
                 right_matte_options=self._matte_options[b_index] if b_index is not None else None,
-                on_matte_changed=self._on_row_matte_changed)
+                on_matte_changed=self._on_row_matte_changed,
+                left_matte_letter=self._matte_letters.get(a_stage.id) if a_stage is not None else None,
+                right_matte_letter=self._matte_letters.get(b_stage.id) if b_stage is not None else None)
             item.setSizeHint(row_widget.sizeHint())
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, row_widget)
@@ -2180,6 +2224,18 @@ class StackPanel(QObject):
                 self._selected_stage_id = ids_here[0] if ids_here else None
         else:
             self._selected_stage_id = None
+
+        # Highlight auto-clears the moment selection moves away from the
+        # stage it belongs to (per Tom's own Highlight-mode ask) -- one
+        # central place, rather than scattering this check across every
+        # matte-producing kind's own inspector, so it can never silently
+        # stay "on" for a stage you've clicked away from. Not just a
+        # local reset -- the Viewer is currently showing a highlighted
+        # preview for the OLD stage, so this has to re-trigger a render
+        # the same way every other live edit does.
+        if self._highlight_stage_id is not None and self._highlight_stage_id != self._selected_stage_id:
+            self._highlight_stage_id = None
+            self._emit_changed()
 
         self._update_row_selection_styling()
         self._refresh_inspector()
@@ -4519,18 +4575,16 @@ class StackPanel(QObject):
 
     # ---- inspector: keyer stage -------------------------------------
 
-    # A synthetic hue-sweep reference swatch (NOT the loaded image --
-    # StackPanel has no live image-array plumbing to read from at all,
-    # see KEYER_MATTE_PREVIEW_WIDTH's own comment below) that
-    # _update_keyer_matte_preview keys against, so the preview shows
-    # exactly which hues the current qualifier accepts independent of
-    # whatever happens to be loaded -- arguably more legible for tuning
-    # than an arbitrary photo would be anyway.
-    KEYER_MATTE_PREVIEW_WIDTH = 220
-    KEYER_MATTE_PREVIEW_HEIGHT = 28
-
     def _build_keyer_inspector(self):
-        group = QGroupBox("Keyer")
+        # Title updated live to show this stage's own matte letter (per
+        # Tom: "it needs to be clear what the letter code for each
+        # matte is") -- see _refresh_inspector_body's own "keyer" branch,
+        # which calls self.ky_group.setTitle(...) with the current
+        # letter every time a keyer stage becomes selected (its own
+        # letter can change on reorder, so this can't just be set once
+        # here at construction time).
+        self.ky_group = QGroupBox("Keyer")
+        group = self.ky_group
         outer = QVBoxLayout(group)
 
         hue_row = QHBoxLayout()
@@ -4614,16 +4668,23 @@ class StackPanel(QObject):
         softness_row.addWidget(self.ky_invert_checkbox)
         outer.addLayout(softness_row)
 
-        # Live matte preview -- see KEYER_MATTE_PREVIEW_WIDTH's own
-        # comment above on why this keys a synthetic hue-sweep swatch
-        # rather than the loaded image.
-        preview_label = QLabel("Matte preview (hue sweep, 0→360°):")
-        outer.addWidget(preview_label)
-        self.ky_matte_preview = QLabel()
-        self.ky_matte_preview.setFixedSize(
-            self.KEYER_MATTE_PREVIEW_WIDTH, self.KEYER_MATTE_PREVIEW_HEIGHT)
-        self.ky_matte_preview.setObjectName("keyerMattePreview")
-        outer.addWidget(self.ky_matte_preview)
+        # Highlight (per Tom: "a way to preview the mask similar to
+        # resolve's highlight mode") -- toggles a live Viewer overlay
+        # showing this stage's own matte (full color where selected,
+        # grayscale elsewhere), see _on_ky_highlight_toggled/
+        # get_highlight_stage_id/sample_image_panel.py's own
+        # "MATTE HIGHLIGHT" comment for the actual compositing. A plain
+        # viewing preference, not a qualifier parameter, so it lives on
+        # its own row rather than sharing softness_row with Invert.
+        highlight_row = QHBoxLayout()
+        self.ky_highlight_checkbox = QCheckBox("Highlight")
+        self.ky_highlight_checkbox.setToolTip(
+            "Show this stage's own matte in the Viewer -- full color "
+            "where selected, grayscale elsewhere.")
+        self.ky_highlight_checkbox.toggled.connect(self._on_ky_highlight_toggled)
+        highlight_row.addWidget(self.ky_highlight_checkbox)
+        highlight_row.addStretch(1)
+        outer.addLayout(highlight_row)
 
         outer.addStretch(1)
 
@@ -4651,28 +4712,26 @@ class StackPanel(QObject):
         stage.params["lum_max"] = self.ky_lum_max_spin.value()
         stage.params["softness"] = self.ky_softness_spin.value()
         stage.params["invert"] = self.ky_invert_checkbox.isChecked()
-        self._update_keyer_matte_preview(stage.params)
         self._update_row_content(stage.id)
         self._emit_changed()
 
-    def _update_keyer_matte_preview(self, params):
-        """Renders keyer.compute_matte's own output over a synthetic
-        full-saturation, mid-lightness hue sweep (0-360 left to right,
-        same width every row -- no lightness/saturation variation, since
-        this is about showing the HUE term's own shape at a glance, not
-        a full 3-axis visualization) as a grayscale strip."""
-        width, height = self.KEYER_MATTE_PREVIEW_WIDTH, self.KEYER_MATTE_PREVIEW_HEIGHT
-        hues = np.linspace(0.0, 360.0, width, endpoint=False)
-        row = np.array([colorsys.hls_to_rgb(h / 360.0, 0.5, 1.0) for h in hues])
-        image_array = np.tile(row[np.newaxis, :, :], (height, 1, 1))
-        matte = ky.compute_matte(image_array, params)
-        gray = np.clip(matte * 255.0, 0, 255).astype(np.uint8)
-        gray = np.ascontiguousarray(gray)
-        qimage = QImage(gray.data, width, height, width, QImage.Format.Format_Grayscale8)
-        # .copy() -- `gray` is a local array about to go out of scope;
-        # QImage doesn't own the buffer it was constructed from, so the
-        # QPixmap needs its own independent copy of the pixel data.
-        self.ky_matte_preview.setPixmap(QPixmap.fromImage(qimage.copy()))
+    def _on_ky_highlight_toggled(self, checked):
+        """Guarded by _refreshing_inspector, same convention as
+        _apply_keyer_live -- switching TO a keyer stage also syncs this
+        checkbox via _refresh_inspector_body, which shouldn't count as a
+        live edit. Unlike every other keyer control, this does NOT write
+        into stage.params -- self._highlight_stage_id is ephemeral UI
+        state (see get_highlight_stage_id's own docstring), not
+        something a saved session should remember was "on." Still calls
+        _emit_changed() same as any other control here, since the
+        Viewer's own preview genuinely needs to re-render either way."""
+        if self._refreshing_inspector:
+            return
+        stage = self._selected_stage()
+        if stage is None or stage.kind != "keyer":
+            return
+        self._highlight_stage_id = stage.id if checked else None
+        self._emit_changed()
 
     # ---- inspector: fork_split stage ------------------------------------
 
@@ -5093,7 +5152,15 @@ class StackPanel(QObject):
             self.ky_invert_checkbox.blockSignals(True)
             self.ky_invert_checkbox.setChecked(p.get("invert", ky.DEFAULT_INVERT))
             self.ky_invert_checkbox.blockSignals(False)
-            self._update_keyer_matte_preview(p)
+            self.ky_highlight_checkbox.blockSignals(True)
+            self.ky_highlight_checkbox.setChecked(self._highlight_stage_id == stage.id)
+            self.ky_highlight_checkbox.blockSignals(False)
+            # Own matte letter in the group title (per Tom -- see
+            # _StageRowWidget.matte_letter_badge's own docstring for the
+            # row-level counterpart) -- recomputed fresh every refresh
+            # since reordering can change it.
+            letter = st.matte_letters_for(self.stack.stages).get(stage.id)
+            self.ky_group.setTitle(f"Keyer ({letter})" if letter else "Keyer")
             self.inspector_stack.setCurrentIndex(self._keyer_inspector_index)
 
         elif stage.kind == "fork_split":
@@ -5117,6 +5184,17 @@ class StackPanel(QObject):
         direct-pixel preview. Callers should treat this as read-mostly;
         StackPanel is what mutates it and emits stack_changed."""
         return self.stack
+
+    def get_highlight_stage_id(self):
+        """The Stage.id currently Highlight-toggled (see this class's
+        own docstring on self._highlight_stage_id), or None --
+        SampleImagePanel reads this each render via
+        set_highlight_getter, mirroring get_stack's own pull-based
+        convention just above. Deliberately NOT part of Stage.params or
+        session_io.py's own persisted fields -- this is a transient
+        viewing preference, not something a saved session should
+        remember was "on.\""""
+        return self._highlight_stage_id
 
     def get_baked_lut(self, name=None):
         """Bake the current stack into a flat colour.LUT3D -- used by

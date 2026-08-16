@@ -1255,6 +1255,20 @@ class StageCache:
         self._block_mattes = mattes_history
         return current
 
+    def last_mattes(self):
+        """dict[stage_id, (H,W) array] -- every matte a matte-producing
+        stage (see MATTE_PRODUCING_KINDS) actually contributed during
+        the MOST RECENT run() call, e.g. for a Highlight-mode-style
+        preview that wants to show a specific stage's own key overlaid
+        on the graded result. `{}` if run() has never been called.
+        Returns a COPY (dict(...)) so a caller can't mutate this cache's
+        own internal state; the values themselves (numpy arrays) are
+        still shared by reference with whatever _block_mattes is
+        holding, same as _block_outputs' own checkpoints already are --
+        safe as long as nothing downstream mutates a matte array in
+        place, which nothing in this codebase does."""
+        return dict(self._block_mattes[-1]) if self._block_mattes else {}
+
     def clear(self):
         """Drop every checkpoint -- for a wholesale Stack replacement
         (session load, undo/redo, Stack Memory recall: see StackPanel.

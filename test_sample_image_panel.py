@@ -43,7 +43,7 @@ from PySide6.QtWidgets import QApplication
 import app_logic
 import sample_image_panel as sample_image_panel_module
 from sample_image_panel import SampleImagePanel, WIPE_SOURCE_SAMPLE_BEFORE, WIPE_SOURCE_SAMPLE_AFTER
-from stack import Stack, make_cdl_stage, make_lut_stage
+from stack import Stack, make_cdl_stage, make_lut_stage, make_keyer_stage
 
 
 def _app():
@@ -322,6 +322,88 @@ def test_scopes_array_is_unchanged_for_a_small_source():
     assert panel._image_array_scopes.shape[:2] == (120, 200)
     print("SampleImagePanel._make_scopes_array: a source already under "
           "SCOPES_MAX_DIMENSION is left at its own resolution -- OK")
+
+
+# --- matte highlight (per Tom: "a way to preview the mask similar to
+# resolve's highlight mode") ------------------------------------------
+
+def test_compose_highlight_overlay_matte_one_is_unchanged():
+    graded = np.random.default_rng(0).uniform(0.0, 1.0, size=(4, 4, 3))
+    matte = np.ones((4, 4))
+    result = sample_image_panel_module._compose_highlight_overlay(graded, matte)
+    assert np.allclose(result, graded)
+    print("_compose_highlight_overlay: matte=1 everywhere leaves the "
+          "graded array unchanged -- OK")
+
+
+def test_compose_highlight_overlay_matte_zero_is_rec709_luma_grayscale():
+    graded = np.array([[[1.0, 0.0, 0.0]]])  # pure red
+    matte = np.zeros((1, 1))
+    result = sample_image_panel_module._compose_highlight_overlay(graded, matte)
+    expected_luma = 0.2126  # Rec.709: 0.2126*1 + 0.7152*0 + 0.0722*0
+    assert np.allclose(result[0, 0], [expected_luma] * 3, atol=1e-6)
+    print("_compose_highlight_overlay: matte=0 everywhere becomes plain "
+          "Rec.709 luma grayscale -- OK")
+
+
+def test_compose_highlight_overlay_blends_at_a_partial_matte():
+    graded = np.array([[[1.0, 0.0, 0.0]]])
+    matte = np.array([[0.5]])
+    result = sample_image_panel_module._compose_highlight_overlay(graded, matte)
+    luma = 0.2126
+    expected = np.array([1.0, 0.0, 0.0]) * 0.5 + np.array([luma] * 3) * 0.5
+    assert np.allclose(result[0, 0], expected, atol=1e-6)
+    print("_compose_highlight_overlay: a partial matte blends real "
+          "color and grayscale proportionally -- OK")
+
+
+def test_no_highlight_getter_leaves_the_after_source_unchanged():
+    _app()
+    panel = _panel_with_image_and_stack()
+    panel.refresh_preview()
+    array, gpu_stage, _placeholder = panel._array_and_gpu_stack_for_source(
+        WIPE_SOURCE_SAMPLE_AFTER, None)
+    assert np.array_equal(array, panel.get_current_after_array())
+    print("SampleImagePanel: with no highlight getter set, Sample After "
+          "is returned completely unchanged -- OK")
+
+
+def test_highlight_getter_composites_the_toggled_stages_matte():
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_image(size=(200, 120))
+    ok = panel.load_image(path)
+    assert ok, "test setup: image failed to load"
+    keyer_stage = make_keyer_stage(hue_center=0.0, hue_width=180.0)
+    stack = Stack(stages=[keyer_stage])
+    panel.set_stack_getter(lambda: stack)
+    panel.set_highlight_getter(lambda: keyer_stage.id)
+    panel.refresh_preview()
+
+    real_after = panel.get_current_after_array().copy()
+    array, gpu_stage, _placeholder = panel._array_and_gpu_stack_for_source(
+        WIPE_SOURCE_SAMPLE_AFTER, None)
+    assert not np.array_equal(array, real_after), \
+        "a real, non-trivial matte should visibly change the composited preview"
+    # Scopes/export's own source of truth must stay the REAL graded
+    # array -- Highlight only ever affects what's handed to the widget.
+    assert np.array_equal(panel.get_current_after_array(), real_after)
+    print("SampleImagePanel: a toggled highlight composites the stage's "
+          "own matte into the WIDGET's array without touching "
+          "get_current_after_array()/Scopes' own source -- OK")
+
+
+def test_highlight_getter_for_a_stage_not_in_the_stack_falls_back_to_plain():
+    _app()
+    panel = _panel_with_image_and_stack()  # plain CDL stack, no matte-producing stage at all
+    panel.set_highlight_getter(lambda: 999999)  # no such stage id anywhere
+    panel.refresh_preview()
+    array, _gpu_stage, _placeholder = panel._array_and_gpu_stack_for_source(
+        WIPE_SOURCE_SAMPLE_AFTER, None)
+    assert np.array_equal(array, panel.get_current_after_array())
+    print("SampleImagePanel: a highlight getter pointing at a stage "
+          "that never produced a matte falls back to the plain array, "
+          "no error -- OK")
 
 
 def _make_test_video(frame_count=8, frame_rate=24, size=(64, 48)):
@@ -752,6 +834,12 @@ if __name__ == "__main__":
     test_downres_array_is_a_grow_only_decimation_of_the_working_array()
     test_scopes_array_is_capped_at_the_target_dimension()
     test_scopes_array_is_unchanged_for_a_small_source()
+    test_compose_highlight_overlay_matte_one_is_unchanged()
+    test_compose_highlight_overlay_matte_zero_is_rec709_luma_grayscale()
+    test_compose_highlight_overlay_blends_at_a_partial_matte()
+    test_no_highlight_getter_leaves_the_after_source_unchanged()
+    test_highlight_getter_composites_the_toggled_stages_matte()
+    test_highlight_getter_for_a_stage_not_in_the_stack_falls_back_to_plain()
     test_load_video_parks_on_the_first_frame_through_the_still_pipeline()
     test_seek_video_frame_updates_the_working_array()
     test_video_loaded_signal_reports_frame_count_and_rate()

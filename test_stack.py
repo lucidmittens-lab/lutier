@@ -1418,6 +1418,58 @@ def test_stage_cache_propagates_matte_across_a_block_boundary():
           "reused (not re-run) on a later, unrelated edit -- OK")
 
 
+def test_stage_cache_last_mattes_is_empty_before_any_run():
+    cache = st.StageCache()
+    assert cache.last_mattes() == {}
+    print("StageCache.last_mattes(): {} before run() has ever been "
+          "called -- OK")
+
+
+def test_stage_cache_last_mattes_reflects_the_most_recent_run():
+    cache = st.StageCache()
+    image = _half_red_half_blue(size=4).astype(np.float32)
+    keyer_stage = st.make_keyer_stage(hue_center=0.0, hue_width=20.0, softness=0.1)
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer.params["matte_source_id"] = keyer_stage.id
+    stack = st.Stack(stages=[keyer_stage, consumer])
+
+    apply_stack_to_image_array_with_cache(stack, image, cache, input_key=1)
+    mattes = cache.last_mattes()
+    assert set(mattes.keys()) == {keyer_stage.id}
+    assert mattes[keyer_stage.id].shape == image.shape[:2]
+    # Red half keyed near 1.0, blue half near 0.0 -- same qualifier
+    # shape test_stack.py's own matte-gating tests already establish.
+    assert np.all(mattes[keyer_stage.id][:, :2] > 0.9)
+    assert np.all(mattes[keyer_stage.id][:, 2:] < 0.1)
+    print("StageCache.last_mattes(): reflects the most recent run's own "
+          "matte-producing stages -- OK")
+
+
+def test_stage_cache_last_mattes_stays_correct_when_the_keyers_block_is_reused():
+    """The exact scenario Highlight mode needs: after an edit to a
+    LATER, unrelated block, the keyer's own block is reused from cache
+    (not re-run) -- last_mattes() must still reflect it correctly, via
+    the SAME _block_mattes snapshot mechanism
+    test_stage_cache_propagates_matte_across_a_block_boundary already
+    proves keeps consumers working."""
+    cache = st.StageCache()
+    image = _half_red_half_blue(size=4).astype(np.float32)
+    keyer_stage = st.make_keyer_stage(hue_center=0.0, hue_width=20.0, softness=0.1)
+    unrelated = st.make_cdl_stage(offset=(0.0, 0.0, 0.0))
+    stack = st.Stack(stages=[keyer_stage, unrelated])
+
+    apply_stack_to_image_array_with_cache(stack, image, cache, input_key=1)
+    first_matte = cache.last_mattes()[keyer_stage.id]
+
+    unrelated.params["offset"] = (0.0, 0.0, 0.1)  # edit a LATER, unrelated block
+    apply_stack_to_image_array_with_cache(stack, image, cache, input_key=1)
+    reused_matte = cache.last_mattes()[keyer_stage.id]
+
+    assert np.array_equal(first_matte, reused_matte)
+    print("StageCache.last_mattes(): still correct after the keyer's "
+          "own block was reused from cache rather than re-run -- OK")
+
+
 # --- segment_mask stage (segmentation-groundwork second matte-producer) ---
 
 def test_segment_mask_stage_is_identity_passthrough_for_the_image():
@@ -1558,6 +1610,9 @@ if __name__ == "__main__":
     test_matte_amount_is_scaled_by_the_keyers_own_opacity()
     test_matte_gating_works_inside_a_fork_branch_and_after_the_merge()
     test_stage_cache_propagates_matte_across_a_block_boundary()
+    test_stage_cache_last_mattes_is_empty_before_any_run()
+    test_stage_cache_last_mattes_reflects_the_most_recent_run()
+    test_stage_cache_last_mattes_stays_correct_when_the_keyers_block_is_reused()
     test_segment_mask_stage_is_identity_passthrough_for_the_image()
     test_matte_letters_for_shares_one_sequence_across_both_matte_kinds()
     test_matte_gates_a_downstream_stage_per_pixel_via_segment_mask()

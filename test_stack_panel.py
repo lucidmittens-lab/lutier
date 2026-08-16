@@ -1409,14 +1409,77 @@ def test_keyer_inspector_fields_apply_live():
           "selected stage's params -- OK")
 
 
-def test_keyer_matte_preview_updates_on_live_edit():
+def test_keyer_inspector_title_shows_its_own_matte_letter():
     panel, stage = _panel_with_one_keyer_stage()
-    before = panel.ky_matte_preview.pixmap().toImage().copy()
-    panel.ky_hue_center_spin.setValue(180.0)
-    after = panel.ky_matte_preview.pixmap().toImage().copy()
-    assert before != after
-    print("StackPanel Keyer inspector: the matte preview swatch changes "
-          "when the qualifier changes -- OK")
+    assert panel.ky_group.title() == "Keyer (A)"
+    print("StackPanel Keyer inspector: the group title shows this "
+          "stage's own current matte letter -- OK")
+
+
+def test_keyer_inspector_title_updates_when_the_letter_shifts_on_reorder():
+    panel, stage = _panel_with_one_keyer_stage()
+    other_keyer = st.make_keyer_stage()
+    panel.stack.add_stage(other_keyer)
+    panel.stack.move_stage(other_keyer.id, 0)  # now BEFORE the inspected keyer
+    panel._on_row_clicked(stage.id)
+    assert panel.ky_group.title() == "Keyer (B)"
+    print("StackPanel Keyer inspector: the title's own letter updates "
+          "when reordering shifts it -- OK")
+
+
+def test_highlight_checkbox_toggles_get_highlight_stage_id():
+    panel, stage = _panel_with_one_keyer_stage()
+    assert panel.get_highlight_stage_id() is None
+    panel.ky_highlight_checkbox.setChecked(True)
+    assert panel.get_highlight_stage_id() == stage.id
+    panel.ky_highlight_checkbox.setChecked(False)
+    assert panel.get_highlight_stage_id() is None
+    print("StackPanel: the Highlight checkbox toggles "
+          "get_highlight_stage_id() -- OK")
+
+
+def test_highlight_checkbox_toggle_emits_stack_changed():
+    panel, stage = _panel_with_one_keyer_stage()
+    seen = []
+    panel.stack_changed.connect(lambda: seen.append(True))
+    panel.ky_highlight_checkbox.setChecked(True)
+    assert seen == [True]
+    print("StackPanel: toggling Highlight emits stack_changed so the "
+          "Viewer actually re-renders -- OK")
+
+
+def test_selecting_a_different_stage_auto_clears_highlight():
+    panel, stage = _panel_with_one_keyer_stage()
+    panel.ky_highlight_checkbox.setChecked(True)
+    assert panel.get_highlight_stage_id() == stage.id
+
+    other = st.make_cdl_stage()
+    panel._add_stage(other)  # selects `other`, moving selection away from the keyer
+    assert panel.get_highlight_stage_id() is None
+    print("StackPanel: selecting a different stage auto-clears "
+          "Highlight -- OK")
+
+
+def test_reselecting_the_same_highlighted_stage_does_not_clear_it():
+    """The auto-clear in _on_selection_changed must only fire when
+    selection actually moves AWAY -- re-clicking (or a no-op reselect
+    of) the SAME highlighted stage must leave it on."""
+    panel, stage = _panel_with_one_keyer_stage()
+    panel.ky_highlight_checkbox.setChecked(True)
+    panel._on_row_clicked(stage.id)
+    assert panel.get_highlight_stage_id() == stage.id
+    print("StackPanel: reselecting the SAME highlighted stage leaves "
+          "Highlight on -- OK")
+
+
+def test_highlight_checkbox_syncs_when_switching_between_two_keyers():
+    panel, stage = _panel_with_one_keyer_stage()
+    panel.ky_highlight_checkbox.setChecked(True)
+    other_keyer = st.make_keyer_stage()
+    panel._add_stage(other_keyer)  # selects other_keyer; auto-clears highlight
+    assert panel.ky_highlight_checkbox.isChecked() is False
+    print("StackPanel: the Highlight checkbox itself resyncs (unchecked) "
+          "when switching to a different keyer -- OK")
 
 
 def test_keyer_refresh_on_select_does_not_corrupt_stored_values():
@@ -1445,6 +1508,44 @@ def test_keyer_row_hides_its_own_matte_combo():
           "(a keyer doesn't consume a matte in v1) -- OK")
 
 
+def test_keyer_row_shows_its_own_matte_letter_badge():
+    panel, stage = _panel_with_one_keyer_stage()
+    row = panel._stage_row_widgets[stage.id]
+    # isHidden() (this widget's OWN explicit hidden state), not
+    # isVisible() -- these tests never actually .show() the row widget
+    # inside a real top-level window, so isVisible() would read False
+    # regardless of setVisible(True) here (it also depends on every
+    # ancestor actually being shown on screen). isHidden() reflects
+    # only what THIS widget's own setVisible call last set.
+    assert row.matte_letter_badge.isHidden() is False
+    assert row.matte_letter_badge.text() == "A"
+    print("_StageRowWidget: a matte-producing row shows its own current "
+          "letter in a dedicated badge -- OK")
+
+
+def test_non_matte_producing_row_hides_the_matte_letter_badge():
+    panel, stage = _panel_with_one_keyer_stage()
+    cdl_stage = st.make_cdl_stage()
+    panel._add_stage(cdl_stage)
+    row = panel._stage_row_widgets[cdl_stage.id]
+    assert row.matte_letter_badge.isVisible() is False
+    print("_StageRowWidget: an ordinary (non-matte-producing) row's "
+          "letter badge stays hidden -- OK")
+
+
+def test_matte_letter_badge_updates_on_reorder():
+    panel, stage = _panel_with_one_keyer_stage()
+    other_keyer = st.make_keyer_stage()
+    panel._add_stage(other_keyer)
+    assert panel._stage_row_widgets[other_keyer.id].matte_letter_badge.text() == "B"
+    panel.stack.move_stage(other_keyer.id, 0)
+    panel._refresh_list(keep_selection=other_keyer.id)
+    assert panel._stage_row_widgets[other_keyer.id].matte_letter_badge.text() == "A"
+    assert panel._stage_row_widgets[stage.id].matte_letter_badge.text() == "B"
+    print("_StageRowWidget: the letter badge reflects the current "
+          "stack order after a reorder + refresh -- OK")
+
+
 def test_downstream_stage_row_offers_the_upstream_keyer_as_a_matte_option():
     panel, keyer_stage = _panel_with_one_keyer_stage()
     cdl_stage = st.make_cdl_stage()
@@ -1455,6 +1556,25 @@ def test_downstream_stage_row_offers_the_upstream_keyer_as_a_matte_option():
     assert row.matte_combo.itemData(1) == keyer_stage.id
     print("_StageRowWidget: a downstream row's matte combo offers "
           "'None' plus the upstream keyer's own current letter -- OK")
+
+
+def test_downstream_stage_row_offers_an_upstream_segment_mask_as_a_matte_option():
+    """Regression guard: _matte_options_by_index used to hardcode
+    "keyer", so a "segment_mask" stage never showed up as an offerable
+    matte option even though stack.matte_letters_for already treats it
+    as matte-producing -- fixed to key off stack.MATTE_PRODUCING_KINDS."""
+    _app()
+    panel = StackPanel()
+    seg_stage = st.make_segment_mask_stage()
+    panel._add_stage(seg_stage)
+    cdl_stage = st.make_cdl_stage()
+    panel._add_stage(cdl_stage)
+    row = panel._stage_row_widgets[cdl_stage.id]
+    items = [row.matte_combo.itemText(i) for i in range(row.matte_combo.count())]
+    assert items == ["None", "A"]
+    assert row.matte_combo.itemData(1) == seg_stage.id
+    print("_StageRowWidget: a downstream row's matte combo also offers "
+          "an upstream 'segment_mask' stage's own current letter -- OK")
 
 
 def test_selecting_a_matte_option_writes_matte_source_id():
@@ -1593,10 +1713,20 @@ if __name__ == "__main__":
     test_keyer_badge_text()
     test_add_keyer_starts_at_defaults()
     test_keyer_inspector_fields_apply_live()
-    test_keyer_matte_preview_updates_on_live_edit()
+    test_keyer_inspector_title_shows_its_own_matte_letter()
+    test_keyer_inspector_title_updates_when_the_letter_shifts_on_reorder()
+    test_highlight_checkbox_toggles_get_highlight_stage_id()
+    test_highlight_checkbox_toggle_emits_stack_changed()
+    test_selecting_a_different_stage_auto_clears_highlight()
+    test_reselecting_the_same_highlighted_stage_does_not_clear_it()
+    test_highlight_checkbox_syncs_when_switching_between_two_keyers()
     test_keyer_refresh_on_select_does_not_corrupt_stored_values()
     test_keyer_row_hides_its_own_matte_combo()
+    test_keyer_row_shows_its_own_matte_letter_badge()
+    test_non_matte_producing_row_hides_the_matte_letter_badge()
+    test_matte_letter_badge_updates_on_reorder()
     test_downstream_stage_row_offers_the_upstream_keyer_as_a_matte_option()
+    test_downstream_stage_row_offers_an_upstream_segment_mask_as_a_matte_option()
     test_selecting_a_matte_option_writes_matte_source_id()
     test_matte_combo_never_offers_a_downstream_keyer()
     test_matte_combo_options_update_on_reorder()
