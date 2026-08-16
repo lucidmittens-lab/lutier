@@ -1504,30 +1504,40 @@ def test_ky_pick_clicked_is_a_noop_without_a_wired_requester():
           "ever wired -- OK")
 
 
-def test_ky_pixel_picked_sets_hue_center_only():
-    """The picked RGB is decoded through THIS STAGE'S OWN working_
-    colourspace (its default, ACEScct, since _panel_with_one_keyer_stage
-    never changes it) -- matching exactly what keyer.compute_matte
-    itself would decode for the same pixel, NOT a fixed display space
-    (see _on_ky_pixel_picked's own docstring for why an earlier version
-    assuming display-encoded sRGB was a real bug: this app's Viewer
-    applies no unconditional display transform, so the on-screen pixel
-    is already in the SAME encoding the keyer's own qualifier reads)."""
+def _oklch_of(rgb, working_colourspace):
+    sample = np.array(rgb, dtype=np.float64).reshape(1, 1, 3)
+    L, C, H = cw.decode_working_colourspace_to_oklch(sample, working_colourspace)
+    return float(L[0, 0]), float(C[0, 0]), float(H[0, 0])
+
+
+def test_ky_pixel_picked_sets_a_tight_box_around_the_picked_pixel():
+    """Per Tom (after trying the hue-only v1): picking a red building was
+    also catching beige ones, because chroma/lightness were left at their
+    default full-range (effectively "no gating") bands -- only hue was
+    narrowed. Pick now seeds a TIGHT box on all three axes (see
+    _on_ky_pixel_picked's own PICK_*_HALF_WIDTH constants), decoded
+    through THIS stage's own working_colourspace (its default, ACEScct,
+    since _panel_with_one_keyer_stage never changes it) -- matching
+    exactly what keyer.compute_matte itself would decode for the same
+    pixel."""
     panel, stage = _panel_with_one_keyer_stage()
-    panel.ky_chroma_min_spin.setValue(0.05)
     panel.ky_softness_spin.setValue(0.4)
 
-    expected_hue = _oklch_hue_of((0.6, 0.2, 0.2), ky.DEFAULT_WORKING_COLOURSPACE)
+    expected_l, expected_c, expected_hue = _oklch_of((0.6, 0.2, 0.2), ky.DEFAULT_WORKING_COLOURSPACE)
     panel._on_ky_pixel_picked(stage.id, (0.6, 0.2, 0.2))
 
-    # ky_hue_center_spin has 1 decimal of precision (see _build_keyer_
-    # inspector), so the stored value is expected_hue rounded to 0.1, not
-    # bit-exact.
+    # Spin boxes round to their own displayed precision (1 decimal for
+    # hue, 3 for chroma, 2 for lightness -- see _build_keyer_inspector),
+    # so these aren't bit-exact.
     assert abs(stage.params["hue_center"] - expected_hue) < 0.05
-    assert stage.params["chroma_min"] == 0.05, "picking must not disturb chroma/lightness/softness"
-    assert stage.params["softness"] == 0.4
-    print(f"StackPanel: a picked pixel sets Hue Center only "
-          f"({expected_hue:.2f}), leaving every other field alone -- OK")
+    assert abs(stage.params["hue_width"] - StackPanel.PICK_HUE_HALF_WIDTH) < 0.05
+    assert abs(stage.params["chroma_min"] - (expected_c - StackPanel.PICK_CHROMA_HALF_WIDTH)) < 0.005
+    assert abs(stage.params["chroma_max"] - (expected_c + StackPanel.PICK_CHROMA_HALF_WIDTH)) < 0.005
+    assert abs(stage.params["lightness_min"] - (expected_l - StackPanel.PICK_LIGHTNESS_HALF_WIDTH)) < 0.005
+    assert abs(stage.params["lightness_max"] - (expected_l + StackPanel.PICK_LIGHTNESS_HALF_WIDTH)) < 0.005
+    assert stage.params["softness"] == 0.4, "picking must not disturb Softness"
+    print(f"StackPanel: a picked pixel seeds a tight Hue/Chroma/Lightness "
+          f"box around it (hue={expected_hue:.2f}), leaving Softness alone -- OK")
 
 
 def test_ky_pixel_picked_decodes_through_this_stages_own_working_colourspace():
@@ -1811,7 +1821,7 @@ if __name__ == "__main__":
     test_highlight_checkbox_syncs_when_switching_between_two_keyers()
     test_ky_pick_clicked_requests_the_eyedropper_with_a_callback()
     test_ky_pick_clicked_is_a_noop_without_a_wired_requester()
-    test_ky_pixel_picked_sets_hue_center_only()
+    test_ky_pixel_picked_sets_a_tight_box_around_the_picked_pixel()
     test_ky_pixel_picked_decodes_through_this_stages_own_working_colourspace()
     test_ky_pixel_picked_is_ignored_if_selection_moved_to_a_different_stage()
     test_keyer_refresh_on_select_does_not_corrupt_stored_values()

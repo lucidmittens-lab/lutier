@@ -4636,15 +4636,15 @@ class StackPanel(QObject):
 
         # Eyedropper (per Tom) -- arms WipeCompareWidget's own one-shot
         # click-to-sample (see set_eyedropper_requester's own docstring
-        # for the getter-based cross-panel wiring), sets Hue Center ONLY
-        # from whatever's actually on screen at the clicked pixel (see
-        # _on_ky_pixel_picked) -- width/chroma/lightness stay whatever
-        # the user already has them, a deliberate "click to say which
-        # hue, sliders stay a deliberate choice" v1 scope decision.
+        # for the getter-based cross-panel wiring), seeds a TIGHT starting
+        # qualifier box (Hue/Chroma/Lightness) around whatever's actually
+        # on screen at the clicked pixel (see _on_ky_pixel_picked and its
+        # own PICK_*_HALF_WIDTH constants) -- widen from there with the
+        # sliders/Softness as needed.
         self.ky_pick_button = QPushButton("Pick")
         self.ky_pick_button.setToolTip(
-            "Click, then click a pixel in the Viewer to set Hue Center "
-            "from it.")
+            "Click, then click a pixel in the Viewer to set a tight "
+            "starting Hue/Chroma/Lightness box around it.")
         self.ky_pick_button.clicked.connect(self._on_ky_pick_clicked)
         hue_row.addWidget(self.ky_pick_button)
         outer.addLayout(hue_row)
@@ -4791,6 +4791,23 @@ class StackPanel(QObject):
         stage_id = stage.id
         self._eyedropper_requester(lambda rgb: self._on_ky_pixel_picked(stage_id, rgb))
 
+    # A pick seeds a TIGHT starting box around the picked pixel's own
+    # OKLCh position on all three axes, not just hue -- see
+    # _on_ky_pixel_picked's own docstring for why "hue only, leave
+    # chroma/lightness wide open" (this method's original v1 behavior)
+    # was a real bug in practice, not just a stylistic choice: a keyer's
+    # DEFAULT chroma/lightness bands are effectively "no gating," so
+    # anything sharing roughly the picked hue -- including a much less
+    # saturated or differently-lit surface -- passed straight through.
+    # These half-widths are a deliberately tight STARTING point (the user
+    # widens from here with the sliders/softness, same as any qualifier
+    # tool's own click-then-refine workflow) rather than a scientifically
+    # derived constant -- tune directly from feedback if still too
+    # tight/loose in practice.
+    PICK_HUE_HALF_WIDTH = 12.0
+    PICK_CHROMA_HALF_WIDTH = 0.04
+    PICK_LIGHTNESS_HALF_WIDTH = 0.12
+
     def _on_ky_pixel_picked(self, stage_id, rgb):
         """Callback from WipeCompareWidget.arm_eyedropper, via Sample
         ImagePanel.pick_pixel_color -- `rgb` is a plain (r, g, b) float
@@ -4805,23 +4822,40 @@ class StackPanel(QObject):
         encoding the working pipeline is already in, e.g. ACEScct,
         exactly matching what compute_matte's own decode_working_
         colourspace_to_oklch call already assumes for THIS SAME stage's
-        params. Using working_colourspace here makes the eyedropper key
-        off the pixel's real perceptually-uniform OKLCh position exactly
-        as this keyer's own qualifier would see it, rather than off
-        whatever raw code values happened to be on screen misinterpreted
-        through the wrong transfer function.) Sets Hue Center ONLY -- see
-        the Pick button's own tooltip for why width/chroma/lightness are
-        left alone. No-ops if the keyer that requested the pick is no
-        longer selected -- the stage_id captured at click time may not
-        resolve to anything meaningful anymore by the time the Viewer
-        click actually lands."""
+        params.
+
+        Sets Hue Center/Width AND Chroma/Lightness min/max -- a TIGHT box
+        centered on the picked pixel's own OKLCh position (see the
+        PICK_*_HALF_WIDTH constants just above), not hue alone. Per Tom,
+        the original hue-only version caught unrelated colors sharing
+        roughly the same hue (a red building pulling in beige ones too)
+        because chroma/lightness were left at their default "no gating"
+        full range -- the qualifier's own falloff (color_warper.
+        falloff_weight) has real, non-negligible tails, so an unconstrained
+        axis genuinely lets a lot through, not just a theoretical edge
+        case. No-ops if the keyer that requested the pick is no longer
+        selected -- the stage_id captured at click time may not resolve
+        to anything meaningful anymore by the time the Viewer click
+        actually lands."""
         stage = self._selected_stage()
         if stage is None or stage.id != stage_id or stage.kind != "keyer":
             return
         working_colourspace = stage.params.get("working_colourspace", ky.DEFAULT_WORKING_COLOURSPACE)
         sample = np.array(rgb, dtype=np.float64).reshape(1, 1, 3)
-        _, _, hue = cw.decode_working_colourspace_to_oklch(sample, working_colourspace)
-        self.ky_hue_center_spin.setValue(float(hue[0, 0]))
+        lightness, chroma, hue = cw.decode_working_colourspace_to_oklch(sample, working_colourspace)
+        lightness, chroma, hue = float(lightness[0, 0]), float(chroma[0, 0]), float(hue[0, 0])
+
+        self.ky_hue_center_spin.setValue(hue)
+        self.ky_hue_width_spin.setValue(
+            max(self.ky_hue_width_spin.minimum(), self.PICK_HUE_HALF_WIDTH))
+        self.ky_chroma_min_spin.setValue(
+            max(self.ky_chroma_min_spin.minimum(), chroma - self.PICK_CHROMA_HALF_WIDTH))
+        self.ky_chroma_max_spin.setValue(
+            min(self.ky_chroma_max_spin.maximum(), chroma + self.PICK_CHROMA_HALF_WIDTH))
+        self.ky_lightness_min_spin.setValue(
+            max(self.ky_lightness_min_spin.minimum(), lightness - self.PICK_LIGHTNESS_HALF_WIDTH))
+        self.ky_lightness_max_spin.setValue(
+            min(self.ky_lightness_max_spin.maximum(), lightness + self.PICK_LIGHTNESS_HALF_WIDTH))
 
     # ---- inspector: fork_split stage ------------------------------------
 
