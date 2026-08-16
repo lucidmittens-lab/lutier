@@ -172,6 +172,7 @@ import exposure_contrast
 import grading_primary
 import grading_rgb_curve
 import grading_tone
+import keyer
 from stack_memory import StackMemory, StackMemoryLibrary, GalleryStill, GalleryStillLibrary
 from cdl_library import CDLEntry, CDLLibrary
 from lut_library import LUTLibraryEntry, LUTLibrary
@@ -281,7 +282,20 @@ def stage_to_session_dict(stage):
     a stage the user never gets told about. Every entry carries "branch"
     (None/"a"/"b", see this module's docstring on STACK FORKING)
     regardless of kind, since branch is an orthogonal tag any stage can
-    carry, not something specific to fork_split/fork_merge themselves."""
+    carry, not something specific to fork_split/fork_merge themselves.
+
+    Deliberately does NOT write "matte_source_id" here (see stack.py's
+    docstring, "MATTE CHANNELS") even though it's just another opt-in
+    params key any stage kind can carry, same shape as branch -- unlike
+    branch, a raw matte_source_id is a Stage.id, and stage ids are
+    reassigned FRESH on every load (nothing in this module persists them
+    -- see stack_from_session_dict's own docstring), so writing the raw
+    id here would silently produce a dangling reference on the very next
+    reload. stack_to_session_dict (the only caller of this function)
+    handles it instead, translating a producing stage's id into its own
+    POSITION within the stack at save time, which stack_from_session_dict
+    can resolve back into whatever fresh id that same-position stage
+    gets reconstructed with."""
     entry = {
         "kind": stage.kind,
         "label": stage.label,
@@ -386,6 +400,15 @@ def stage_to_session_dict(stage):
         entry["points"] = [dict(p) for p in stage.params.get("points") or []]
         entry["wake"] = stage.params.get("wake", color_warper.DEFAULT_WAKE)
         entry["dropoff"] = stage.params.get("dropoff", color_warper.DEFAULT_DROPOFF)
+    elif stage.kind == "keyer":
+        entry["hue_center"] = stage.params.get("hue_center", keyer.DEFAULT_HUE_CENTER)
+        entry["hue_width"] = stage.params.get("hue_width", keyer.DEFAULT_HUE_WIDTH)
+        entry["sat_min"] = stage.params.get("sat_min", keyer.DEFAULT_SAT_MIN)
+        entry["sat_max"] = stage.params.get("sat_max", keyer.DEFAULT_SAT_MAX)
+        entry["lum_min"] = stage.params.get("lum_min", keyer.DEFAULT_LUM_MIN)
+        entry["lum_max"] = stage.params.get("lum_max", keyer.DEFAULT_LUM_MAX)
+        entry["softness"] = stage.params.get("softness", keyer.DEFAULT_SOFTNESS)
+        entry["invert"] = stage.params.get("invert", keyer.DEFAULT_INVERT)
     elif stage.kind == "fork_split":
         pass  # no extra fields -- see module docstring, STACK FORKING
     elif stage.kind == "fork_merge":
@@ -398,12 +421,30 @@ def stage_to_session_dict(stage):
 def stack_to_session_dict(stack):
     """stack.Stack -> plain JSON-able dict, via stage_to_session_dict per
     stage (see that function for the per-kind field list and why an
-    unreconstructable stage raises rather than being silently dropped)."""
+    unreconstructable stage raises rather than being silently dropped).
+
+    Also writes "matte_source_index" onto every entry (see stack.py's
+    docstring, "MATTE CHANNELS," and stage_to_session_dict's own
+    docstring on why this lives HERE rather than in that function): a
+    stage's own `params["matte_source_id"]` is a live Stage.id, only
+    meaningful within THIS in-memory Stack, so it's translated into the
+    producing stage's own POSITION within `stack.stages` instead --
+    `None` if there's no matte_source_id set, or if it doesn't resolve to
+    any stage actually in this stack (already a dangling reference, same
+    as it would be at runtime -- see _stage_blend_factor). stack_from_
+    session_dict reverses this by re-resolving that position against
+    whatever fresh id gets assigned during reconstruction."""
+    id_to_index = {stage.id: i for i, stage in enumerate(stack.stages)}
+    entries = []
+    for stage in stack.stages:
+        entry = stage_to_session_dict(stage)
+        entry["matte_source_index"] = id_to_index.get(stage.params.get("matte_source_id"))
+        entries.append(entry)
     return {
         "size": stack.size,
         "domain_min": list(stack.domain_min),
         "domain_max": list(stack.domain_max),
-        "stages": [stage_to_session_dict(stage) for stage in stack.stages],
+        "stages": entries,
     }
 
 
@@ -582,6 +623,20 @@ def stage_from_session_dict(entry):
             enabled=entry.get("enabled", True),
             opacity=entry.get("opacity", 1.0),
         )
+    elif kind == "keyer":
+        stage = st.make_keyer_stage(
+            hue_center=entry.get("hue_center", keyer.DEFAULT_HUE_CENTER),
+            hue_width=entry.get("hue_width", keyer.DEFAULT_HUE_WIDTH),
+            sat_min=entry.get("sat_min", keyer.DEFAULT_SAT_MIN),
+            sat_max=entry.get("sat_max", keyer.DEFAULT_SAT_MAX),
+            lum_min=entry.get("lum_min", keyer.DEFAULT_LUM_MIN),
+            lum_max=entry.get("lum_max", keyer.DEFAULT_LUM_MAX),
+            softness=entry.get("softness", keyer.DEFAULT_SOFTNESS),
+            invert=entry.get("invert", keyer.DEFAULT_INVERT),
+            label=label,
+            enabled=entry.get("enabled", True),
+            opacity=entry.get("opacity", 1.0),
+        )
     elif kind == "fork_split":
         stage = st.make_fork_split_stage(
             label=label,
@@ -612,21 +667,50 @@ def stack_from_session_dict(data):
     fork_split/fork_merge/branch stages are all ordinary flat-list
     entries (see this module's docstring, STACK FORKING). One branch
     losing a stage this way doesn't unbalance the region -- _run_stages
-    matches split/merge structurally, not by stage count per branch."""
+    matches split/merge structurally, not by stage count per branch.
+
+    Second pass at the end resolves each entry's own "matte_source_index"
+    (see stack_to_session_dict's own docstring, and stack.py's, "MATTE
+    CHANNELS") back into a real matte_source_id -- the FRESH id whatever
+    stage got reconstructed at that same original position, since ids
+    themselves are never persisted (reassigned via next_stage_id() on
+    every load, same as always). Deliberately done as its own pass AFTER
+    every stage in this call has already been reconstructed (or skipped),
+    rather than inline in the loop above, since an entry can reference a
+    LATER position in the original list, not just an earlier one; an
+    index that failed to reconstruct, or is missing/out of range,
+    resolves to no matte at all (the exact same self-healing "no error,
+    no special sentinel" fallback _stage_blend_factor already gives an
+    unresolved reference at runtime)."""
     warnings = []
     stack = st.Stack(
         size=data.get("size", 33),
         domain_min=tuple(data.get("domain_min", (0.0, 0.0, 0.0))),
         domain_max=tuple(data.get("domain_max", (1.0, 1.0, 1.0))),
     )
-    for entry in data.get("stages", []):
+    entries = data.get("stages", [])
+    reconstructed = []  # parallel to `entries`, by ORIGINAL index -- None for a skipped stage
+    for entry in entries:
         label = entry.get("label")
         try:
             stage = stage_from_session_dict(entry)
         except Exception as e:  # noqa: BLE001 -- one bad stage shouldn't sink the whole session
             warnings.append(f"Skipped stage {label!r}: {e}")
+            reconstructed.append(None)
             continue
         stack.add_stage(stage)
+        reconstructed.append(stage)
+
+    for entry, stage in zip(entries, reconstructed):
+        if stage is None:
+            continue
+        source_index = entry.get("matte_source_index")
+        if source_index is None or not (0 <= source_index < len(reconstructed)):
+            continue
+        source_stage = reconstructed[source_index]
+        if source_stage is not None:
+            stage.params["matte_source_id"] = source_stage.id
+
     return stack, warnings
 
 

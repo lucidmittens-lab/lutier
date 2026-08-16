@@ -1193,6 +1193,231 @@ def test_stage_cache_handles_fork_regions_as_one_block():
           "one block and still match an uncached bake across edits -- OK")
 
 
+# --- matte channels (keyer stage + matte_source_id gating) ---------------
+
+def _half_red_half_blue(size=4):
+    """Midtone reddish (hue 0) / bluish (hue 240) halves -- deliberately
+    NOT pure saturated (1,0,0)/(0,0,1) primaries, since a channel already
+    sitting at 0 or 1 would make an additive grade's effect invisible
+    after apply_stack_to_image_array's own final display clip (e.g. a
+    red channel already at 1.0 plus a positive offset still clips back
+    to 1.0, silently hiding the grade from a simple "did it change"
+    assertion)."""
+    image = np.zeros((2, size, 3), dtype=np.float64)
+    image[:, :size // 2] = (0.6, 0.2, 0.2)
+    image[:, size // 2:] = (0.2, 0.2, 0.6)
+    return image
+
+
+def test_keyer_stage_is_identity_passthrough_for_the_image():
+    image = _half_red_half_blue()
+    keyer_stage = st.make_keyer_stage(hue_center=0.0, hue_width=20.0)
+    stack = st.Stack()
+    stack.add_stage(keyer_stage)
+    result = st.apply_stack_to_image_array(stack, image)
+    assert np.allclose(result, image, atol=1e-9)
+    print("keyer stage: never grades the image itself, regardless of its "
+          "own qualifier settings -- OK")
+
+
+def test_matte_letters_for_assigns_sequential_letters_to_keyer_stages_only():
+    k1 = st.make_keyer_stage()
+    grading = st.make_grading_primary_stage()
+    k2 = st.make_keyer_stage()
+    letters = st.matte_letters_for([k1, grading, k2])
+    assert letters == {k1.id: "A", k2.id: "B"}
+    assert grading.id not in letters
+    print("matte_letters_for: assigns sequential letters to keyer stages "
+          "only, skipping every other kind -- OK")
+
+
+def test_matte_letters_for_doubles_past_26():
+    keyers = [st.make_keyer_stage() for _ in range(28)]
+    letters = st.matte_letters_for(keyers)
+    assert letters[keyers[25].id] == "Z"
+    assert letters[keyers[26].id] == "AA"
+    assert letters[keyers[27].id] == "BB"
+    print("matte_letters_for: past Z, doubles the next letter (AA, BB...) "
+          "rather than spreadsheet-style AB/AC -- OK")
+
+
+def test_matte_letters_for_does_not_shift_when_a_keyer_is_disabled():
+    k1 = st.make_keyer_stage()
+    k2 = st.make_keyer_stage(enabled=False)
+    k3 = st.make_keyer_stage()
+    letters = st.matte_letters_for([k1, k2, k3])
+    assert letters == {k1.id: "A", k2.id: "B", k3.id: "C"}
+    print("matte_letters_for: a disabled keyer keeps its own stable "
+          "letter rather than every later letter shifting down -- OK")
+
+
+def test_matte_gates_a_downstream_stage_per_pixel():
+    image = _half_red_half_blue()
+    keyer_stage = st.make_keyer_stage(hue_center=0.0, hue_width=20.0, softness=0.1)
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer.params["matte_source_id"] = keyer_stage.id
+
+    stack = st.Stack()
+    stack.add_stage(keyer_stage)
+    stack.add_stage(consumer)
+    result = st.apply_stack_to_image_array(stack, image)
+
+    red_half = result[:, :2]
+    blue_half = result[:, 2:]
+    assert np.all(red_half > image[:, :2] + 0.1), "keyed (red) half should be brightened"
+    assert np.allclose(blue_half, image[:, 2:], atol=1e-6), \
+        "unkeyed (blue) half should be untouched"
+    print("matte_source_id: a downstream stage's opacity is gated per "
+          "pixel by an upstream keyer's matte -- OK")
+
+
+def test_matte_source_id_none_behaves_like_plain_scalar_opacity():
+    """A stage with no matte_source_id at all must be provably unaffected
+    by this whole feature -- same exact scalar-opacity blend as before
+    any of this existed."""
+    image = _half_red_half_blue()
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3), opacity=0.5)
+    stack = st.Stack()
+    stack.add_stage(consumer)
+    result = st.apply_stack_to_image_array(stack, image)
+    direct = cdl.apply_cdl(image, offset=(0.3, 0.3, 0.3))
+    expected = np.clip(image * 0.5 + direct * 0.5, 0.0, 1.0)
+    assert np.allclose(result, expected, atol=1e-6)
+    print("matte_source_id absent: identical to today's plain scalar "
+          "opacity blend -- OK")
+
+
+def test_matte_source_id_referencing_a_removed_keyer_falls_back_to_scalar_opacity():
+    image = _half_red_half_blue()
+    keyer_stage = st.make_keyer_stage(hue_center=0.0, hue_width=20.0)
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer.params["matte_source_id"] = keyer_stage.id  # keyer never actually added to the stack
+
+    stack = st.Stack()
+    stack.add_stage(consumer)
+    result = st.apply_stack_to_image_array(stack, image)
+    direct = cdl.apply_cdl(image, offset=(0.3, 0.3, 0.3))
+    assert np.allclose(result, np.clip(direct, 0.0, 1.0), atol=1e-6)
+    print("matte_source_id pointing at a nonexistent keyer: silently "
+          "falls back to full scalar opacity, no error -- OK")
+
+
+def test_matte_source_id_referencing_a_downstream_keyer_is_ignored():
+    """A consumer positioned BEFORE its own referenced keyer must not see
+    a matte that hasn't been produced yet -- degrades to plain scalar
+    opacity, same as a removed keyer."""
+    image = _half_red_half_blue()
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    keyer_stage = st.make_keyer_stage(hue_center=0.0, hue_width=20.0)
+    consumer.params["matte_source_id"] = keyer_stage.id
+
+    stack = st.Stack()
+    stack.add_stage(consumer)  # consumer runs BEFORE the keyer that would feed it
+    stack.add_stage(keyer_stage)
+    result = st.apply_stack_to_image_array(stack, image)
+    direct = cdl.apply_cdl(image, offset=(0.3, 0.3, 0.3))
+    assert np.allclose(result, np.clip(direct, 0.0, 1.0), atol=1e-6)
+    print("matte_source_id pointing at a keyer that hasn't run yet "
+          "(sits downstream): ignored, falls back to scalar opacity -- OK")
+
+
+def test_matte_amount_is_scaled_by_the_keyers_own_opacity():
+    image = _half_red_half_blue()
+    keyer_full = st.make_keyer_stage(hue_center=0.0, hue_width=20.0, softness=0.1, opacity=1.0)
+    keyer_half = st.make_keyer_stage(hue_center=0.0, hue_width=20.0, softness=0.1, opacity=0.5)
+    consumer_full = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer_full.params["matte_source_id"] = keyer_full.id
+    consumer_half = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer_half.params["matte_source_id"] = keyer_half.id
+
+    stack_full = st.Stack()
+    stack_full.add_stage(keyer_full)
+    stack_full.add_stage(consumer_full)
+    stack_half = st.Stack()
+    stack_half.add_stage(keyer_half)
+    stack_half.add_stage(consumer_half)
+
+    result_full = st.apply_stack_to_image_array(stack_full, image)
+    result_half = st.apply_stack_to_image_array(stack_half, image)
+    red_delta_full = result_full[:, :2] - image[:, :2]
+    red_delta_half = result_half[:, :2] - image[:, :2]
+    assert np.all(red_delta_half > 1e-6)
+    assert np.all(red_delta_half < red_delta_full - 1e-6), \
+        "halving the keyer's own opacity should halve the matte amount, weakening the gated effect"
+    print("keyer opacity is repurposed as \"matte amount\" -- halving it "
+          "weakens (without zeroing) a downstream consumer's gated effect -- OK")
+
+
+def test_matte_gating_works_inside_a_fork_branch_and_after_the_merge():
+    """Per this module's docstring: mattes are shared across branches --
+    a keyer on branch 'a' should still be visible to a consumer on branch
+    'b' and to a consumer after the merge. Both branches start identical
+    right after the split, so the keyer's own matte (computed from branch
+    a's own image at that point) is numerically exactly what branch b's
+    own pixels would key to as well."""
+    image = _half_red_half_blue()
+    keyer_stage = st.make_keyer_stage(hue_center=0.0, hue_width=20.0, softness=0.1)
+    keyer_stage.branch = "a"
+    consumer_b = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer_b.params["matte_source_id"] = keyer_stage.id
+    consumer_b.branch = "b"
+    after = st.make_cdl_stage(offset=(0.2, 0.2, 0.2))
+    after.params["matte_source_id"] = keyer_stage.id
+
+    stack = st.Stack()
+    stack.add_stage(st.make_fork_split_stage())
+    stack.add_stage(keyer_stage)
+    stack.add_stage(consumer_b)
+    stack.add_stage(st.make_fork_merge_stage(blend=0.5))
+    stack.add_stage(after)
+
+    result = st.apply_stack_to_image_array(stack, image)
+    # Red half: branch b's +0.3 offset gated in fully, blended 50/50
+    # against branch a's untouched output, then `after`'s own +0.2 gated
+    # in fully on top -- (image + 0.15) + 0.2.
+    expected_red = np.clip(image[:, :2] + 0.15 + 0.2, 0.0, 1.0)
+    # Blue half: keyer's matte is ~0 there, so neither consumer_b's nor
+    # after's offset should show up at all.
+    assert np.allclose(result[:, :2], expected_red, atol=1e-3)
+    assert np.allclose(result[:, 2:], image[:, 2:], atol=1e-3)
+    print("matte gating composes correctly across a fork branch and "
+          "after the merge, with the expected numeric result -- OK")
+
+
+def test_stage_cache_propagates_matte_across_a_block_boundary():
+    """The regression this feature's own StageCache fix guards against:
+    an ordinary stage is its own cache BLOCK (_partition_into_blocks), so
+    a keyer and its consumer are almost always in different blocks --
+    without StageCache's own _block_mattes bookkeeping, a cached bake
+    would silently lose the matte the moment the keyer's own block gets
+    reused rather than re-run."""
+    cache = st.StageCache()
+    image = _half_red_half_blue(size=4).astype(np.float32)
+    keyer_stage = st.make_keyer_stage(hue_center=0.0, hue_width=20.0, softness=0.1)
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer.params["matte_source_id"] = keyer_stage.id
+    unrelated = st.make_cdl_stage(offset=(0.0, 0.0, 0.0))
+
+    stack = st.Stack()
+    stack.add_stage(keyer_stage)
+    stack.add_stage(consumer)
+    stack.add_stage(unrelated)
+
+    def check():
+        cached = apply_stack_to_image_array_with_cache(stack, image, cache, input_key=1)
+        uncached = st.apply_stack_to_image_array(stack, image)
+        assert np.allclose(cached, uncached, atol=1e-6)
+
+    check()  # first bake -- nothing cached yet
+    unrelated.params["offset"] = (0.0, 0.0, 0.1)
+    check()  # edit a LATER, unrelated block -- keyer's block gets reused from cache, not re-run
+    keyer_stage.params["hue_center"] = 240.0  # re-key toward blue instead of red
+    check()  # edit the keyer itself -- its own block AND everything after it must re-run
+    print("StageCache: a matte survives being carried across a cache "
+          "block boundary, including when the keyer's own block is "
+          "reused (not re-run) on a later, unrelated edit -- OK")
+
+
 if __name__ == "__main__":
     test_stage_rejects_unknown_kind()
     test_make_lut_stage_retarget_requires_both_or_neither()
@@ -1254,5 +1479,16 @@ if __name__ == "__main__":
     test_stage_cache_skips_recompute_of_untouched_stages()
     test_stage_cache_apply_to_image_array_matches_uncached_and_respects_input_key()
     test_stage_cache_handles_fork_regions_as_one_block()
+    test_keyer_stage_is_identity_passthrough_for_the_image()
+    test_matte_letters_for_assigns_sequential_letters_to_keyer_stages_only()
+    test_matte_letters_for_doubles_past_26()
+    test_matte_letters_for_does_not_shift_when_a_keyer_is_disabled()
+    test_matte_gates_a_downstream_stage_per_pixel()
+    test_matte_source_id_none_behaves_like_plain_scalar_opacity()
+    test_matte_source_id_referencing_a_removed_keyer_falls_back_to_scalar_opacity()
+    test_matte_source_id_referencing_a_downstream_keyer_is_ignored()
+    test_matte_amount_is_scaled_by_the_keyers_own_opacity()
+    test_matte_gating_works_inside_a_fork_branch_and_after_the_merge()
+    test_stage_cache_propagates_matte_across_a_block_boundary()
     print()
     print("All stack tests passed.")

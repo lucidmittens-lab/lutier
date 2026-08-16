@@ -101,11 +101,12 @@ inspector correctly afterward.
 from pathlib import Path
 from itertools import zip_longest
 from collections import namedtuple
+import colorsys
 
 import numpy as np
 import shiboken6
 from PySide6.QtCore import Qt, QObject, QSize, QPoint, Signal, QVariantAnimation, QEasingCurve
-from PySide6.QtGui import QPainter, QPen, QDrag, QPixmap, QColor
+from PySide6.QtGui import QPainter, QPen, QDrag, QPixmap, QColor, QImage
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QDoubleSpinBox,
@@ -125,6 +126,7 @@ import grading_rgb_curve as grc
 import grading_tone as gtn
 import color_balance as cb
 import color_warper as cw
+import keyer as ky
 from color_wheel_widget import ColorBalanceWheel
 from color_warper_wheel import WarpierWheel
 from color_warper_cloud_widget import WarpierCloudWidget
@@ -367,6 +369,7 @@ STAGE_KIND_BADGES = {
     "grading_tone": "GT",
     "grading_rgb_curve": "RGB",
     "color_warper": "WRP",
+    "keyer": "KEY",
     "fork_split": "FRK",
     "fork_merge": "MRG",
 }
@@ -374,6 +377,30 @@ STAGE_KIND_BADGES = {
 
 def _stage_kind_badge_text(kind):
     return STAGE_KIND_BADGES.get(kind, kind[:3].upper())
+
+
+def _matte_options_by_index(stages):
+    """options[i] -- every "keyer" stage at a position STRICTLY BEFORE
+    index i in `stages`, as (letter, stage_id) pairs in stack order (see
+    stack.py's docstring, "MATTE CHANNELS", and stack.matte_letters_for
+    for why letters are always freshly computed, never stored). Computed
+    once per _refresh_list() call rather than per row: each row's own
+    "which matte channels can I reference" only depends on its OWN
+    original position in the flat stages list, so a single upfront pass
+    lets every row -- including ones rendered inside a fork region's
+    two-column table, where visual row order and original stack-index
+    order can differ (see _flush_fork_grid's own docstring on why cells
+    are paired by POSITION WITHIN a branch, not by original index) --
+    look its own options up in O(1) by that original index, with no
+    fork-aware bookkeeping needed here at all."""
+    letters = st.matte_letters_for(stages)
+    options = []
+    seen_so_far = []
+    for stage in stages:
+        options.append(list(seen_so_far))
+        if stage.kind == "keyer":
+            seen_so_far.append((letters[stage.id], stage.id))
+    return options
 
 
 # Stack()'s own constructor defaults, read once rather than hardcoded here
@@ -647,7 +674,8 @@ class _StageRowWidget(QFrame):
     _ANIM_DURATION_MS = 140
 
     def __init__(self, stage, on_row_clicked, on_enabled_clicked, on_delete_clicked,
-                 on_opacity_changed=None, compact=False, parent=None):
+                 on_opacity_changed=None, matte_options=None, on_matte_changed=None,
+                 compact=False, parent=None):
         super().__init__(parent)
         self.stage_id = stage.id
         self.compact = compact
@@ -754,6 +782,38 @@ class _StageRowWidget(QFrame):
                 lambda value: on_opacity_changed(stage.id, value))
         layout.addWidget(self.opacity_spin)
 
+        # Matte channel selector (see stack.py's docstring, "MATTE
+        # CHANNELS") -- "None" (this stage's opacity behaves exactly as
+        # before) plus one entry per upstream "keyer" stage's own current
+        # display letter, itemData the PRODUCING stage's own Stage.id
+        # (never the letter itself -- see matte_options' own docstring in
+        # StackPanel._matte_options_by_index on why letters are display-
+        # only). Hidden for a "keyer" row itself (a keyer doesn't consume
+        # a matte in v1) -- shown uniformly for every OTHER kind
+        # (including fork_split/fork_merge, whose rows already show an
+        # opacity spin that's similarly inert for fork_split specifically
+        # -- consistent with this file's existing "one uniform row shape"
+        # convention rather than special-casing which kinds get which
+        # controls).
+        self.matte_combo = QComboBox()
+        self.matte_combo.setObjectName("stageMatteCombo")
+        self.matte_combo.setToolTip(
+            "Gate this stage's opacity by an upstream Keyer's matte, "
+            "per pixel, instead of a flat percentage.")
+        self.matte_combo.setFixedWidth(52 if compact else 64)
+        self.matte_combo.addItem("None", None)
+        for letter, keyer_stage_id in (matte_options or []):
+            self.matte_combo.addItem(letter, keyer_stage_id)
+        current_matte_source = stage.params.get("matte_source_id")
+        idx = self.matte_combo.findData(current_matte_source)
+        self.matte_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        if stage.kind == "keyer":
+            self.matte_combo.setVisible(False)
+        elif on_matte_changed is not None:
+            self.matte_combo.currentIndexChanged.connect(
+                lambda _index: on_matte_changed(stage.id, self.matte_combo.currentData()))
+        layout.addWidget(self.matte_combo)
+
         # "x" (not the enabled toggle's dot glyph -- a DIFFERENT symbol on
         # purpose, so the two aren't visually confusable at a glance) at
         # the row's far end.
@@ -837,6 +897,16 @@ class _StageRowWidget(QFrame):
         self.opacity_spin.blockSignals(True)
         self.opacity_spin.setValue(round(stage.opacity * 100))
         self.opacity_spin.blockSignals(False)
+        # Re-syncs the SELECTION only (not the item list -- which upstream
+        # keyers are even offered only changes on a structural mutation,
+        # already routed through a full _refresh_list(), see this class's
+        # own docstring point 1) -- defensive, for a matte_source_id that
+        # changed via something other than this row's own combo (e.g.
+        # undo/redo landing here instead of a full _refresh_list somehow).
+        idx = self.matte_combo.findData(stage.params.get("matte_source_id"))
+        self.matte_combo.blockSignals(True)
+        self.matte_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.matte_combo.blockSignals(False)
         self._apply_enabled_state(stage.enabled, animate=True)
 
     def paintEvent(self, event):
@@ -868,7 +938,8 @@ class _StageRowWidget(QFrame):
         pos = event.position().toPoint()
         if not (self.enabled_button.geometry().contains(pos)
                 or self.delete_button.geometry().contains(pos)
-                or self.opacity_spin.geometry().contains(pos)):
+                or self.opacity_spin.geometry().contains(pos)
+                or self.matte_combo.geometry().contains(pos)):
             self._on_row_clicked(self.stage_id)
         super().mousePressEvent(event)
 
@@ -898,7 +969,8 @@ class _ForkBranchGridRowWidget(QFrame):
     StackPanel._flush_fork_grid)."""
 
     def __init__(self, left_stage, right_stage, on_row_clicked, on_enabled_clicked,
-                 on_delete_clicked, on_opacity_changed, parent=None):
+                 on_delete_clicked, on_opacity_changed, left_matte_options=None,
+                 right_matte_options=None, on_matte_changed=None, parent=None):
         super().__init__(parent)
         self.setObjectName("stackForkGridRow")
         layout = QHBoxLayout(self)
@@ -906,20 +978,24 @@ class _ForkBranchGridRowWidget(QFrame):
         layout.setSpacing(6)
 
         self.left_widget = self._build_cell(
-            left_stage, on_row_clicked, on_enabled_clicked, on_delete_clicked, on_opacity_changed)
+            left_stage, on_row_clicked, on_enabled_clicked, on_delete_clicked,
+            on_opacity_changed, left_matte_options, on_matte_changed)
         layout.addWidget(self.left_widget, stretch=1)
 
         self.right_widget = self._build_cell(
-            right_stage, on_row_clicked, on_enabled_clicked, on_delete_clicked, on_opacity_changed)
+            right_stage, on_row_clicked, on_enabled_clicked, on_delete_clicked,
+            on_opacity_changed, right_matte_options, on_matte_changed)
         layout.addWidget(self.right_widget, stretch=1)
 
     @staticmethod
-    def _build_cell(stage, on_row_clicked, on_enabled_clicked, on_delete_clicked, on_opacity_changed):
+    def _build_cell(stage, on_row_clicked, on_enabled_clicked, on_delete_clicked,
+                     on_opacity_changed, matte_options=None, on_matte_changed=None):
         if stage is None:
             return _EmptyBranchCell()
         return _StageRowWidget(
             stage, on_row_clicked, on_enabled_clicked, on_delete_clicked,
-            on_opacity_changed=on_opacity_changed, compact=True)
+            on_opacity_changed=on_opacity_changed, matte_options=matte_options,
+            on_matte_changed=on_matte_changed, compact=True)
 
     def set_selected(self, selected_stage_id):
         """Highlights whichever cell (if either) matches the currently
@@ -1528,6 +1604,9 @@ class StackPanel(QObject):
         # either way (auto-dispatches to the colour-science fallback,
         # see color_warper.py's own docstring).
         menu.addAction("Add WARPier", self._on_add_color_warper_clicked)
+        # No OCIO gate either -- keyer.py is plain numpy HSL math, no OCIO
+        # dependency at all (see that module's own docstring).
+        menu.addAction("Add Keyer", self._on_add_keyer_clicked)
         menu.addSeparator()
         fork_action = menu.addAction("Add Fork (Split + Merge)", self._on_add_fork_clicked)
         fork_action.setToolTip(
@@ -1557,6 +1636,7 @@ class StackPanel(QObject):
         self._build_grading_tone_inspector()
         self._build_grading_rgb_curve_inspector()
         self._build_color_warper_inspector()
+        self._build_keyer_inspector()
         self._build_fork_split_inspector()
         self._build_fork_merge_inspector()
         layout.addWidget(self.inspector_stack, stretch=1)
@@ -1840,6 +1920,11 @@ class StackPanel(QObject):
         stage_id_to_row = {}
 
         stages = self.stack.stages
+        # See _matte_options_by_index's own docstring -- computed once
+        # here, consumed by index in _add_stage_row_item/_flush_fork_grid
+        # below, so every row's matte_combo offers exactly the upstream
+        # keyers, regardless of where that row ends up rendered.
+        self._matte_options = _matte_options_by_index(stages)
         n = len(stages)
         i = 0
         while i < n:
@@ -1968,7 +2053,9 @@ class StackPanel(QObject):
         item = QListWidgetItem()
         row_widget = _StageRowWidget(
             stage, self._on_row_clicked, self._on_row_enabled_clicked,
-            self._on_row_delete_clicked, on_opacity_changed=self._on_row_opacity_changed)
+            self._on_row_delete_clicked, on_opacity_changed=self._on_row_opacity_changed,
+            matte_options=self._matte_options[stack_index],
+            on_matte_changed=self._on_row_matte_changed)
         item.setSizeHint(row_widget.sizeHint())
         self.list_widget.addItem(item)
         self.list_widget.setItemWidget(item, row_widget)
@@ -2016,7 +2103,10 @@ class StackPanel(QObject):
             item = QListWidgetItem()
             row_widget = _ForkBranchGridRowWidget(
                 a_stage, b_stage, self._on_row_clicked, self._on_row_enabled_clicked,
-                self._on_row_delete_clicked, self._on_row_opacity_changed)
+                self._on_row_delete_clicked, self._on_row_opacity_changed,
+                left_matte_options=self._matte_options[a_index] if a_index is not None else None,
+                right_matte_options=self._matte_options[b_index] if b_index is not None else None,
+                on_matte_changed=self._on_row_matte_changed)
             item.setSizeHint(row_widget.sizeHint())
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, row_widget)
@@ -2236,6 +2326,26 @@ class StackPanel(QObject):
         self._update_row_content(stage_id)
         self._emit_changed()
 
+    def _on_row_matte_changed(self, stage_id, matte_source_id):
+        """`_StageRowWidget.matte_combo`'s own currentIndexChanged, for
+        THAT row's stage specifically -- same "targeted update, not
+        _refresh_list()" shape as _on_row_opacity_changed just above
+        (this doesn't change the stage's POSITION or fork-region
+        membership, so a full rebuild would be needless work here too).
+        `matte_source_id` is already the combo's own itemData -- the
+        PRODUCING keyer's Stage.id, or None for "None" (see this class's
+        own docstring / stack.py's "MATTE CHANNELS"), never a letter."""
+        try:
+            stage = self.stack.find_stage(stage_id)
+        except KeyError:
+            return
+        if matte_source_id is None:
+            stage.params.pop("matte_source_id", None)
+        else:
+            stage.params["matte_source_id"] = matte_source_id
+        self._update_row_content(stage_id)
+        self._emit_changed()
+
     def _delete_stage_linked(self, stage_id):
         """The one place both stage-removal entry points (_on_remove_
         clicked, _on_row_delete_clicked) actually mutate self.stack --
@@ -2430,6 +2540,10 @@ class StackPanel(QObject):
 
     def _on_add_color_warper_clicked(self):
         stage = st.make_color_warper_stage(working_colourspace=cw.DEFAULT_WORKING_COLOURSPACE)
+        self._add_stage(stage)
+
+    def _on_add_keyer_clicked(self):
+        stage = st.make_keyer_stage()
         self._add_stage(stage)
 
     def _on_add_fork_clicked(self):
@@ -4403,6 +4517,163 @@ class StackPanel(QObject):
         self._update_row_content(stage.id)
         self._emit_changed()
 
+    # ---- inspector: keyer stage -------------------------------------
+
+    # A synthetic hue-sweep reference swatch (NOT the loaded image --
+    # StackPanel has no live image-array plumbing to read from at all,
+    # see KEYER_MATTE_PREVIEW_WIDTH's own comment below) that
+    # _update_keyer_matte_preview keys against, so the preview shows
+    # exactly which hues the current qualifier accepts independent of
+    # whatever happens to be loaded -- arguably more legible for tuning
+    # than an arbitrary photo would be anyway.
+    KEYER_MATTE_PREVIEW_WIDTH = 220
+    KEYER_MATTE_PREVIEW_HEIGHT = 28
+
+    def _build_keyer_inspector(self):
+        group = QGroupBox("Keyer")
+        outer = QVBoxLayout(group)
+
+        hue_row = QHBoxLayout()
+        self.ky_hue_center_spin = QDoubleSpinBox()
+        self.ky_hue_center_spin.setRange(0.0, 360.0)
+        self.ky_hue_center_spin.setDecimals(1)
+        self.ky_hue_center_spin.setSingleStep(1.0)
+        self.ky_hue_center_spin.setValue(ky.DEFAULT_HUE_CENTER)
+        self.ky_hue_center_spin.setWrapping(True)
+        enable_drag_to_scrub(self.ky_hue_center_spin)
+        self.ky_hue_center_spin.valueChanged.connect(self._apply_keyer_live)
+        hue_row.addWidget(_ParamLabel(
+            "Hue Center:", lambda: self.ky_hue_center_spin.setValue(ky.DEFAULT_HUE_CENTER)))
+        hue_row.addWidget(self.ky_hue_center_spin, stretch=1)
+
+        self.ky_hue_width_spin = QDoubleSpinBox()
+        self.ky_hue_width_spin.setRange(1.0, 180.0)
+        self.ky_hue_width_spin.setDecimals(1)
+        self.ky_hue_width_spin.setSingleStep(1.0)
+        self.ky_hue_width_spin.setValue(ky.DEFAULT_HUE_WIDTH)
+        enable_drag_to_scrub(self.ky_hue_width_spin)
+        self.ky_hue_width_spin.valueChanged.connect(self._apply_keyer_live)
+        hue_row.addWidget(_ParamLabel(
+            "Hue Width:", lambda: self.ky_hue_width_spin.setValue(ky.DEFAULT_HUE_WIDTH)))
+        hue_row.addWidget(self.ky_hue_width_spin, stretch=1)
+        outer.addLayout(hue_row)
+
+        sat_row = QHBoxLayout()
+        self.ky_sat_min_spin = QDoubleSpinBox()
+        self.ky_sat_max_spin = QDoubleSpinBox()
+        for spin, default in ((self.ky_sat_min_spin, ky.DEFAULT_SAT_MIN),
+                               (self.ky_sat_max_spin, ky.DEFAULT_SAT_MAX)):
+            spin.setRange(0.0, 1.0)
+            spin.setDecimals(2)
+            spin.setSingleStep(0.05)
+            spin.setValue(default)
+            enable_drag_to_scrub(spin)
+            spin.valueChanged.connect(self._apply_keyer_live)
+        sat_row.addWidget(_ParamLabel(
+            "Sat Min:", lambda: self.ky_sat_min_spin.setValue(ky.DEFAULT_SAT_MIN)))
+        sat_row.addWidget(self.ky_sat_min_spin, stretch=1)
+        sat_row.addWidget(_ParamLabel(
+            "Sat Max:", lambda: self.ky_sat_max_spin.setValue(ky.DEFAULT_SAT_MAX)))
+        sat_row.addWidget(self.ky_sat_max_spin, stretch=1)
+        outer.addLayout(sat_row)
+
+        lum_row = QHBoxLayout()
+        self.ky_lum_min_spin = QDoubleSpinBox()
+        self.ky_lum_max_spin = QDoubleSpinBox()
+        for spin, default in ((self.ky_lum_min_spin, ky.DEFAULT_LUM_MIN),
+                               (self.ky_lum_max_spin, ky.DEFAULT_LUM_MAX)):
+            spin.setRange(0.0, 1.0)
+            spin.setDecimals(2)
+            spin.setSingleStep(0.05)
+            spin.setValue(default)
+            enable_drag_to_scrub(spin)
+            spin.valueChanged.connect(self._apply_keyer_live)
+        lum_row.addWidget(_ParamLabel(
+            "Lum Min:", lambda: self.ky_lum_min_spin.setValue(ky.DEFAULT_LUM_MIN)))
+        lum_row.addWidget(self.ky_lum_min_spin, stretch=1)
+        lum_row.addWidget(_ParamLabel(
+            "Lum Max:", lambda: self.ky_lum_max_spin.setValue(ky.DEFAULT_LUM_MAX)))
+        lum_row.addWidget(self.ky_lum_max_spin, stretch=1)
+        outer.addLayout(lum_row)
+
+        softness_row = QHBoxLayout()
+        self.ky_softness_spin = QDoubleSpinBox()
+        self.ky_softness_spin.setRange(0.0, 1.0)
+        self.ky_softness_spin.setDecimals(2)
+        self.ky_softness_spin.setSingleStep(0.05)
+        self.ky_softness_spin.setValue(ky.DEFAULT_SOFTNESS)
+        enable_drag_to_scrub(self.ky_softness_spin)
+        self.ky_softness_spin.valueChanged.connect(self._apply_keyer_live)
+        softness_row.addWidget(_ParamLabel(
+            "Softness:", lambda: self.ky_softness_spin.setValue(ky.DEFAULT_SOFTNESS)))
+        softness_row.addWidget(self.ky_softness_spin, stretch=1)
+
+        self.ky_invert_checkbox = QCheckBox("Invert")
+        self.ky_invert_checkbox.setChecked(ky.DEFAULT_INVERT)
+        self.ky_invert_checkbox.toggled.connect(self._apply_keyer_live)
+        softness_row.addWidget(self.ky_invert_checkbox)
+        outer.addLayout(softness_row)
+
+        # Live matte preview -- see KEYER_MATTE_PREVIEW_WIDTH's own
+        # comment above on why this keys a synthetic hue-sweep swatch
+        # rather than the loaded image.
+        preview_label = QLabel("Matte preview (hue sweep, 0→360°):")
+        outer.addWidget(preview_label)
+        self.ky_matte_preview = QLabel()
+        self.ky_matte_preview.setFixedSize(
+            self.KEYER_MATTE_PREVIEW_WIDTH, self.KEYER_MATTE_PREVIEW_HEIGHT)
+        self.ky_matte_preview.setObjectName("keyerMattePreview")
+        outer.addWidget(self.ky_matte_preview)
+
+        outer.addStretch(1)
+
+        self.inspector_stack.addWidget(self._wrap_inspector_page(group))
+        self._keyer_inspector_index = self.inspector_stack.count() - 1
+
+    def _apply_keyer_live(self, *_args):
+        """Guarded by _refreshing_inspector, same convention as
+        _apply_color_warper_live -- switching TO a keyer stage also
+        drives every spin/checkbox here via _refresh_inspector_body,
+        which shouldn't count as a live edit. `*_args` swallows whichever
+        single value each different signal (valueChanged/toggled) hands
+        this shared handler -- every field is read fresh from its own
+        widget below regardless."""
+        if self._refreshing_inspector:
+            return
+        stage = self._selected_stage()
+        if stage is None or stage.kind != "keyer":
+            return
+        stage.params["hue_center"] = self.ky_hue_center_spin.value()
+        stage.params["hue_width"] = self.ky_hue_width_spin.value()
+        stage.params["sat_min"] = self.ky_sat_min_spin.value()
+        stage.params["sat_max"] = self.ky_sat_max_spin.value()
+        stage.params["lum_min"] = self.ky_lum_min_spin.value()
+        stage.params["lum_max"] = self.ky_lum_max_spin.value()
+        stage.params["softness"] = self.ky_softness_spin.value()
+        stage.params["invert"] = self.ky_invert_checkbox.isChecked()
+        self._update_keyer_matte_preview(stage.params)
+        self._update_row_content(stage.id)
+        self._emit_changed()
+
+    def _update_keyer_matte_preview(self, params):
+        """Renders keyer.compute_matte's own output over a synthetic
+        full-saturation, mid-lightness hue sweep (0-360 left to right,
+        same width every row -- no lightness/saturation variation, since
+        this is about showing the HUE term's own shape at a glance, not
+        a full 3-axis visualization) as a grayscale strip."""
+        width, height = self.KEYER_MATTE_PREVIEW_WIDTH, self.KEYER_MATTE_PREVIEW_HEIGHT
+        hues = np.linspace(0.0, 360.0, width, endpoint=False)
+        row = np.array([colorsys.hls_to_rgb(h / 360.0, 0.5, 1.0) for h in hues])
+        image_array = np.tile(row[np.newaxis, :, :], (height, 1, 1))
+        matte = ky.compute_matte(image_array, params)
+        gray = np.clip(matte * 255.0, 0, 255).astype(np.uint8)
+        gray = np.ascontiguousarray(gray)
+        qimage = QImage(gray.data, width, height, width, QImage.Format.Format_Grayscale8)
+        # .copy() -- `gray` is a local array about to go out of scope;
+        # QImage doesn't own the buffer it was constructed from, so the
+        # QPixmap needs its own independent copy of the pixel data.
+        self.ky_matte_preview.setPixmap(QPixmap.fromImage(qimage.copy()))
+
     # ---- inspector: fork_split stage ------------------------------------
 
     def _build_fork_split_inspector(self):
@@ -4809,6 +5080,21 @@ class StackPanel(QObject):
             # so switching stages needs to update it too, not just leave
             # it showing whichever stage was selected before.
             self.cw_cloud.set_warp(p.get("points") or [], wake, dropoff)
+
+        elif stage.kind == "keyer":
+            p = stage.params
+            self.ky_hue_center_spin.setValue(p.get("hue_center", ky.DEFAULT_HUE_CENTER))
+            self.ky_hue_width_spin.setValue(p.get("hue_width", ky.DEFAULT_HUE_WIDTH))
+            self.ky_sat_min_spin.setValue(p.get("sat_min", ky.DEFAULT_SAT_MIN))
+            self.ky_sat_max_spin.setValue(p.get("sat_max", ky.DEFAULT_SAT_MAX))
+            self.ky_lum_min_spin.setValue(p.get("lum_min", ky.DEFAULT_LUM_MIN))
+            self.ky_lum_max_spin.setValue(p.get("lum_max", ky.DEFAULT_LUM_MAX))
+            self.ky_softness_spin.setValue(p.get("softness", ky.DEFAULT_SOFTNESS))
+            self.ky_invert_checkbox.blockSignals(True)
+            self.ky_invert_checkbox.setChecked(p.get("invert", ky.DEFAULT_INVERT))
+            self.ky_invert_checkbox.blockSignals(False)
+            self._update_keyer_matte_preview(p)
+            self.inspector_stack.setCurrentIndex(self._keyer_inspector_index)
 
         elif stage.kind == "fork_split":
             self.inspector_stack.setCurrentIndex(self._fork_split_inspector_index)

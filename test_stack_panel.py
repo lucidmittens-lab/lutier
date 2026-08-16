@@ -286,6 +286,15 @@ def _panel_with_one_color_warper_stage():
     return panel, stage
 
 
+def _panel_with_one_keyer_stage():
+    _app()
+    panel = StackPanel()
+    panel._on_add_keyer_clicked()
+    stage = panel.stack.stages[0]
+    panel._on_row_clicked(stage.id)
+    return panel, stage
+
+
 def test_cdl_live_edit_updates_the_existing_row_widget_in_place():
     panel, stage = _panel_with_one_cdl_stage()
     widget_before = panel._stage_row_widgets[stage.id]
@@ -1359,6 +1368,156 @@ def test_color_warper_badge_text():
     print("_stage_kind_badge_text('color_warper') == 'WRP' -- OK")
 
 
+# --- keyer stage + matte channel row/inspector ----------------------------
+
+def test_keyer_badge_text():
+    assert _stage_kind_badge_text("keyer") == "KEY"
+    print("_stage_kind_badge_text('keyer') == 'KEY' -- OK")
+
+
+def test_add_keyer_starts_at_defaults():
+    import keyer as ky
+    panel, stage = _panel_with_one_keyer_stage()
+    assert stage.kind == "keyer"
+    assert stage.params["hue_center"] == ky.DEFAULT_HUE_CENTER
+    assert stage.params["hue_width"] == ky.DEFAULT_HUE_WIDTH
+    assert stage.params["softness"] == ky.DEFAULT_SOFTNESS
+    assert stage.params["invert"] == ky.DEFAULT_INVERT
+    print("StackPanel: a freshly-added 'keyer' stage starts at keyer.py's "
+          "own defaults -- OK")
+
+
+def test_keyer_inspector_fields_apply_live():
+    panel, stage = _panel_with_one_keyer_stage()
+    panel.ky_hue_center_spin.setValue(210.0)
+    panel.ky_hue_width_spin.setValue(45.0)
+    panel.ky_sat_min_spin.setValue(0.2)
+    panel.ky_sat_max_spin.setValue(0.9)
+    panel.ky_lum_min_spin.setValue(0.1)
+    panel.ky_lum_max_spin.setValue(0.8)
+    panel.ky_softness_spin.setValue(0.6)
+    panel.ky_invert_checkbox.setChecked(True)
+    assert stage.params["hue_center"] == 210.0
+    assert stage.params["hue_width"] == 45.0
+    assert stage.params["sat_min"] == 0.2
+    assert stage.params["sat_max"] == 0.9
+    assert stage.params["lum_min"] == 0.1
+    assert stage.params["lum_max"] == 0.8
+    assert stage.params["softness"] == 0.6
+    assert stage.params["invert"] is True
+    print("StackPanel Keyer inspector: every field applies live to the "
+          "selected stage's params -- OK")
+
+
+def test_keyer_matte_preview_updates_on_live_edit():
+    panel, stage = _panel_with_one_keyer_stage()
+    before = panel.ky_matte_preview.pixmap().toImage().copy()
+    panel.ky_hue_center_spin.setValue(180.0)
+    after = panel.ky_matte_preview.pixmap().toImage().copy()
+    assert before != after
+    print("StackPanel Keyer inspector: the matte preview swatch changes "
+          "when the qualifier changes -- OK")
+
+
+def test_keyer_refresh_on_select_does_not_corrupt_stored_values():
+    panel, stage = _panel_with_one_keyer_stage()
+    panel.ky_hue_center_spin.setValue(77.0)
+    panel.ky_softness_spin.setValue(0.42)
+    stored_hue = stage.params["hue_center"]
+    stored_softness = stage.params["softness"]
+
+    other = st.make_cdl_stage()
+    panel.stack.add_stage(other)
+    panel._on_row_clicked(other.id)
+    panel._on_row_clicked(stage.id)  # back to the keyer stage
+
+    assert stage.params["hue_center"] == stored_hue
+    assert stage.params["softness"] == stored_softness
+    print("StackPanel Keyer inspector: switching away and back does not "
+          "corrupt the stage's stored params -- OK")
+
+
+def test_keyer_row_hides_its_own_matte_combo():
+    panel, stage = _panel_with_one_keyer_stage()
+    row = panel._stage_row_widgets[stage.id]
+    assert row.matte_combo.isVisible() is False
+    print("_StageRowWidget: a 'keyer' row's own matte combo is hidden "
+          "(a keyer doesn't consume a matte in v1) -- OK")
+
+
+def test_downstream_stage_row_offers_the_upstream_keyer_as_a_matte_option():
+    panel, keyer_stage = _panel_with_one_keyer_stage()
+    cdl_stage = st.make_cdl_stage()
+    panel._add_stage(cdl_stage)
+    row = panel._stage_row_widgets[cdl_stage.id]
+    items = [row.matte_combo.itemText(i) for i in range(row.matte_combo.count())]
+    assert items == ["None", "A"]
+    assert row.matte_combo.itemData(1) == keyer_stage.id
+    print("_StageRowWidget: a downstream row's matte combo offers "
+          "'None' plus the upstream keyer's own current letter -- OK")
+
+
+def test_selecting_a_matte_option_writes_matte_source_id():
+    panel, keyer_stage = _panel_with_one_keyer_stage()
+    cdl_stage = st.make_cdl_stage()
+    panel._add_stage(cdl_stage)
+    row = panel._stage_row_widgets[cdl_stage.id]
+
+    row.matte_combo.setCurrentIndex(1)  # "A" -- the keyer
+    assert cdl_stage.params.get("matte_source_id") == keyer_stage.id
+
+    row.matte_combo.setCurrentIndex(0)  # back to "None"
+    assert cdl_stage.params.get("matte_source_id") is None
+    print("StackPanel: selecting a row's matte combo writes/clears "
+          "matte_source_id on that stage's own params -- OK")
+
+
+def test_matte_combo_never_offers_a_downstream_keyer():
+    """A stage positioned BEFORE a keyer must not be offered that
+    keyer's letter at all -- see stack.py's own 'can't reference a
+    matte that doesn't exist yet' guarantee, enforced here purely by
+    which stages precede this row in the flat stack order."""
+    _app()
+    panel = StackPanel()
+    cdl_stage = st.make_cdl_stage()
+    panel._add_stage(cdl_stage)
+    keyer_stage = st.make_keyer_stage()
+    panel._add_stage(keyer_stage)  # appended AFTER the CDL stage
+    row = panel._stage_row_widgets[cdl_stage.id]
+    items = [row.matte_combo.itemText(i) for i in range(row.matte_combo.count())]
+    assert items == ["None"]
+    print("_StageRowWidget: a row never offers a keyer that sits "
+          "downstream of it -- OK")
+
+
+def test_matte_combo_options_update_on_reorder():
+    """Dragging a keyer below its own former consumer must drop that
+    consumer's selection back to 'None' cleanly on the next refresh --
+    the row-widget-level counterpart to test_matte_source_id_referencing_
+    a_downstream_keyer_is_ignored in test_stack.py."""
+    panel, keyer_stage = _panel_with_one_keyer_stage()
+    cdl_stage = st.make_cdl_stage()
+    panel._add_stage(cdl_stage)
+    row = panel._stage_row_widgets[cdl_stage.id]
+    row.matte_combo.setCurrentIndex(1)
+    assert cdl_stage.params.get("matte_source_id") == keyer_stage.id
+
+    panel.stack.move_stage(keyer_stage.id, len(panel.stack.stages) - 1)  # keyer now AFTER cdl_stage
+    panel._refresh_list(keep_selection=cdl_stage.id)
+
+    row = panel._stage_row_widgets[cdl_stage.id]
+    items = [row.matte_combo.itemText(i) for i in range(row.matte_combo.count())]
+    assert items == ["None"]
+    # The row's own displayed selection falls back to "None" (its own
+    # combo no longer HAS an item for the now-downstream keyer), even
+    # though stage.params["matte_source_id"] itself is left untouched --
+    # see stack.py's own docstring on this being a self-healing runtime
+    # fallback rather than something that needs active cleanup here.
+    assert row.matte_combo.currentText() == "None"
+    print("StackPanel: reordering a keyer below its consumer drops that "
+          "row's own combo selection back to 'None' on refresh -- OK")
+
+
 if __name__ == "__main__":
     test_short_text_that_fits_is_not_elided_and_has_no_tooltip()
     test_long_text_at_narrow_width_is_elided_with_ellipsis_and_gets_a_tooltip()
@@ -1431,5 +1590,15 @@ if __name__ == "__main__":
     test_color_warper_reset_restores_identity()
     test_color_warper_refresh_on_select_does_not_corrupt_stored_values()
     test_color_warper_badge_text()
+    test_keyer_badge_text()
+    test_add_keyer_starts_at_defaults()
+    test_keyer_inspector_fields_apply_live()
+    test_keyer_matte_preview_updates_on_live_edit()
+    test_keyer_refresh_on_select_does_not_corrupt_stored_values()
+    test_keyer_row_hides_its_own_matte_combo()
+    test_downstream_stage_row_offers_the_upstream_keyer_as_a_matte_option()
+    test_selecting_a_matte_option_writes_matte_source_id()
+    test_matte_combo_never_offers_a_downstream_keyer()
+    test_matte_combo_options_update_on_reorder()
     print()
     print("All stack_panel tests passed.")

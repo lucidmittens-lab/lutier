@@ -111,6 +111,49 @@ docstring for exactly how it tracks and validates an open fork region as
 it walks the stage list, and what a "stray" branch tag outside any open
 region means -- spoiler: nothing, it's just ignored).
 
+MATTE CHANNELS -- deliberately OPT-IN (per Tom: "instead of the way
+Baselight does it where usage is mandatory if it's in the stack"), unlike
+STACK FORKING above this involves no new stage-PAIR structure at all: a
+"keyer" stage (keyer.py's own HSL qualifier -- the first, and so far only,
+matte-PRODUCING kind) computes an (H,W) matte and never touches the
+running RGB image itself (_apply_stage_to_array's own "keyer" branch is a
+pure identity passthrough); ANY other stage can optionally reference that
+matte by setting `stage.params["matte_source_id"]` to the producing
+keyer's own `Stage.id` (the same id field stages already carry for
+selection/reorder tracking), which gates that stage's per-stage opacity
+PER PIXEL by the matte's own value instead of the usual flat scalar --
+see _stage_blend_factor. `matte_source_id` absent/None, or resolving to
+nothing (source removed, or sits at/after this stage's own position, so
+it hasn't produced anything yet by the time this stage runs) -- all fall
+back to today's exact plain-scalar-opacity behavior, no error, no special
+"no matte" sentinel needed.
+
+Letters (A, B, C... then, past 26, AA, BB, CC... per Tom's own doubling
+scheme, not spreadsheet-style AB/AC) are NEVER stored anywhere -- see
+matte_letters_for -- they're computed fresh, purely for UI display, by
+scanning `stages` in order each time a combo box needs to show them. This
+is deliberate: reordering the stack only changes which letter a keyer
+DISPLAYS as, never invalidates a `matte_source_id` reference (which
+points at a stable Stage.id, not a letter), and a stage_panel.py combo
+that only offers keyers ABOVE the consuming stage's own position gets
+"can't reference a matte that doesn't exist yet" for free, with zero
+validation code needed anywhere in this module.
+
+_run_stages accumulates a `mattes: dict[stage_id, np.ndarray]` as it
+walks the stage list (see that function's own docstring) -- ONE flat dict
+shared across fork branches too (a matte computed on branch "a" is
+visible to branch "b" or to stages after the merge, since it's plain
+Python bookkeeping keyed by stage id, not per-branch image state; the one
+accepted nuance is that the qualifier only ever sampled whichever
+branch's own image actually produced it).
+
+GPU note: "keyer" is deliberately left out of
+gpu_stack_renderer.GPU_ELIGIBLE_KINDS, so any stack containing an enabled
+keyer stage already falls back to this module's own CPU path in full
+(the same all-or-nothing rule that module already applies to every other
+GPU-ineligible kind/condition) -- matte gating therefore never needs (and
+doesn't have) a GPU implementation to stay correct.
+
 Same rule as every other backend module in this app: no PySide6 import
 here, fully testable without a display.
 """
@@ -130,10 +173,11 @@ import exposure_contrast
 import grading_primary
 import grading_rgb_curve
 import grading_tone
+import keyer
 
 STAGE_KINDS = ("lut", "printer_lights", "aces_drt", "custom_drt", "cdl", "colorspace",
                "grading_primary", "exposure_contrast", "grading_tone",
-               "grading_rgb_curve", "color_warper", "fork_split", "fork_merge")
+               "grading_rgb_curve", "color_warper", "keyer", "fork_split", "fork_merge")
 
 _id_counter = itertools.count(1)
 
@@ -153,7 +197,14 @@ class Stage:
     as a mute button on a mixer channel. `opacity` in [0,1] is the same
     "LUT strength" linear crossfade concatenate_luts_with_opacity already
     established (this stage's fully-applied output blended against this
-    stage's own input, not some other blend mode). `branch` is None for
+    stage's own input, not some other blend mode) -- UNLESS this stage's
+    own params hold a `"matte_source_id"` referencing a "keyer" stage
+    elsewhere in the same Stack, in which case that scalar becomes a
+    per-pixel multiplier instead (see this module's docstring, "MATTE
+    CHANNELS", and _stage_blend_factor) -- a plain params key, not a
+    first-class field here, since gating-by-matte is an opt-in property
+    of what a stage's own params say, not a universal concept every
+    stage kind needs a dedicated slot for. `branch` is None for
     an ordinary stage, or "a"/"b" for a stage meant to sit between a
     fork_split/fork_merge pair (see this module's docstring, "STACK
     FORKING") -- inert (silently ignored, see _run_stages) anywhere a
@@ -462,6 +513,29 @@ def make_color_warper_stage(working_colourspace=color_warper.DEFAULT_WORKING_COL
     return Stage("color_warper", label or "WARPier", params, enabled, opacity)
 
 
+def make_keyer_stage(hue_center=keyer.DEFAULT_HUE_CENTER, hue_width=keyer.DEFAULT_HUE_WIDTH,
+                      sat_min=keyer.DEFAULT_SAT_MIN, sat_max=keyer.DEFAULT_SAT_MAX,
+                      lum_min=keyer.DEFAULT_LUM_MIN, lum_max=keyer.DEFAULT_LUM_MAX,
+                      softness=keyer.DEFAULT_SOFTNESS, invert=keyer.DEFAULT_INVERT,
+                      label=None, enabled=True, opacity=1.0):
+    """A stage that produces a MATTE (see this module's docstring, "MATTE
+    CHANNELS") via keyer.compute_matte's HSL qualifier -- this stage's own
+    RGB output is always an exact identity passthrough (see
+    _apply_stage_to_array's "keyer" branch), so `opacity` here doesn't
+    blend an image the way it does for every other stage kind; it's
+    repurposed as "matte amount" -- the computed matte is scaled by it
+    before being offered to any downstream consumer (see _run_stages),
+    the same free, already-understood control every other row already
+    has rather than a redundant dedicated slider."""
+    params = {
+        "hue_center": float(hue_center), "hue_width": float(hue_width),
+        "sat_min": float(sat_min), "sat_max": float(sat_max),
+        "lum_min": float(lum_min), "lum_max": float(lum_max),
+        "softness": float(softness), "invert": bool(invert),
+    }
+    return Stage("keyer", label or "Keyer", params, enabled, opacity)
+
+
 def make_colorspace_stage(src, dst, config_name=None, label=None, enabled=True, opacity=1.0):
     """A stage that applies a plain (non-DRT) color space conversion, same
     math as colorspace_convert.apply_colorspace_conversion -- see that
@@ -634,6 +708,13 @@ def _apply_stage_to_array(stage, array):
             dropoff=p.get("dropoff", color_warper.DEFAULT_DROPOFF),
         )
 
+    if stage.kind == "keyer":
+        # Never grades the image itself -- see this module's docstring,
+        # "MATTE CHANNELS", and make_keyer_stage. _run_stages computes
+        # this stage's actual matte separately, from the SAME `array`
+        # this identity passthrough is handed.
+        return array
+
     if stage.kind in ("fork_split", "fork_merge"):  # pragma: no cover -- see docstring above
         raise AssertionError(
             f"{stage.kind} stages are handled structurally by _run_stages "
@@ -642,7 +723,76 @@ def _apply_stage_to_array(stage, array):
     raise ValueError(f"Unknown stage kind: {stage.kind!r}")  # pragma: no cover -- Stage() already validates
 
 
-def _apply_single_stage_with_opacity(stage, running):
+def matte_letters_for(stages):
+    """Maps each "keyer"-kind stage's own Stage.id to its current display
+    letter (A, B, C... then, past 26, Tom's own doubling scheme -- AA,
+    BB, CC... rather than spreadsheet-style AB/AC) -- computed FRESH by
+    scanning `stages` in order, never stored (see this module's
+    docstring, "MATTE CHANNELS", on why letters are display-only). Does
+    NOT skip disabled keyers -- a temporarily-disabled keyer keeps its
+    own stable letter rather than every subsequent letter shifting down
+    while it's toggled off; a downstream stage still referencing it just
+    gets no gating effect at render time (see _stage_blend_factor), same
+    as any other unresolved matte_source_id."""
+    letters = {}
+    ordinal = 0
+    for stage in stages:
+        if stage.kind != "keyer":
+            continue
+        letters[stage.id] = _ordinal_to_letter(ordinal)
+        ordinal += 1
+    return letters
+
+
+def _ordinal_to_letter(ordinal):
+    if ordinal < 26:
+        return chr(ord("A") + ordinal)
+    doubled = ordinal - 26
+    if doubled < 26:
+        return chr(ord("A") + doubled) * 2
+    # Past ZZ (52 matte channels) -- shouldn't come up in practice (per
+    # Tom: "shouldn't have to"), but degrade to a numeric label instead
+    # of raising so an extreme stack never hard-crashes over a display
+    # string.
+    return f"M{ordinal + 1}"
+
+
+def _stage_blend_factor(stage, mattes):
+    """The value _apply_single_stage_with_opacity (and fork_merge's own
+    inline blend) actually use as the crossfade factor: `stage.opacity`
+    unchanged (a plain float, same as always) UNLESS this stage's own
+    params reference a matte that's actually available in `mattes` (see
+    this module's docstring, "MATTE CHANNELS"), in which case the result
+    is an (H,W,1) per-pixel array instead -- `stage.opacity` scaling the
+    matte's own value, so the row's existing opacity control still acts
+    as an overall strength knob on top of the key. `mattes` may be None
+    (evaluation contexts that never populate it, if any) or simply not
+    contain this stage's own reference yet/anymore -- both fall back to
+    the plain scalar, no error."""
+    matte_source_id = stage.params.get("matte_source_id")
+    if matte_source_id is not None and mattes is not None:
+        matte = mattes.get(matte_source_id)
+        if matte is not None:
+            return stage.opacity * matte[..., np.newaxis]
+    return stage.opacity
+
+
+def _blend_running_toward(running, stage_output, factor):
+    """running*(1-factor) + stage_output*factor, with the same >=1.0/
+    <=0.0 float-error/no-op shortcuts _apply_single_stage_with_opacity
+    always took, now shared with fork_merge's own inline blend -- taken
+    only when `factor` is a plain scalar (np.isscalar), since a per-pixel
+    matte array has no single "is it exactly 1 or 0" answer to shortcut
+    on."""
+    if np.isscalar(factor):
+        if factor >= 1.0:
+            return stage_output
+        if factor <= 0.0:
+            return running
+    return running * (1.0 - factor) + stage_output * factor
+
+
+def _apply_single_stage_with_opacity(stage, running, mattes=None):
     """One stage's full enabled+apply+opacity treatment against `running`
     -- the single fold step _run_stages applies once per stage in a Stack,
     factored out here so a fork stage's two branches (each a standalone
@@ -653,16 +803,15 @@ def _apply_single_stage_with_opacity(stage, running):
     `running` unchanged); opacity follows the same >=1.0 / <=0.0 /
     linear-blend rule as concatenate_luts_with_opacity, for the same
     reason (avoid needless float error at the common opacity=1.0 case, and
-    an exact no-op at opacity=0.0)."""
+    an exact no-op at opacity=0.0) -- UNLESS this stage opts into a matte
+    (see _stage_blend_factor), in which case the blend is per-pixel
+    instead. `mattes`: dict[stage_id, (H,W) array] accumulated so far by
+    _run_stages -- see this module's docstring, "MATTE CHANNELS"."""
     if not stage.enabled:
         return running
     stage_output = _apply_stage_to_array(stage, running)
-    opacity = stage.opacity
-    if opacity >= 1.0:
-        return stage_output
-    if opacity <= 0.0:
-        return running
-    return running * (1.0 - opacity) + stage_output * opacity
+    factor = _stage_blend_factor(stage, mattes)
+    return _blend_running_toward(running, stage_output, factor)
 
 
 def _blend_two(a, b, blend):
@@ -678,9 +827,32 @@ def _blend_two(a, b, blend):
     return a * (1.0 - blend) + b * blend
 
 
-def _run_stages(stages, running):
+def _maybe_populate_matte(stage, running, mattes):
+    """If `stage` is an enabled "keyer", computes its matte from
+    `running` AS IT STANDS RIGHT BEFORE this stage and stores it into
+    `mattes[stage.id]` (see this module's docstring, "MATTE CHANNELS") --
+    called at every point _run_stages is about to apply a stage
+    (top-level and inside either fork branch), so a keyer inside a fork
+    branch still populates the SAME shared `mattes` dict (a deliberate,
+    documented simplification -- see the docstring). A disabled keyer
+    populates nothing, so any downstream reference to it resolves to "no
+    matte," same as an entirely-removed keyer would."""
+    if stage.kind == "keyer" and stage.enabled:
+        mattes[stage.id] = keyer.compute_matte(running, stage.params) * stage.opacity
+
+
+def _run_stages(stages, running, mattes=None):
     """Shared fold used by both bake_stack_to_lut3d and
-    apply_stack_to_image_array. Ordinary stages just go through
+    apply_stack_to_image_array (directly, or via StageCache.run -- see
+    that class's own docstring for why `mattes` is a parameter here
+    rather than always starting fresh: StageCache calls this once PER
+    CACHE BLOCK, so a keyer in one block and its consumer in a later one
+    -- the common case, since an ordinary stage is its own block, see
+    _partition_into_blocks -- need the SAME `mattes` dict passed across
+    those separate calls, mutated in place, to see each other at all).
+    `mattes=None` (every direct, non-cached caller) creates a fresh local
+    dict, unchanged from this function's original behavior. Ordinary
+    stages just go through
     _apply_single_stage_with_opacity, in order, one at a time, exactly as
     always. fork_split/fork_merge (see this module's docstring, "STACK
     FORKING") are the one structural exception, tracked on `fork_stack` --
@@ -718,8 +890,20 @@ def _run_stages(stages, running):
       EMPTY -- a stray tag left over from a stage that's been dragged out
       of a fork region in the UI is inert, not an error.
     - fork_stack still non-empty after the whole loop -> an unmatched
-      split with no merge after it, raises."""
+      split with no merge after it, raises.
+
+    MATTE CHANNELS (see this module's docstring): a single `mattes` dict
+    accumulates as this loop walks the stage list, regardless of whether
+    a given stage is top-level or inside a fork branch -- populated by
+    _maybe_populate_matte right before each "keyer" stage would
+    otherwise be applied (using `running`/`running_a`/`running_b` AS IT
+    STANDS at that exact point), then handed to every
+    _apply_single_stage_with_opacity call (and used directly for
+    fork_merge's own inline blend) so any stage's own `matte_source_id`
+    can resolve against whatever's been produced so far."""
     fork_stack = []
+    if mattes is None:
+        mattes = {}
     for stage in stages:
         if stage.kind == "fork_split":
             if fork_stack:
@@ -742,13 +926,8 @@ def _run_stages(stages, running):
             combined = _blend_two(
                 context["running_a"], context["running_b"],
                 float(stage.params.get("blend", 0.5)))
-            opacity = stage.opacity
-            if opacity >= 1.0:
-                running = combined
-            elif opacity <= 0.0:
-                pass
-            else:
-                running = running * (1.0 - opacity) + combined * opacity
+            factor = _stage_blend_factor(stage, mattes)
+            running = _blend_running_toward(running, combined, factor)
             continue
 
         if fork_stack:
@@ -756,18 +935,21 @@ def _run_stages(stages, running):
             if context is None:
                 continue  # inside a disabled fork region -- every interior stage is skipped
             if stage.branch == "a":
+                _maybe_populate_matte(stage, context["running_a"], mattes)
                 context["running_a"] = _apply_single_stage_with_opacity(
-                    stage, context["running_a"])
+                    stage, context["running_a"], mattes)
             elif stage.branch == "b":
+                _maybe_populate_matte(stage, context["running_b"], mattes)
                 context["running_b"] = _apply_single_stage_with_opacity(
-                    stage, context["running_b"])
+                    stage, context["running_b"], mattes)
             else:
                 raise ValueError(
                     f"Stage {stage.label!r} is inside a fork region but has no "
                     "branch assignment (expected 'a' or 'b').")
             continue
 
-        running = _apply_single_stage_with_opacity(stage, running)
+        _maybe_populate_matte(stage, running, mattes)
+        running = _apply_single_stage_with_opacity(stage, running, mattes)
 
     if fork_stack:
         raise ValueError("fork_split with no matching fork_merge after it.")
@@ -947,18 +1129,35 @@ class StageCache:
     SampleImagePanel uses a generation counter bumped only when it
     actually decodes/re-derives a new working array, so an unrelated Stack
     edit never looks like a new image. A changed input_key invalidates
-    everything -- there's nothing left to diff against."""
+    everything -- there's nothing left to diff against.
+
+    MATTE CHANNELS (see this module's docstring): since _run_stages here
+    gets called ONCE PER BLOCK -- and an ordinary stage is its own block
+    (_partition_into_blocks), so a "keyer" and the stage consuming its
+    matte are almost always in DIFFERENT blocks -- a fresh per-call
+    `mattes` dict (this class's own _run_stages calls used to just let
+    that function default to one) would never let a later block see an
+    earlier one's matte. `_block_mattes` mirrors `_block_outputs`
+    exactly (one FULL cumulative-mattes-dict snapshot per block position,
+    not just that block's own delta) so a reused checkpoint prefix hands
+    back its accumulated mattes state alongside its image checkpoint,
+    and a newly-run suffix keeps mutating one shared dict across all of
+    it -- a keyer stage's own edit re-runs its block AND, by the existing
+    "changed suffix" rule below, everything after it, so a stale matte
+    from before the edit is never handed to a downstream consumer."""
 
     def __init__(self):
         self._input_key = None
         self._block_fingerprints = []
         self._block_outputs = []
+        self._block_mattes = []
 
     def run(self, stages, running, input_key):
         if input_key != self._input_key:
             self._input_key = input_key
             self._block_fingerprints = []
             self._block_outputs = []
+            self._block_mattes = []
 
         blocks = _partition_into_blocks(stages)
         new_fingerprints = [tuple(_stage_fingerprint(s) for s in block) for block in blocks]
@@ -970,13 +1169,17 @@ class StageCache:
             reuse += 1
 
         current = self._block_outputs[reuse - 1] if reuse > 0 else running
+        mattes = dict(self._block_mattes[reuse - 1]) if reuse > 0 else {}
         outputs = self._block_outputs[:reuse]
+        mattes_history = self._block_mattes[:reuse]
         for block in blocks[reuse:]:
-            current = _run_stages(block, current)
+            current = _run_stages(block, current, mattes)
             outputs.append(current)
+            mattes_history.append(dict(mattes))
 
         self._block_fingerprints = new_fingerprints
         self._block_outputs = outputs
+        self._block_mattes = mattes_history
         return current
 
     def clear(self):
@@ -990,6 +1193,7 @@ class StageCache:
         self._input_key = None
         self._block_fingerprints = []
         self._block_outputs = []
+        self._block_mattes = []
 
 
 def bake_stack_to_lut3d(stack, name=None, cache=None):

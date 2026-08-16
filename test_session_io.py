@@ -394,6 +394,124 @@ def test_color_warper_stage_default_points_round_trip():
           "'color_warper' stage's empty points list round-trips -- OK")
 
 
+def test_keyer_stage_round_trips():
+    stage = st.make_keyer_stage(
+        hue_center=210.0, hue_width=45.0, sat_min=0.2, sat_max=0.9,
+        lum_min=0.1, lum_max=0.8, softness=0.6, invert=True,
+        label="My Keyer", opacity=0.8)
+    stack = st.Stack(stages=[stage])
+
+    data = stack_to_session_dict_round_trip_via_json(stack)
+    rebuilt_stack, warnings = session_io.stack_from_session_dict(data)
+
+    assert warnings == []
+    assert len(rebuilt_stack.stages) == 1
+    r = rebuilt_stack.stages[0]
+    assert r.kind == "keyer" and r.label == "My Keyer" and r.opacity == 0.8
+    assert r.params["hue_center"] == 210.0
+    assert r.params["hue_width"] == 45.0
+    assert r.params["sat_min"] == 0.2
+    assert r.params["sat_max"] == 0.9
+    assert r.params["lum_min"] == 0.1
+    assert r.params["lum_max"] == 0.8
+    assert r.params["softness"] == 0.6
+    assert r.params["invert"] is True
+    print("stack_to_session_dict/stack_from_session_dict: a 'keyer' stage "
+          "round-trips through plain JSON -- OK")
+
+
+def test_matte_source_id_round_trips_via_position_not_raw_id():
+    """The core new mechanism (see stack_to_session_dict's own docstring):
+    a raw Stage.id is meaningless after reload (ids are reassigned fresh
+    every time), so the reference has to survive via POSITION instead --
+    confirmed here by checking the rebuilt consumer's matte_source_id
+    points at the REBUILT keyer's own (necessarily different) id, and
+    that gating still functions identically end to end."""
+    keyer_stage = st.make_keyer_stage(hue_center=0.0, hue_width=20.0, softness=0.1)
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer.params["matte_source_id"] = keyer_stage.id
+    stack = st.Stack(stages=[keyer_stage, consumer])
+
+    data = stack_to_session_dict_round_trip_via_json(stack)
+    assert data["stages"][0]["matte_source_index"] is None  # the keyer itself references nothing
+    assert data["stages"][1]["matte_source_index"] == 0  # the keyer's own position
+
+    rebuilt_stack, warnings = session_io.stack_from_session_dict(data)
+    assert warnings == []
+    rebuilt_keyer, rebuilt_consumer = rebuilt_stack.stages
+    assert rebuilt_consumer.params["matte_source_id"] == rebuilt_keyer.id
+    assert rebuilt_consumer.params["matte_source_id"] != keyer_stage.id, \
+        "the rebuilt reference must point at the REBUILT keyer's own fresh id, not the stale original"
+
+    image = np.zeros((2, 4, 3), dtype=np.float32)
+    image[:, :2] = (0.6, 0.2, 0.2)
+    image[:, 2:] = (0.2, 0.2, 0.6)
+    original_result = st.apply_stack_to_image_array(stack, image)
+    rebuilt_result = st.apply_stack_to_image_array(rebuilt_stack, image)
+    assert np.allclose(original_result, rebuilt_result, atol=1e-6)
+    print("stack_to_session_dict/stack_from_session_dict: matte_source_id "
+          "round-trips via stack position, resolving to the rebuilt "
+          "keyer's own fresh id, with identical gated grading output -- OK")
+
+
+def test_matte_source_index_survives_an_earlier_skipped_stage():
+    """The reconstructed-position mapping must stay correct even when an
+    EARLIER stage in the original list fails to reconstruct and gets
+    skipped -- the keyer's own position in the REBUILT stack shifts down
+    by one, and the stored index must still resolve to it correctly (not
+    to whatever now-different stage happens to sit at the ORIGINAL
+    index)."""
+    broken = st.make_lut_stage(_make_lut3d(size=3), label="Broken")
+    broken.params["source_kind"] = "file"
+    broken.params["source_path"] = "/nonexistent/path/gone.cube"
+    keyer_stage = st.make_keyer_stage(hue_center=0.0, hue_width=20.0)
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer.params["matte_source_id"] = keyer_stage.id
+    stack = st.Stack(stages=[broken, keyer_stage, consumer])
+
+    data = stack_to_session_dict_round_trip_via_json(stack)
+    rebuilt_stack, warnings = session_io.stack_from_session_dict(data)
+
+    assert len(warnings) == 1 and "Broken" in warnings[0]
+    assert [s.kind for s in rebuilt_stack.stages] == ["keyer", "cdl"]
+    rebuilt_keyer, rebuilt_consumer = rebuilt_stack.stages
+    assert rebuilt_consumer.params["matte_source_id"] == rebuilt_keyer.id
+    print("stack_from_session_dict: matte_source_index still resolves "
+          "correctly after an EARLIER stage was skipped and every later "
+          "position shifted -- OK")
+
+
+def test_matte_source_index_pointing_at_a_skipped_stage_falls_back_to_none():
+    broken = st.make_lut_stage(_make_lut3d(size=3), label="Broken")
+    broken.params["source_kind"] = "file"
+    broken.params["source_path"] = "/nonexistent/path/gone.cube"
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    stack = st.Stack(stages=[broken, consumer])
+    data = stack_to_session_dict_round_trip_via_json(stack)
+    data["stages"][1]["matte_source_index"] = 0  # points at the doomed "Broken" stage
+
+    rebuilt_stack, warnings = session_io.stack_from_session_dict(data)
+    assert len(warnings) == 1
+    assert len(rebuilt_stack.stages) == 1
+    assert rebuilt_stack.stages[0].params.get("matte_source_id") is None
+    print("stack_from_session_dict: matte_source_index pointing at a "
+          "stage that itself failed to reconstruct falls back to no "
+          "matte, no crash -- OK")
+
+
+def test_matte_source_index_out_of_range_falls_back_to_none():
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    stack = st.Stack(stages=[consumer])
+    data = stack_to_session_dict_round_trip_via_json(stack)
+    data["stages"][0]["matte_source_index"] = 99  # nothing at that position
+
+    rebuilt_stack, warnings = session_io.stack_from_session_dict(data)
+    assert warnings == []
+    assert rebuilt_stack.stages[0].params.get("matte_source_id") is None
+    print("stack_from_session_dict: an out-of-range matte_source_index "
+          "falls back to no matte rather than raising -- OK")
+
+
 def test_branch_tagged_stage_skipped_individually_when_it_cant_reconstruct():
     """A branch-tagged stage that can't reconstruct (here: a 'file'
     source pointing nowhere) is skipped individually, exactly like any
@@ -975,6 +1093,11 @@ if __name__ == "__main__":
     test_grading_rgb_curve_stage_round_trips()
     test_color_warper_stage_round_trips()
     test_color_warper_stage_default_points_round_trip()
+    test_keyer_stage_round_trips()
+    test_matte_source_id_round_trips_via_position_not_raw_id()
+    test_matte_source_index_survives_an_earlier_skipped_stage()
+    test_matte_source_index_pointing_at_a_skipped_stage_falls_back_to_none()
+    test_matte_source_index_out_of_range_falls_back_to_none()
     test_branch_tagged_stage_skipped_individually_when_it_cant_reconstruct()
     test_stack_to_session_dict_raises_loudly_for_unreconstructable_lut_stage()
     test_load_session_with_unknown_future_stage_kind_still_loads_others()
