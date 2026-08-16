@@ -220,6 +220,47 @@ def test_apply_matches_manual_pipeline_for_the_reference_space():
 
 # ---- gamut boundary / idealized reference grid -------------------------
 
+def test_decode_working_colourspace_to_oklch_matches_manual_pipeline():
+    """Working directly in REFERENCE_LINEAR_SPACE should skip any real
+    color-space conversion (src==dst), so the result should match hand-
+    driving linear_srgb_to_oklab/oklab_to_oklch directly -- same
+    convention test_apply_matches_manual_pipeline_for_the_reference_space
+    already uses for the full apply function."""
+    img = np.array([[[0.5, 0.25, 0.15], [0.1, 0.4, 0.3]]])
+    L, C, H = cw.decode_working_colourspace_to_oklch(img, cw.REFERENCE_LINEAR_SPACE)
+    expected_L, expected_C, expected_H = cw.oklab_to_oklch(cw.linear_srgb_to_oklab(img))
+    assert np.allclose(L, expected_L) and np.allclose(C, expected_C) and np.allclose(H, expected_H)
+    print("decode_working_colourspace_to_oklch: matches the manual "
+          "linear_srgb_to_oklab/oklab_to_oklch pipeline when "
+          "working_colourspace IS the reference linear space -- OK")
+
+
+def test_apply_color_warper_still_matches_manual_pipeline_after_the_refactor():
+    """Regression guard for the decode_working_colourspace_to_oklch
+    extraction -- apply_color_warper_in_working_space must still behave
+    byte-identically to before across a REAL (non-reference) working
+    colourspace, not just the reference space the other test above
+    already covers."""
+    img = np.array([[[0.5, 0.25, 0.15], [0.1, 0.4, 0.3]]])
+    points = [{"h0": 20.0, "c0": 0.05, "h": 20.0, "c": 0.12}]
+    out = cw.apply_color_warper_in_working_space(
+        img, SRGB_LIKE_SPACE, points, wake=45, dropoff=0.2)
+
+    L, C, H = cw.decode_working_colourspace_to_oklch(img, SRGB_LIKE_SPACE)
+    H2, C2 = cw.warp_hue_chroma(H, C, points, wake=45, dropoff=0.2)
+    warped_linear = cw.oklab_to_linear_srgb(cw.oklch_to_oklab(L, C2, H2))
+    if aces_drt.OCIO_AVAILABLE:
+        expected = aces_drt.convert_colourspace(warped_linear, cw.REFERENCE_LINEAR_SPACE, SRGB_LIKE_SPACE)
+    else:
+        import colorspace
+        expected = colorspace.convert(warped_linear, cw.REFERENCE_LINEAR_SPACE, SRGB_LIKE_SPACE)
+    assert np.allclose(out, expected, atol=1e-6)
+    print("apply_color_warper_in_working_space: still matches the "
+          "manual pipeline for a real (non-reference) working "
+          "colourspace after extracting decode_working_colourspace_to_"
+          "oklch -- OK")
+
+
 def test_is_in_gamut_mid_gray_true_absurd_chroma_false():
     assert bool(cw.is_in_gamut(0.5, 0.0, 0.0))
     assert not bool(cw.is_in_gamut(0.5, 5.0, 0.0))
@@ -361,6 +402,8 @@ if __name__ == "__main__":
     test_apply_identity_points_is_exact_noop_for_every_working_space()
     test_apply_a_moved_point_changes_pixels_near_its_own_hue()
     test_apply_matches_manual_pipeline_for_the_reference_space()
+    test_decode_working_colourspace_to_oklch_matches_manual_pipeline()
+    test_apply_color_warper_still_matches_manual_pipeline_after_the_refactor()
     test_is_in_gamut_mid_gray_true_absurd_chroma_false()
     test_is_in_gamut_vectorizes_over_arrays()
     test_warped_gamut_blob_points_shape_and_default_count()

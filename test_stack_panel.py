@@ -1389,20 +1389,24 @@ def test_add_keyer_starts_at_defaults():
 
 def test_keyer_inspector_fields_apply_live():
     panel, stage = _panel_with_one_keyer_stage()
+    space_idx = panel.ky_space_combo.findText(cw.REFERENCE_LINEAR_SPACE)
+    assert space_idx >= 0
+    panel.ky_space_combo.setCurrentIndex(space_idx)
     panel.ky_hue_center_spin.setValue(210.0)
     panel.ky_hue_width_spin.setValue(45.0)
-    panel.ky_sat_min_spin.setValue(0.2)
-    panel.ky_sat_max_spin.setValue(0.9)
-    panel.ky_lum_min_spin.setValue(0.1)
-    panel.ky_lum_max_spin.setValue(0.8)
+    panel.ky_chroma_min_spin.setValue(0.05)
+    panel.ky_chroma_max_spin.setValue(0.3)
+    panel.ky_lightness_min_spin.setValue(0.1)
+    panel.ky_lightness_max_spin.setValue(0.8)
     panel.ky_softness_spin.setValue(0.6)
     panel.ky_invert_checkbox.setChecked(True)
+    assert stage.params["working_colourspace"] == cw.REFERENCE_LINEAR_SPACE
     assert stage.params["hue_center"] == 210.0
     assert stage.params["hue_width"] == 45.0
-    assert stage.params["sat_min"] == 0.2
-    assert stage.params["sat_max"] == 0.9
-    assert stage.params["lum_min"] == 0.1
-    assert stage.params["lum_max"] == 0.8
+    assert stage.params["chroma_min"] == 0.05
+    assert stage.params["chroma_max"] == 0.3
+    assert stage.params["lightness_min"] == 0.1
+    assert stage.params["lightness_max"] == 0.8
     assert stage.params["softness"] == 0.6
     assert stage.params["invert"] is True
     print("StackPanel Keyer inspector: every field applies live to the "

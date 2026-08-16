@@ -114,7 +114,7 @@ region means -- spoiler: nothing, it's just ignored).
 MATTE CHANNELS -- deliberately OPT-IN (per Tom: "instead of the way
 Baselight does it where usage is mandatory if it's in the stack"), unlike
 STACK FORKING above this involves no new stage-PAIR structure at all: a
-"keyer" stage (keyer.py's own HSL qualifier -- the first, and so far only,
+"keyer" stage (keyer.py's own OKLCh qualifier -- the first, and so far only,
 matte-PRODUCING kind) computes an (H,W) matte and never touches the
 running RGB image itself (_apply_stage_to_array's own "keyer" branch is a
 pure identity passthrough); ANY other stage can optionally reference that
@@ -525,14 +525,15 @@ def make_color_warper_stage(working_colourspace=color_warper.DEFAULT_WORKING_COL
     return Stage("color_warper", label or "WARPier", params, enabled, opacity)
 
 
-def make_keyer_stage(hue_center=keyer.DEFAULT_HUE_CENTER, hue_width=keyer.DEFAULT_HUE_WIDTH,
-                      sat_min=keyer.DEFAULT_SAT_MIN, sat_max=keyer.DEFAULT_SAT_MAX,
-                      lum_min=keyer.DEFAULT_LUM_MIN, lum_max=keyer.DEFAULT_LUM_MAX,
+def make_keyer_stage(working_colourspace=keyer.DEFAULT_WORKING_COLOURSPACE,
+                      hue_center=keyer.DEFAULT_HUE_CENTER, hue_width=keyer.DEFAULT_HUE_WIDTH,
+                      chroma_min=keyer.DEFAULT_CHROMA_MIN, chroma_max=keyer.DEFAULT_CHROMA_MAX,
+                      lightness_min=keyer.DEFAULT_LIGHTNESS_MIN, lightness_max=keyer.DEFAULT_LIGHTNESS_MAX,
                       softness=keyer.DEFAULT_SOFTNESS, invert=keyer.DEFAULT_INVERT,
                       label=None, enabled=True, opacity=1.0):
     """A stage that produces a MATTE (see this module's docstring, "MATTE
-    CHANNELS") via keyer.compute_matte's HSL qualifier -- this stage's own
-    RGB output is always an exact identity passthrough (see
+    CHANNELS") via keyer.compute_matte's OKLCh qualifier -- this stage's
+    own RGB output is always an exact identity passthrough (see
     _apply_stage_to_array's "keyer" branch), so `opacity` here doesn't
     blend an image the way it does for every other stage kind; it's
     repurposed as "matte amount" -- the computed matte is scaled by it
@@ -540,9 +541,10 @@ def make_keyer_stage(hue_center=keyer.DEFAULT_HUE_CENTER, hue_width=keyer.DEFAUL
     the same free, already-understood control every other row already
     has rather than a redundant dedicated slider."""
     params = {
+        "working_colourspace": working_colourspace,
         "hue_center": float(hue_center), "hue_width": float(hue_width),
-        "sat_min": float(sat_min), "sat_max": float(sat_max),
-        "lum_min": float(lum_min), "lum_max": float(lum_max),
+        "chroma_min": float(chroma_min), "chroma_max": float(chroma_max),
+        "lightness_min": float(lightness_min), "lightness_max": float(lightness_max),
         "softness": float(softness), "invert": bool(invert),
     }
     return Stage("keyer", label or "Keyer", params, enabled, opacity)

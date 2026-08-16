@@ -1209,6 +1209,25 @@ def _half_red_half_blue(size=4):
     return image
 
 
+def _oklch_hue_of(rgb, working_colourspace=color_warper.REFERENCE_LINEAR_SPACE):
+    """The real OKLCh hue of a solid `rgb` sample, decoded via the same
+    color_warper.decode_working_colourspace_to_oklch keyer.py's own
+    qualifier now uses -- lets these tests pin a keyer's hue_center to
+    each _half_red_half_blue() half's OWN actual hue rather than a
+    hardcoded HSL-era constant like 0/240 that no longer means anything
+    once the qualifier operates in OKLCh."""
+    sample = np.array(rgb, dtype=np.float64).reshape(1, 1, 3)
+    _, _, h = color_warper.decode_working_colourspace_to_oklch(sample, working_colourspace)
+    return float(h[0, 0])
+
+
+# Tested against REFERENCE_LINEAR_SPACE (see test_keyer.py's own SPACE
+# constant for the same convention) so these stay exact, deterministic
+# numbers rather than depending on ACEScct's own log encoding.
+REDDISH_HUE = _oklch_hue_of((0.6, 0.2, 0.2))
+BLUISH_HUE = _oklch_hue_of((0.2, 0.2, 0.6))
+
+
 def test_keyer_stage_is_identity_passthrough_for_the_image():
     image = _half_red_half_blue()
     keyer_stage = st.make_keyer_stage(hue_center=0.0, hue_width=20.0)
@@ -1253,7 +1272,8 @@ def test_matte_letters_for_does_not_shift_when_a_keyer_is_disabled():
 
 def test_matte_gates_a_downstream_stage_per_pixel():
     image = _half_red_half_blue()
-    keyer_stage = st.make_keyer_stage(hue_center=0.0, hue_width=20.0, softness=0.1)
+    keyer_stage = st.make_keyer_stage(working_colourspace=color_warper.REFERENCE_LINEAR_SPACE,
+                                       hue_center=REDDISH_HUE, hue_width=20.0, softness=0.1)
     consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
     consumer.params["matte_source_id"] = keyer_stage.id
 
@@ -1356,7 +1376,8 @@ def test_matte_gating_works_inside_a_fork_branch_and_after_the_merge():
     a's own image at that point) is numerically exactly what branch b's
     own pixels would key to as well."""
     image = _half_red_half_blue()
-    keyer_stage = st.make_keyer_stage(hue_center=0.0, hue_width=20.0, softness=0.1)
+    keyer_stage = st.make_keyer_stage(working_colourspace=color_warper.REFERENCE_LINEAR_SPACE,
+                                       hue_center=REDDISH_HUE, hue_width=20.0, softness=0.1)
     keyer_stage.branch = "a"
     consumer_b = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
     consumer_b.params["matte_source_id"] = keyer_stage.id
@@ -1428,7 +1449,8 @@ def test_stage_cache_last_mattes_is_empty_before_any_run():
 def test_stage_cache_last_mattes_reflects_the_most_recent_run():
     cache = st.StageCache()
     image = _half_red_half_blue(size=4).astype(np.float32)
-    keyer_stage = st.make_keyer_stage(hue_center=0.0, hue_width=20.0, softness=0.1)
+    keyer_stage = st.make_keyer_stage(working_colourspace=color_warper.REFERENCE_LINEAR_SPACE,
+                                       hue_center=REDDISH_HUE, hue_width=20.0, softness=0.1)
     consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
     consumer.params["matte_source_id"] = keyer_stage.id
     stack = st.Stack(stages=[keyer_stage, consumer])

@@ -4587,6 +4587,24 @@ class StackPanel(QObject):
         group = self.ky_group
         outer = QVBoxLayout(group)
 
+        # Working Color Space -- same combo, same OCIO-vs-colour-science
+        # auto-dispatch, as WARPier's own cw_space_combo (see
+        # _build_color_warper_inspector) -- the qualifier below now reads
+        # real OKLCh values decoded from THIS space (see keyer.py's own
+        # docstring for why raw HSL on clipped [0,1] RGB was wrong on
+        # this app's own log/HDR working spaces).
+        ky_space_row = QHBoxLayout()
+        ky_space_row.addWidget(QLabel("Working Color Space:"))
+        self.ky_space_combo = QComboBox()
+        self._ky_using_ocio = aces_drt.OCIO_AVAILABLE
+        if self._ky_using_ocio:
+            self.ky_space_combo.addItems(aces_drt.list_working_colourspaces())
+        else:
+            self.ky_space_combo.addItems(list_available_colourspaces())
+        self.ky_space_combo.currentTextChanged.connect(self._apply_keyer_live)
+        ky_space_row.addWidget(self.ky_space_combo, stretch=1)
+        outer.addLayout(ky_space_row)
+
         hue_row = QHBoxLayout()
         self.ky_hue_center_spin = QDoubleSpinBox()
         self.ky_hue_center_spin.setRange(0.0, 360.0)
@@ -4612,43 +4630,48 @@ class StackPanel(QObject):
         hue_row.addWidget(self.ky_hue_width_spin, stretch=1)
         outer.addLayout(hue_row)
 
-        sat_row = QHBoxLayout()
-        self.ky_sat_min_spin = QDoubleSpinBox()
-        self.ky_sat_max_spin = QDoubleSpinBox()
-        for spin, default in ((self.ky_sat_min_spin, ky.DEFAULT_SAT_MIN),
-                               (self.ky_sat_max_spin, ky.DEFAULT_SAT_MAX)):
-            spin.setRange(0.0, 1.0)
-            spin.setDecimals(2)
-            spin.setSingleStep(0.05)
+        chroma_row = QHBoxLayout()
+        self.ky_chroma_min_spin = QDoubleSpinBox()
+        self.ky_chroma_max_spin = QDoubleSpinBox()
+        for spin, default in ((self.ky_chroma_min_spin, ky.DEFAULT_CHROMA_MIN),
+                               (self.ky_chroma_max_spin, ky.DEFAULT_CHROMA_MAX)):
+            # OKLCh chroma's own natural range runs well past 1.0 isn't
+            # right either -- see keyer.DEFAULT_CHROMA_MAX's own comment
+            # for why 0.5 (comfortable headroom above default 0.4) is
+            # this spin box's own ceiling rather than reusing 1.0 the
+            # way HSL saturation could.
+            spin.setRange(0.0, 0.5)
+            spin.setDecimals(3)
+            spin.setSingleStep(0.01)
             spin.setValue(default)
             enable_drag_to_scrub(spin)
             spin.valueChanged.connect(self._apply_keyer_live)
-        sat_row.addWidget(_ParamLabel(
-            "Sat Min:", lambda: self.ky_sat_min_spin.setValue(ky.DEFAULT_SAT_MIN)))
-        sat_row.addWidget(self.ky_sat_min_spin, stretch=1)
-        sat_row.addWidget(_ParamLabel(
-            "Sat Max:", lambda: self.ky_sat_max_spin.setValue(ky.DEFAULT_SAT_MAX)))
-        sat_row.addWidget(self.ky_sat_max_spin, stretch=1)
-        outer.addLayout(sat_row)
+        chroma_row.addWidget(_ParamLabel(
+            "Chroma Min:", lambda: self.ky_chroma_min_spin.setValue(ky.DEFAULT_CHROMA_MIN)))
+        chroma_row.addWidget(self.ky_chroma_min_spin, stretch=1)
+        chroma_row.addWidget(_ParamLabel(
+            "Chroma Max:", lambda: self.ky_chroma_max_spin.setValue(ky.DEFAULT_CHROMA_MAX)))
+        chroma_row.addWidget(self.ky_chroma_max_spin, stretch=1)
+        outer.addLayout(chroma_row)
 
-        lum_row = QHBoxLayout()
-        self.ky_lum_min_spin = QDoubleSpinBox()
-        self.ky_lum_max_spin = QDoubleSpinBox()
-        for spin, default in ((self.ky_lum_min_spin, ky.DEFAULT_LUM_MIN),
-                               (self.ky_lum_max_spin, ky.DEFAULT_LUM_MAX)):
+        lightness_row = QHBoxLayout()
+        self.ky_lightness_min_spin = QDoubleSpinBox()
+        self.ky_lightness_max_spin = QDoubleSpinBox()
+        for spin, default in ((self.ky_lightness_min_spin, ky.DEFAULT_LIGHTNESS_MIN),
+                               (self.ky_lightness_max_spin, ky.DEFAULT_LIGHTNESS_MAX)):
             spin.setRange(0.0, 1.0)
             spin.setDecimals(2)
             spin.setSingleStep(0.05)
             spin.setValue(default)
             enable_drag_to_scrub(spin)
             spin.valueChanged.connect(self._apply_keyer_live)
-        lum_row.addWidget(_ParamLabel(
-            "Lum Min:", lambda: self.ky_lum_min_spin.setValue(ky.DEFAULT_LUM_MIN)))
-        lum_row.addWidget(self.ky_lum_min_spin, stretch=1)
-        lum_row.addWidget(_ParamLabel(
-            "Lum Max:", lambda: self.ky_lum_max_spin.setValue(ky.DEFAULT_LUM_MAX)))
-        lum_row.addWidget(self.ky_lum_max_spin, stretch=1)
-        outer.addLayout(lum_row)
+        lightness_row.addWidget(_ParamLabel(
+            "Lightness Min:", lambda: self.ky_lightness_min_spin.setValue(ky.DEFAULT_LIGHTNESS_MIN)))
+        lightness_row.addWidget(self.ky_lightness_min_spin, stretch=1)
+        lightness_row.addWidget(_ParamLabel(
+            "Lightness Max:", lambda: self.ky_lightness_max_spin.setValue(ky.DEFAULT_LIGHTNESS_MAX)))
+        lightness_row.addWidget(self.ky_lightness_max_spin, stretch=1)
+        outer.addLayout(lightness_row)
 
         softness_row = QHBoxLayout()
         self.ky_softness_spin = QDoubleSpinBox()
@@ -4704,12 +4727,13 @@ class StackPanel(QObject):
         stage = self._selected_stage()
         if stage is None or stage.kind != "keyer":
             return
+        stage.params["working_colourspace"] = self.ky_space_combo.currentText()
         stage.params["hue_center"] = self.ky_hue_center_spin.value()
         stage.params["hue_width"] = self.ky_hue_width_spin.value()
-        stage.params["sat_min"] = self.ky_sat_min_spin.value()
-        stage.params["sat_max"] = self.ky_sat_max_spin.value()
-        stage.params["lum_min"] = self.ky_lum_min_spin.value()
-        stage.params["lum_max"] = self.ky_lum_max_spin.value()
+        stage.params["chroma_min"] = self.ky_chroma_min_spin.value()
+        stage.params["chroma_max"] = self.ky_chroma_max_spin.value()
+        stage.params["lightness_min"] = self.ky_lightness_min_spin.value()
+        stage.params["lightness_max"] = self.ky_lightness_max_spin.value()
         stage.params["softness"] = self.ky_softness_spin.value()
         stage.params["invert"] = self.ky_invert_checkbox.isChecked()
         self._update_row_content(stage.id)
@@ -5142,12 +5166,15 @@ class StackPanel(QObject):
 
         elif stage.kind == "keyer":
             p = stage.params
+            idx = self.ky_space_combo.findText(p.get("working_colourspace", ky.DEFAULT_WORKING_COLOURSPACE))
+            if idx >= 0:
+                self.ky_space_combo.setCurrentIndex(idx)
             self.ky_hue_center_spin.setValue(p.get("hue_center", ky.DEFAULT_HUE_CENTER))
             self.ky_hue_width_spin.setValue(p.get("hue_width", ky.DEFAULT_HUE_WIDTH))
-            self.ky_sat_min_spin.setValue(p.get("sat_min", ky.DEFAULT_SAT_MIN))
-            self.ky_sat_max_spin.setValue(p.get("sat_max", ky.DEFAULT_SAT_MAX))
-            self.ky_lum_min_spin.setValue(p.get("lum_min", ky.DEFAULT_LUM_MIN))
-            self.ky_lum_max_spin.setValue(p.get("lum_max", ky.DEFAULT_LUM_MAX))
+            self.ky_chroma_min_spin.setValue(p.get("chroma_min", ky.DEFAULT_CHROMA_MIN))
+            self.ky_chroma_max_spin.setValue(p.get("chroma_max", ky.DEFAULT_CHROMA_MAX))
+            self.ky_lightness_min_spin.setValue(p.get("lightness_min", ky.DEFAULT_LIGHTNESS_MIN))
+            self.ky_lightness_max_spin.setValue(p.get("lightness_max", ky.DEFAULT_LIGHTNESS_MAX))
             self.ky_softness_spin.setValue(p.get("softness", ky.DEFAULT_SOFTNESS))
             self.ky_invert_checkbox.blockSignals(True)
             self.ky_invert_checkbox.setChecked(p.get("invert", ky.DEFAULT_INVERT))

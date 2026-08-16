@@ -373,6 +373,29 @@ def warp_hue_chroma(H, C, points, wake=DEFAULT_WAKE, dropoff=DEFAULT_DROPOFF):
     return H_out, C_out
 
 
+def decode_working_colourspace_to_oklch(image_array, working_colourspace, config_name=None):
+    """`image_array`'s values, treated as ENCODED code values in
+    `working_colourspace` -> (L, C, H) OKLCh -- the FORWARD half of
+    apply_color_warper_in_working_space's own round trip (decode
+    (primaries AND encoding) to REFERENCE_LINEAR_SPACE, then to OKLCh),
+    pulled out into its own function since keyer.py's own qualifier (see
+    that module's docstring) needs exactly this same forward conversion
+    but, unlike WARPier's own warp, never needs the REVERSE -- a keyer
+    only ever READS color to decide a matte value, it never grades the
+    image itself, so there's nothing to convert back. Same OCIO-vs-
+    colour-science auto-dispatch every working-colourspace-aware
+    operator in this app already uses (see apply_printer_lights_in_
+    working_space)."""
+    image_array = np.asarray(image_array, dtype=np.float64)
+    config_name = config_name or aces_drt.DEFAULT_CONFIG_NAME
+    if aces_drt.OCIO_AVAILABLE:
+        linear = aces_drt.convert_colourspace(
+            image_array, working_colourspace, REFERENCE_LINEAR_SPACE, config_name=config_name)
+    else:
+        linear = colorspace.convert(image_array, working_colourspace, REFERENCE_LINEAR_SPACE)
+    return oklab_to_oklch(linear_srgb_to_oklab(linear))
+
+
 def apply_color_warper_in_working_space(image_array, working_colourspace, points,
                                          wake=DEFAULT_WAKE, dropoff=DEFAULT_DROPOFF,
                                          config_name=None):
@@ -389,14 +412,7 @@ def apply_color_warper_in_working_space(image_array, working_colourspace, points
         return image_array
 
     config_name = config_name or aces_drt.DEFAULT_CONFIG_NAME
-    if aces_drt.OCIO_AVAILABLE:
-        linear = aces_drt.convert_colourspace(
-            image_array, working_colourspace, REFERENCE_LINEAR_SPACE, config_name=config_name)
-    else:
-        linear = colorspace.convert(image_array, working_colourspace, REFERENCE_LINEAR_SPACE)
-
-    lab = linear_srgb_to_oklab(linear)
-    L, C, H = oklab_to_oklch(lab)
+    L, C, H = decode_working_colourspace_to_oklch(image_array, working_colourspace, config_name)
     H, C = warp_hue_chroma(H, C, points, wake, dropoff)
     warped_linear = oklab_to_linear_srgb(oklch_to_oklab(L, C, H))
 

@@ -396,8 +396,9 @@ def test_color_warper_stage_default_points_round_trip():
 
 def test_keyer_stage_round_trips():
     stage = st.make_keyer_stage(
-        hue_center=210.0, hue_width=45.0, sat_min=0.2, sat_max=0.9,
-        lum_min=0.1, lum_max=0.8, softness=0.6, invert=True,
+        working_colourspace="ACEScct",
+        hue_center=210.0, hue_width=45.0, chroma_min=0.2, chroma_max=0.35,
+        lightness_min=0.1, lightness_max=0.8, softness=0.6, invert=True,
         label="My Keyer", opacity=0.8)
     stack = st.Stack(stages=[stage])
 
@@ -408,12 +409,13 @@ def test_keyer_stage_round_trips():
     assert len(rebuilt_stack.stages) == 1
     r = rebuilt_stack.stages[0]
     assert r.kind == "keyer" and r.label == "My Keyer" and r.opacity == 0.8
+    assert r.params["working_colourspace"] == "ACEScct"
     assert r.params["hue_center"] == 210.0
     assert r.params["hue_width"] == 45.0
-    assert r.params["sat_min"] == 0.2
-    assert r.params["sat_max"] == 0.9
-    assert r.params["lum_min"] == 0.1
-    assert r.params["lum_max"] == 0.8
+    assert r.params["chroma_min"] == 0.2
+    assert r.params["chroma_max"] == 0.35
+    assert r.params["lightness_min"] == 0.1
+    assert r.params["lightness_max"] == 0.8
     assert r.params["softness"] == 0.6
     assert r.params["invert"] is True
     print("stack_to_session_dict/stack_from_session_dict: a 'keyer' stage "

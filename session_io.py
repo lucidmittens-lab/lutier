@@ -401,12 +401,13 @@ def stage_to_session_dict(stage):
         entry["wake"] = stage.params.get("wake", color_warper.DEFAULT_WAKE)
         entry["dropoff"] = stage.params.get("dropoff", color_warper.DEFAULT_DROPOFF)
     elif stage.kind == "keyer":
+        entry["working_colourspace"] = stage.params.get("working_colourspace", keyer.DEFAULT_WORKING_COLOURSPACE)
         entry["hue_center"] = stage.params.get("hue_center", keyer.DEFAULT_HUE_CENTER)
         entry["hue_width"] = stage.params.get("hue_width", keyer.DEFAULT_HUE_WIDTH)
-        entry["sat_min"] = stage.params.get("sat_min", keyer.DEFAULT_SAT_MIN)
-        entry["sat_max"] = stage.params.get("sat_max", keyer.DEFAULT_SAT_MAX)
-        entry["lum_min"] = stage.params.get("lum_min", keyer.DEFAULT_LUM_MIN)
-        entry["lum_max"] = stage.params.get("lum_max", keyer.DEFAULT_LUM_MAX)
+        entry["chroma_min"] = stage.params.get("chroma_min", keyer.DEFAULT_CHROMA_MIN)
+        entry["chroma_max"] = stage.params.get("chroma_max", keyer.DEFAULT_CHROMA_MAX)
+        entry["lightness_min"] = stage.params.get("lightness_min", keyer.DEFAULT_LIGHTNESS_MIN)
+        entry["lightness_max"] = stage.params.get("lightness_max", keyer.DEFAULT_LIGHTNESS_MAX)
         entry["softness"] = stage.params.get("softness", keyer.DEFAULT_SOFTNESS)
         entry["invert"] = stage.params.get("invert", keyer.DEFAULT_INVERT)
     elif stage.kind == "fork_split":
@@ -625,12 +626,13 @@ def stage_from_session_dict(entry):
         )
     elif kind == "keyer":
         stage = st.make_keyer_stage(
+            working_colourspace=entry.get("working_colourspace", keyer.DEFAULT_WORKING_COLOURSPACE),
             hue_center=entry.get("hue_center", keyer.DEFAULT_HUE_CENTER),
             hue_width=entry.get("hue_width", keyer.DEFAULT_HUE_WIDTH),
-            sat_min=entry.get("sat_min", keyer.DEFAULT_SAT_MIN),
-            sat_max=entry.get("sat_max", keyer.DEFAULT_SAT_MAX),
-            lum_min=entry.get("lum_min", keyer.DEFAULT_LUM_MIN),
-            lum_max=entry.get("lum_max", keyer.DEFAULT_LUM_MAX),
+            chroma_min=entry.get("chroma_min", keyer.DEFAULT_CHROMA_MIN),
+            chroma_max=entry.get("chroma_max", keyer.DEFAULT_CHROMA_MAX),
+            lightness_min=entry.get("lightness_min", keyer.DEFAULT_LIGHTNESS_MIN),
+            lightness_max=entry.get("lightness_max", keyer.DEFAULT_LIGHTNESS_MAX),
             softness=entry.get("softness", keyer.DEFAULT_SOFTNESS),
             invert=entry.get("invert", keyer.DEFAULT_INVERT),
             label=label,
