@@ -618,6 +618,8 @@ class GpuStackRenderer:
                 points=p.get("points", []),
                 wake=p.get("wake", color_warper.DEFAULT_WAKE),
                 dropoff=p.get("dropoff", color_warper.DEFAULT_DROPOFF),
+                chroma_wake=p.get("chroma_wake", color_warper.DEFAULT_CHROMA_WAKE),
+                chroma_dropoff=p.get("chroma_dropoff", color_warper.DEFAULT_CHROMA_DROPOFF),
                 opacity=stage.opacity)
 
         def _set_opacity_only(program):

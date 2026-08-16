@@ -271,16 +271,19 @@ class WarpierCloudWidget(QWidget):
         self._colors = np.asarray(colors, dtype=np.float64)
         self.update()
 
-    def set_warp(self, points, wake=cw.DEFAULT_WAKE, dropoff=cw.DEFAULT_DROPOFF):
+    def set_warp(self, points, wake=cw.DEFAULT_WAKE, dropoff=cw.DEFAULT_DROPOFF,
+                  chroma_wake=cw.DEFAULT_CHROMA_WAKE, chroma_dropoff=cw.DEFAULT_CHROMA_DROPOFF):
         """The actual entry point StackPanel drives (see
         _apply_color_warper_live/_refresh_inspector_body) -- `points`/
-        `wake`/`dropoff` are the SAME values driving the real grade
-        (cw_wheel.points()/cw_wake_spin.value()/cw_dropoff_spin.value()),
-        so this reference sphere always shows exactly what the current
-        WARPier stage is actually doing to OKLCh space, live, with no
-        image involved anywhere."""
+        `wake`/`dropoff`/`chroma_wake`/`chroma_dropoff` are the SAME
+        values driving the real grade (cw_wheel.points()/cw_wake_spin.
+        value()/cw_dropoff_spin.value()/cw_chroma_wake_spin.value()/
+        cw_chroma_dropoff_spin.value()), so this reference sphere always
+        shows exactly what the current WARPier stage is actually doing to
+        OKLCh space, live, with no image involved anywhere."""
         positions, colors = cw.warped_idealized_sphere_points(
             points, wake=wake, dropoff=dropoff,
+            chroma_wake=chroma_wake, chroma_dropoff=chroma_dropoff,
             hue_steps=HUE_STEPS, theta_steps=THETA_STEPS)
         self.set_points(positions, colors)
 

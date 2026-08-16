@@ -4530,6 +4530,41 @@ class StackPanel(QObject):
         dropoff_row.addWidget(self.cw_dropoff_spin, stretch=1)
         outer.addLayout(dropoff_row)
 
+        # Chroma-axis falloff (per Tom, confirmed directly: "if i move a
+        # point on a given hue angle, one half way from center, and then
+        # move to the same spot on another hue angle, it shifts that
+        # whole angle there, meaning all points along the line from
+        # center to the edge") -- an independent falloff over how far a
+        # pixel's own CHROMA sits from the point's own anchor chroma,
+        # multiplied into the existing hue-based falloff (see
+        # color_warper.warp_hue_chroma's own docstring). Same row shape
+        # as Wake/Drop-off just above.
+        chroma_wake_row = QHBoxLayout()
+        self.cw_chroma_wake_spin = QDoubleSpinBox()
+        self.cw_chroma_wake_spin.setRange(0.01, 0.5)
+        self.cw_chroma_wake_spin.setDecimals(3)
+        self.cw_chroma_wake_spin.setSingleStep(0.01)
+        self.cw_chroma_wake_spin.setValue(cw.DEFAULT_CHROMA_WAKE)
+        enable_drag_to_scrub(self.cw_chroma_wake_spin)
+        self.cw_chroma_wake_spin.valueChanged.connect(self._on_cw_chroma_wake_changed)
+        chroma_wake_row.addWidget(_ParamLabel(
+            "Chroma Wake:", lambda: self.cw_chroma_wake_spin.setValue(cw.DEFAULT_CHROMA_WAKE)))
+        chroma_wake_row.addWidget(self.cw_chroma_wake_spin, stretch=1)
+        outer.addLayout(chroma_wake_row)
+
+        chroma_dropoff_row = QHBoxLayout()
+        self.cw_chroma_dropoff_spin = QDoubleSpinBox()
+        self.cw_chroma_dropoff_spin.setRange(0.0, 1.0)
+        self.cw_chroma_dropoff_spin.setDecimals(2)
+        self.cw_chroma_dropoff_spin.setSingleStep(0.05)
+        self.cw_chroma_dropoff_spin.setValue(cw.DEFAULT_CHROMA_DROPOFF)
+        enable_drag_to_scrub(self.cw_chroma_dropoff_spin)
+        self.cw_chroma_dropoff_spin.valueChanged.connect(self._on_cw_chroma_dropoff_changed)
+        chroma_dropoff_row.addWidget(_ParamLabel(
+            "Chroma Drop-off:", lambda: self.cw_chroma_dropoff_spin.setValue(cw.DEFAULT_CHROMA_DROPOFF)))
+        chroma_dropoff_row.addWidget(self.cw_chroma_dropoff_spin, stretch=1)
+        outer.addLayout(chroma_dropoff_row)
+
         reset_button = QPushButton("Reset to Identity")
         reset_button.clicked.connect(self._on_cw_reset_clicked)
         outer.addWidget(reset_button)
@@ -4552,6 +4587,14 @@ class StackPanel(QObject):
         self.cw_wheel.set_dropoff(value)
         self._apply_color_warper_live()
 
+    def _on_cw_chroma_wake_changed(self, value):
+        self.cw_wheel.set_chroma_wake(value)
+        self._apply_color_warper_live()
+
+    def _on_cw_chroma_dropoff_changed(self, value):
+        self.cw_wheel.set_chroma_dropoff(value)
+        self._apply_color_warper_live()
+
     def _on_cw_space_changed(self, _text):
         self._apply_color_warper_live()
 
@@ -4559,6 +4602,8 @@ class StackPanel(QObject):
         self.cw_wheel.reset()  # emits points_changed -> _apply_color_warper_live
         self.cw_wake_spin.setValue(cw.DEFAULT_WAKE)
         self.cw_dropoff_spin.setValue(cw.DEFAULT_DROPOFF)
+        self.cw_chroma_wake_spin.setValue(cw.DEFAULT_CHROMA_WAKE)
+        self.cw_chroma_dropoff_spin.setValue(cw.DEFAULT_CHROMA_DROPOFF)
 
     def _apply_color_warper_live(self):
         """Guarded by _refreshing_inspector, same convention as
@@ -4573,8 +4618,11 @@ class StackPanel(QObject):
         stage.params["points"] = self.cw_wheel.points()
         stage.params["wake"] = self.cw_wake_spin.value()
         stage.params["dropoff"] = self.cw_dropoff_spin.value()
+        stage.params["chroma_wake"] = self.cw_chroma_wake_spin.value()
+        stage.params["chroma_dropoff"] = self.cw_chroma_dropoff_spin.value()
         stage.params["working_colourspace"] = self.cw_space_combo.currentText()
-        self.cw_cloud.set_warp(stage.params["points"], stage.params["wake"], stage.params["dropoff"])
+        self.cw_cloud.set_warp(stage.params["points"], stage.params["wake"], stage.params["dropoff"],
+                                stage.params["chroma_wake"], stage.params["chroma_dropoff"])
         self._update_row_content(stage.id)
         self._emit_changed()
 
@@ -5250,19 +5298,26 @@ class StackPanel(QObject):
             self.cw_wheel.set_points(p.get("points") or [], emit=False)
             wake = p.get("wake", cw.DEFAULT_WAKE)
             dropoff = p.get("dropoff", cw.DEFAULT_DROPOFF)
+            chroma_wake = p.get("chroma_wake", cw.DEFAULT_CHROMA_WAKE)
+            chroma_dropoff = p.get("chroma_dropoff", cw.DEFAULT_CHROMA_DROPOFF)
             self.cw_wheel.set_wake(wake)
             self.cw_wheel.set_dropoff(dropoff)
+            self.cw_wheel.set_chroma_wake(chroma_wake)
+            self.cw_wheel.set_chroma_dropoff(chroma_dropoff)
             self.cw_wake_spin.setValue(wake)
             self.cw_dropoff_spin.setValue(dropoff)
+            self.cw_chroma_wake_spin.setValue(chroma_wake)
+            self.cw_chroma_dropoff_spin.setValue(chroma_dropoff)
             idx = self.cw_space_combo.findText(p.get("working_colourspace", cw.DEFAULT_WORKING_COLOURSPACE))
             if idx >= 0:
                 self.cw_space_combo.setCurrentIndex(idx)
             self.inspector_stack.setCurrentIndex(self._color_warper_inspector_index)
             # Sync the cloud to THIS stage's own warp -- different
-            # color_warper stages can have different points/wake/dropoff,
-            # so switching stages needs to update it too, not just leave
-            # it showing whichever stage was selected before.
-            self.cw_cloud.set_warp(p.get("points") or [], wake, dropoff)
+            # color_warper stages can have different points/wake/dropoff/
+            # chroma_wake/chroma_dropoff, so switching stages needs to
+            # update it too, not just leave it showing whichever stage
+            # was selected before.
+            self.cw_cloud.set_warp(p.get("points") or [], wake, dropoff, chroma_wake, chroma_dropoff)
 
         elif stage.kind == "keyer":
             p = stage.params

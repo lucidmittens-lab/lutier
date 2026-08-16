@@ -62,6 +62,16 @@ REFERENCE_LINEAR_SPACE = "Linear Rec.709 (sRGB)"
 MAX_POINTS = 12
 DEFAULT_WAKE = 35.0
 DEFAULT_DROPOFF = 0.0
+# The chroma-axis counterpart to WAKE/DROPOFF above (see warp_hue_chroma's
+# own docstring for why this axis exists at all) -- 0.5 is deliberately
+# WIDER than chroma's own practical ceiling (~0.4 for a saturated sRGB
+# primary, see keyer.DEFAULT_CHROMA_MAX's own comment), so this default is
+# a genuine no-op: falloff_weight(any realistic chroma distance, wake=0.5,
+# ...) stays ~1.0, meaning every existing session/test that never touches
+# the new Chroma Wake/Drop-off controls keeps behaving EXACTLY as before
+# this axis existed.
+DEFAULT_CHROMA_WAKE = 0.5
+DEFAULT_CHROMA_DROPOFF = 0.0
 
 # Display-orientation convention shared by every OKLCh visualization in
 # this app (WarpierWheel, the volumetric scope) -- picked so green (OKLCh
@@ -204,7 +214,8 @@ def _spherical_grid_lh(hue_steps, theta_steps):
     return L_grid.ravel(), H_grid.ravel()
 
 
-def _warp_and_embed_spherically(L_flat, H_flat, C_flat, points, wake, dropoff):
+def _warp_and_embed_spherically(L_flat, H_flat, C_flat, points, wake, dropoff,
+                                 chroma_wake=DEFAULT_CHROMA_WAKE, chroma_dropoff=DEFAULT_CHROMA_DROPOFF):
     """Shared by warped_gamut_blob_points/warped_idealized_sphere_points
     -- applies warp_hue_chroma to the given (L, H, C) grid, then embeds
     SPHERICALLY: hue is azimuth, lightness is polar angle, and chroma is
@@ -215,7 +226,8 @@ def _warp_and_embed_spherically(L_flat, H_flat, C_flat, points, wake, dropoff):
     cylinder would -- per Tom's own framing: "the most regular 3
     dimension shape... with white at the center and the volumes from 0
     chroma to 100 chroma at the border." Returns `(positions, colors)`."""
-    H2, C2 = warp_hue_chroma(H_flat, C_flat, points, wake=wake, dropoff=dropoff)
+    H2, C2 = warp_hue_chroma(H_flat, C_flat, points, wake=wake, dropoff=dropoff,
+                              chroma_wake=chroma_wake, chroma_dropoff=chroma_dropoff)
 
     theta2 = np.pi * (1.0 - L_flat)
     rad = np.radians(H2 + HUE_ROTATE)
@@ -234,6 +246,7 @@ def _warp_and_embed_spherically(L_flat, H_flat, C_flat, points, wake, dropoff):
 
 
 def warped_gamut_blob_points(points, wake=DEFAULT_WAKE, dropoff=DEFAULT_DROPOFF,
+                              chroma_wake=DEFAULT_CHROMA_WAKE, chroma_dropoff=DEFAULT_CHROMA_DROPOFF,
                               hue_steps=26, theta_steps=16):
     """The "gamut-following blob" -- a smooth hue_steps x theta_steps grid
     tracing the ACTUAL visible Rec.709/sRGB gamut boundary in OKLCh space,
@@ -257,13 +270,15 @@ def warped_gamut_blob_points(points, wake=DEFAULT_WAKE, dropoff=DEFAULT_DROPOFF,
     reproduces the plain unwarped blob exactly."""
     L_flat, H_flat = _spherical_grid_lh(hue_steps, theta_steps)
     C_flat = _grow_chroma_to_gamut_boundary(L_flat, H_flat)
-    return _warp_and_embed_spherically(L_flat, H_flat, C_flat, points, wake, dropoff)
+    return _warp_and_embed_spherically(L_flat, H_flat, C_flat, points, wake, dropoff,
+                                        chroma_wake, chroma_dropoff)
 
 
 DEFAULT_IDEALIZED_SPHERE_CHROMA = 0.22
 
 
 def warped_idealized_sphere_points(points, wake=DEFAULT_WAKE, dropoff=DEFAULT_DROPOFF,
+                                    chroma_wake=DEFAULT_CHROMA_WAKE, chroma_dropoff=DEFAULT_CHROMA_DROPOFF,
                                     hue_steps=26, theta_steps=16,
                                     chroma=DEFAULT_IDEALIZED_SPHERE_CHROMA):
     """The "idealized uniform sphere" alternative to warped_gamut_blob_
@@ -282,7 +297,8 @@ def warped_idealized_sphere_points(points, wake=DEFAULT_WAKE, dropoff=DEFAULT_DR
     plain, perfectly uniform sphere of radius `chroma` exactly."""
     L_flat, H_flat = _spherical_grid_lh(hue_steps, theta_steps)
     C_flat = np.full_like(L_flat, chroma)
-    return _warp_and_embed_spherically(L_flat, H_flat, C_flat, points, wake, dropoff)
+    return _warp_and_embed_spherically(L_flat, H_flat, C_flat, points, wake, dropoff,
+                                        chroma_wake, chroma_dropoff)
 
 
 def points_are_identity(points):
@@ -312,12 +328,29 @@ def falloff_weight(angular_distance, wake=DEFAULT_WAKE, dropoff=DEFAULT_DROPOFF)
     return np.exp(-0.5 * np.power(np.abs(angular_distance) / sigma, 2.0 * n))
 
 
-def warp_hue_chroma(H, C, points, wake=DEFAULT_WAKE, dropoff=DEFAULT_DROPOFF):
+def warp_hue_chroma(H, C, points, wake=DEFAULT_WAKE, dropoff=DEFAULT_DROPOFF,
+                     chroma_wake=DEFAULT_CHROMA_WAKE, chroma_dropoff=DEFAULT_CHROMA_DROPOFF):
     """Vectorized version of the concept mockup's warped() -- H/C are
     numpy arrays of any matching shape (typically an image's (...,) hue/
     chroma planes), `points` a list of {"h0","c0","h","c"} dicts. Returns
     (H_out, C_out), each the same shape as the input. No points ->
     returns H, C unchanged.
+
+    A point's own weight is the PRODUCT of two independent falloff_weight
+    calls -- one over angular hue distance (wake/dropoff, as always), one
+    over CHROMA distance (chroma_wake/chroma_dropoff, new) between the
+    point's own anchor chroma (c0) and a given pixel's C. Per Tom, directly
+    confirmed: without this second axis, a point dropped anywhere along a
+    hue's own radial spoke (near center or out at the rim, doesn't matter)
+    pulls the ENTIRE spoke -- moving a point that's only halfway out still
+    warps fully-saturated pixels at that same hue by its own full delta,
+    since the old falloff only ever measured hue angle, never how far a
+    pixel's OWN chroma sits from where the point was actually dropped.
+    chroma_wake's own default (see DEFAULT_CHROMA_WAKE's own comment) is
+    wide enough that this second axis is a no-op unless a caller actually
+    narrows it -- reusing falloff_weight verbatim (it's already a generic
+    "distance -> weight" function, doesn't care whether the distance is
+    degrees or chroma units).
 
     Blends an IMPLICIT identity contribution (hue_delta=0, chroma_scale=1)
     with weight `max(0, 1 - weight_sum)` alongside the real points' own
@@ -351,10 +384,12 @@ def warp_hue_chroma(H, C, points, wake=DEFAULT_WAKE, dropoff=DEFAULT_DROPOFF):
     chroma_scale_sum = np.zeros_like(H)
     for p in points:
         h0 = p["h0"]
-        dd = _angular_delta(h0, H)
-        w = falloff_weight(dd, wake, dropoff)
-        hue_delta = _angular_delta(h0, p["h"])
         c0 = p["c0"]
+        dd = _angular_delta(h0, H)
+        hue_w = falloff_weight(dd, wake, dropoff)
+        chroma_w = falloff_weight(C - c0, chroma_wake, chroma_dropoff)
+        w = hue_w * chroma_w
+        hue_delta = _angular_delta(h0, p["h"])
         chroma_scale = (p["c"] / c0) if c0 > 1e-6 else 1.0
         weight_sum += w
         hue_delta_sum += w * hue_delta
@@ -398,6 +433,7 @@ def decode_working_colourspace_to_oklch(image_array, working_colourspace, config
 
 def apply_color_warper_in_working_space(image_array, working_colourspace, points,
                                          wake=DEFAULT_WAKE, dropoff=DEFAULT_DROPOFF,
+                                         chroma_wake=DEFAULT_CHROMA_WAKE, chroma_dropoff=DEFAULT_CHROMA_DROPOFF,
                                          config_name=None):
     """Apply WARPier's warp to `image_array`, treating its values as
     ENCODED code values in `working_colourspace` -- converts (primaries
@@ -413,7 +449,7 @@ def apply_color_warper_in_working_space(image_array, working_colourspace, points
 
     config_name = config_name or aces_drt.DEFAULT_CONFIG_NAME
     L, C, H = decode_working_colourspace_to_oklch(image_array, working_colourspace, config_name)
-    H, C = warp_hue_chroma(H, C, points, wake, dropoff)
+    H, C = warp_hue_chroma(H, C, points, wake, dropoff, chroma_wake, chroma_dropoff)
     warped_linear = oklab_to_linear_srgb(oklch_to_oklab(L, C, H))
 
     if aces_drt.OCIO_AVAILABLE:

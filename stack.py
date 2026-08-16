@@ -508,19 +508,28 @@ def make_grading_rgb_curve_stage(style=grading_rgb_curve.DEFAULT_STYLE,
 def make_color_warper_stage(working_colourspace=color_warper.DEFAULT_WORKING_COLOURSPACE,
                              points=None, wake=color_warper.DEFAULT_WAKE,
                              dropoff=color_warper.DEFAULT_DROPOFF,
+                             chroma_wake=color_warper.DEFAULT_CHROMA_WAKE,
+                             chroma_dropoff=color_warper.DEFAULT_CHROMA_DROPOFF,
                              label=None, enabled=True, opacity=1.0):
     """A stage that applies WARPier's perceptually-uniform (OKLCh)
     hue/chroma warp, same math as
     color_warper.apply_color_warper_in_working_space -- see that module's
     docstring for the control-point shape and the wake/dropoff falloff.
-    `points` defaults to an empty list (no seeded anchors, per Tom), so a
-    freshly-added stage is an exact no-op until the user actually adds a
-    point (points_are_identity is vacuously true for an empty list)."""
+    `chroma_wake`/`chroma_dropoff` are the independent CHROMA-axis
+    falloff (per Tom: a point's own reach should depend on both hue AND
+    chroma distance, not hue alone) -- their defaults are wide-open
+    no-ops (see color_warper.DEFAULT_CHROMA_WAKE's own comment), so an
+    existing session loaded without these keys behaves identically to
+    before this axis existed. `points` defaults to an empty list (no
+    seeded anchors, per Tom), so a freshly-added stage is an exact no-op
+    until the user actually adds a point (points_are_identity is
+    vacuously true for an empty list)."""
     resolved_points = [dict(p) for p in points] if points is not None else []
     params = {
         "working_colourspace": working_colourspace,
         "points": resolved_points,
         "wake": float(wake), "dropoff": float(dropoff),
+        "chroma_wake": float(chroma_wake), "chroma_dropoff": float(chroma_dropoff),
     }
     return Stage("color_warper", label or "WARPier", params, enabled, opacity)
 
@@ -751,6 +760,8 @@ def _apply_stage_to_array(stage, array):
             array, p["working_colourspace"], p.get("points", []),
             wake=p.get("wake", color_warper.DEFAULT_WAKE),
             dropoff=p.get("dropoff", color_warper.DEFAULT_DROPOFF),
+            chroma_wake=p.get("chroma_wake", color_warper.DEFAULT_CHROMA_WAKE),
+            chroma_dropoff=p.get("chroma_dropoff", color_warper.DEFAULT_CHROMA_DROPOFF),
         )
 
     if stage.kind == "keyer":

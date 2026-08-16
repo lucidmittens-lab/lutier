@@ -1317,6 +1317,18 @@ def test_color_warper_wake_and_dropoff_spins_apply_live():
           "live and keep the wheel's wash overlay in sync -- OK")
 
 
+def test_color_warper_chroma_wake_and_dropoff_spins_apply_live():
+    panel, stage = _panel_with_one_color_warper_stage()
+    panel.cw_chroma_wake_spin.setValue(0.08)
+    panel.cw_chroma_dropoff_spin.setValue(0.6)
+    assert stage.params["chroma_wake"] == 0.08
+    assert stage.params["chroma_dropoff"] == 0.6
+    assert panel.cw_wheel._chroma_wake == 0.08, "the wheel's own mesh must stay in sync"
+    assert panel.cw_wheel._chroma_dropoff == 0.6
+    print("StackPanel WARPier inspector: Chroma Wake/Drop-off spinboxes "
+          "apply live and keep the wheel's mesh in sync -- OK")
+
+
 def test_color_warper_space_combo_applies_live():
     panel, stage = _panel_with_one_color_warper_stage()
     other_space = "ACEScg"
@@ -1335,13 +1347,19 @@ def test_color_warper_reset_restores_identity():
     panel.cw_wheel.set_points([{"h0": 35.0, "c0": 0.15, "h": 50.0, "c": 0.15}])
     assert not cw.points_are_identity(stage.params["points"])
 
+    panel.cw_chroma_wake_spin.setValue(0.05)
+    panel.cw_chroma_dropoff_spin.setValue(0.9)
+
     panel._on_cw_reset_clicked()
     assert stage.params["points"] == []
     assert cw.points_are_identity(stage.params["points"])
     assert stage.params["wake"] == cw.DEFAULT_WAKE
     assert stage.params["dropoff"] == cw.DEFAULT_DROPOFF
+    assert stage.params["chroma_wake"] == cw.DEFAULT_CHROMA_WAKE
+    assert stage.params["chroma_dropoff"] == cw.DEFAULT_CHROMA_DROPOFF
     print("StackPanel WARPier inspector: Reset to Identity clears back "
-          "to no points and default wake/dropoff -- OK")
+          "to no points and default wake/dropoff/chroma_wake/"
+          "chroma_dropoff -- OK")
 
 
 def test_color_warper_refresh_on_select_does_not_corrupt_stored_values():
@@ -1805,6 +1823,7 @@ if __name__ == "__main__":
     test_add_color_warper_starts_at_identity()
     test_color_warper_wheel_drag_applies_live()
     test_color_warper_wake_and_dropoff_spins_apply_live()
+    test_color_warper_chroma_wake_and_dropoff_spins_apply_live()
     test_color_warper_space_combo_applies_live()
     test_color_warper_reset_restores_identity()
     test_color_warper_refresh_on_select_does_not_corrupt_stored_values()

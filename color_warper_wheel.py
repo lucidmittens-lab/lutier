@@ -272,6 +272,8 @@ class WarpierWheel(QWidget):
         self._points = []
         self._wake = cw.DEFAULT_WAKE
         self._dropoff = cw.DEFAULT_DROPOFF
+        self._chroma_wake = cw.DEFAULT_CHROMA_WAKE
+        self._chroma_dropoff = cw.DEFAULT_CHROMA_DROPOFF
         self._dragging_point = None
         self._boundary = compute_gamut_boundary()
         self._max_boundary = max(self._boundary) if self._boundary else 0.0
@@ -296,6 +298,14 @@ class WarpierWheel(QWidget):
 
     def set_dropoff(self, dropoff):
         self._dropoff = dropoff
+        self.update()
+
+    def set_chroma_wake(self, chroma_wake):
+        self._chroma_wake = chroma_wake
+        self.update()
+
+    def set_chroma_dropoff(self, chroma_dropoff):
+        self._chroma_dropoff = chroma_dropoff
         self.update()
 
     def reset(self):
@@ -326,7 +336,8 @@ class WarpierWheel(QWidget):
         near the rim on an extreme drag, not the whole wheel rescaling
         around it."""
         H, C = build_mesh_grid(self._max_boundary)
-        H2, C2 = cw.warp_hue_chroma(H, C, self._points, self._wake, self._dropoff)
+        H2, C2 = cw.warp_hue_chroma(H, C, self._points, self._wake, self._dropoff,
+                                     self._chroma_wake, self._chroma_dropoff)
         return H2, C2
 
     def _point_pixel_pos(self, point, rect):

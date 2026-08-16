@@ -16,9 +16,10 @@ import gpu_color_warper_shader as gcw
 import gpu_shader_prototype as gsp
 
 
-def _set_uniforms(points, wake, dropoff):
+def _set_uniforms(points, wake, dropoff, chroma_wake=cw.DEFAULT_CHROMA_WAKE, chroma_dropoff=cw.DEFAULT_CHROMA_DROPOFF):
     return functools.partial(
-        gcw.set_color_warper_uniforms, gl, points=points, wake=wake, dropoff=dropoff)
+        gcw.set_color_warper_uniforms, gl, points=points, wake=wake, dropoff=dropoff,
+        chroma_wake=chroma_wake, chroma_dropoff=chroma_dropoff)
 
 
 def _sample_identity_points():
@@ -92,6 +93,35 @@ def test_gpu_render_matches_cpu_for_an_already_linear_working_space():
     print(f"gpu_color_warper_shader: GPU render matches CPU for an "
           f"already-linear working space (ACEScg), "
           f"max|delta|={delta.max():.6f} -- OK")
+
+
+def test_gpu_render_matches_cpu_with_a_tightened_chroma_wake():
+    """The chroma-falloff axis specifically (per Tom's own 'whole spoke'
+    repro) -- a point near center with a TIGHT chroma_wake should leave
+    far-chroma pixels alone on the GPU exactly as it does on the CPU."""
+    _app, context, surface = gsp._make_offscreen_gl_context()
+    cache = gcw.ColorWarperGpuCache()
+    entry = cache.get_entry(aces_drt.DEFAULT_CONFIG_NAME, "ACEScct")
+
+    rng = np.random.default_rng(4)
+    test_image = rng.uniform(0.05, 0.95, size=(6, 10, 3)).astype(np.float32)
+    points = [{"h0": 35.0, "c0": 0.05, "h": 185.0, "c": 0.05}]
+    wake, dropoff = 20.0, 0.0
+    chroma_wake, chroma_dropoff = 0.05, 0.3
+
+    gpu_result = gsp.render_program_on_gpu(
+        entry.program, test_image,
+        set_uniforms=_set_uniforms(points, wake, dropoff, chroma_wake, chroma_dropoff))
+    cpu_result = cw.apply_color_warper_in_working_space(
+        test_image.astype(np.float64), "ACEScct", points, wake=wake, dropoff=dropoff,
+        chroma_wake=chroma_wake, chroma_dropoff=chroma_dropoff)
+
+    delta = np.abs(gpu_result.astype(np.float64) - cpu_result)
+    cache.clear()
+    context.doneCurrent()
+    assert delta.max() < 1e-2, delta.max()
+    print(f"gpu_color_warper_shader: GPU render matches CPU for a "
+          f"tightened chroma_wake, max|delta|={delta.max():.6f} -- OK")
 
 
 def test_identity_points_is_an_exact_noop_on_the_gpu():
@@ -170,6 +200,7 @@ if __name__ == "__main__":
     test_is_color_warper_gpu_eligible_false_for_a_bogus_working_space()
     test_gpu_render_matches_cpu_for_a_log_working_space()
     test_gpu_render_matches_cpu_for_an_already_linear_working_space()
+    test_gpu_render_matches_cpu_with_a_tightened_chroma_wake()
     test_identity_points_is_an_exact_noop_on_the_gpu()
     test_no_points_is_an_exact_noop_on_the_gpu()
     test_cache_reuses_the_same_entry_for_the_same_fingerprint()

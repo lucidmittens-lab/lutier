@@ -51,6 +51,8 @@ _UNIFORM_POINT_ANCHOR = "uCwPointAnchor"
 _UNIFORM_POINT_TARGET = "uCwPointTarget"
 _UNIFORM_WAKE = "uCwWake"
 _UNIFORM_DROPOFF = "uCwDropoff"
+_UNIFORM_CHROMA_WAKE = "uCwChromaWake"
+_UNIFORM_CHROMA_DROPOFF = "uCwChromaDropoff"
 
 # Ported line-for-line from color_warper.py's own linear_srgb_to_oklab/
 # oklab_to_linear_srgb/oklab_to_oklch/oklch_to_oklab/falloff_weight/
@@ -105,6 +107,8 @@ uniform vec2 {_UNIFORM_POINT_ANCHOR}[{MAX_POINTS}];
 uniform vec2 {_UNIFORM_POINT_TARGET}[{MAX_POINTS}];
 uniform float {_UNIFORM_WAKE};
 uniform float {_UNIFORM_DROPOFF};
+uniform float {_UNIFORM_CHROMA_WAKE};
+uniform float {_UNIFORM_CHROMA_DROPOFF};
 
 vec3 cwWarp(vec3 linearRgb) {{
     vec3 lab = cwLinearToOklab(linearRgb);
@@ -120,7 +124,14 @@ vec3 cwWarp(vec3 linearRgb) {{
         float h0 = {_UNIFORM_POINT_ANCHOR}[i].x;
         float c0 = {_UNIFORM_POINT_ANCHOR}[i].y;
         float dd = cwAngularDelta(h0, hue);
-        float w = cwFalloffWeight(dd, {_UNIFORM_WAKE}, {_UNIFORM_DROPOFF});
+        // Weight is the PRODUCT of two independent falloff_weight calls
+        // -- hue-angular distance AND chroma distance from this point's
+        // own anchor chroma -- see color_warper.warp_hue_chroma's own
+        // docstring for why a hue-only falloff let a point dropped
+        // anywhere on a hue's own radial spoke pull the ENTIRE spoke.
+        float hueW = cwFalloffWeight(dd, {_UNIFORM_WAKE}, {_UNIFORM_DROPOFF});
+        float chromaW = cwFalloffWeight(chroma - c0, {_UNIFORM_CHROMA_WAKE}, {_UNIFORM_CHROMA_DROPOFF});
+        float w = hueW * chromaW;
         float hueDelta = cwAngularDelta(h0, {_UNIFORM_POINT_TARGET}[i].x);
         float cScale = c0 > 1e-6 ? ({_UNIFORM_POINT_TARGET}[i].y / c0) : 1.0;
         weightSum += w;
@@ -250,15 +261,19 @@ class ColorWarperGpuCache:
         self._entries.clear()
 
 
-def set_color_warper_uniforms(gl_module, program, points, wake, dropoff, opacity=1.0):
-    """Pushes this stage's actual point/wake/dropoff values onto whichever
-    program render_stage_pass has already made current -- takes `gl_module`
-    as a parameter (not this module's own top-level `gl` import) so this
-    stays callable via functools.partial the same way gpu_cdl_shader.
-    set_cdl_uniforms is, from a caller that already has its own `gl`
-    reference. Point arrays beyond len(points) are left at whatever the
-    driver defaults an unset uniform array slot to (never read anyway,
-    since the shader's own loop breaks at uPointCount)."""
+def set_color_warper_uniforms(gl_module, program, points, wake, dropoff,
+                               chroma_wake=color_warper.DEFAULT_CHROMA_WAKE,
+                               chroma_dropoff=color_warper.DEFAULT_CHROMA_DROPOFF,
+                               opacity=1.0):
+    """Pushes this stage's actual point/wake/dropoff/chroma_wake/
+    chroma_dropoff values onto whichever program render_stage_pass has
+    already made current -- takes `gl_module` as a parameter (not this
+    module's own top-level `gl` import) so this stays callable via
+    functools.partial the same way gpu_cdl_shader.set_cdl_uniforms is,
+    from a caller that already has its own `gl` reference. Point arrays
+    beyond len(points) are left at whatever the driver defaults an unset
+    uniform array slot to (never read anyway, since the shader's own loop
+    breaks at uPointCount)."""
     count = min(len(points), MAX_POINTS)
     anchor_flat = np.asarray(
         [v for p in points[:count] for v in (p["h0"], p["c0"])], dtype=np.float32)
@@ -273,4 +288,6 @@ def set_color_warper_uniforms(gl_module, program, points, wake, dropoff, opacity
             gl_module.glGetUniformLocation(program, _UNIFORM_POINT_TARGET), count, target_flat)
     gl_module.glUniform1f(gl_module.glGetUniformLocation(program, _UNIFORM_WAKE), float(wake))
     gl_module.glUniform1f(gl_module.glGetUniformLocation(program, _UNIFORM_DROPOFF), float(dropoff))
+    gl_module.glUniform1f(gl_module.glGetUniformLocation(program, _UNIFORM_CHROMA_WAKE), float(chroma_wake))
+    gl_module.glUniform1f(gl_module.glGetUniformLocation(program, _UNIFORM_CHROMA_DROPOFF), float(chroma_dropoff))
     gl_module.glUniform1f(gl_module.glGetUniformLocation(program, "uStageOpacity"), float(opacity))

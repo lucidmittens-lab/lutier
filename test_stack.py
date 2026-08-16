@@ -277,14 +277,18 @@ def test_color_warper_stage_matches_direct_apply():
     size = 9
     points = [{"h0": 35.0, "c0": 0.15, "h": 55.0, "c": 0.22}]
     wake, dropoff = 40.0, 0.2
+    chroma_wake, chroma_dropoff = 0.08, 0.5
 
     stack = st.Stack(size=size)
-    stack.add_stage(st.make_color_warper_stage(points=points, wake=wake, dropoff=dropoff))
+    stack.add_stage(st.make_color_warper_stage(
+        points=points, wake=wake, dropoff=dropoff,
+        chroma_wake=chroma_wake, chroma_dropoff=chroma_dropoff))
     baked = st.bake_stack_to_lut3d(stack)
 
     identity_grid = colour.LUT3D(size=size).table
     expected = color_warper.apply_color_warper_in_working_space(
-        identity_grid, color_warper.DEFAULT_WORKING_COLOURSPACE, points, wake=wake, dropoff=dropoff)
+        identity_grid, color_warper.DEFAULT_WORKING_COLOURSPACE, points, wake=wake, dropoff=dropoff,
+        chroma_wake=chroma_wake, chroma_dropoff=chroma_dropoff)
     assert np.allclose(baked.table, expected, atol=1e-9)
     print("bake_stack_to_lut3d: single 'color_warper' stage matches "
           "color_warper.apply_color_warper_in_working_space directly on the identity grid -- OK")

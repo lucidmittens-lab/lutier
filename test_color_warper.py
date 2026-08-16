@@ -121,6 +121,46 @@ def test_warp_hue_chroma_far_outside_wake_is_unaffected():
     print("warp_hue_chroma: a hue far outside the wake radius is left alone -- OK")
 
 
+def test_warp_hue_chroma_default_chroma_wake_still_pulls_the_whole_spoke():
+    """Documents TODAY's default behavior (per Tom's own repro: "if i
+    move a point on a given hue angle, one half way from center... it
+    shifts that whole angle there, meaning all points along the line from
+    center to the edge") -- with chroma_wake left at its wide-open
+    default, a point dropped near center (c0=0.05) still strongly affects
+    a pixel at the SAME hue but far out in chroma (C=0.35), because the
+    old falloff never measured chroma distance at all. This is the
+    documented, deliberate no-op default (see DEFAULT_CHROMA_WAKE's own
+    comment) -- the NEXT test proves narrowing chroma_wake actually fixes
+    it."""
+    points = [{"h0": 35.0, "c0": 0.05, "h": 185.0, "c": 0.05}]  # +150 deg drag, near center
+    H = np.array([35.0, 35.0])
+    C = np.array([0.05, 0.35])  # at the point's own anchor chroma, and far out at the rim
+    H_out, _ = cw.warp_hue_chroma(H, C, points, wake=20.0, dropoff=0.0)
+    deltas = ((H_out - H + 180.0) % 360.0) - 180.0
+    assert deltas[1] > 100.0, "with the default wide-open chroma_wake, the far-chroma pixel still gets pulled almost the full delta"
+    print("warp_hue_chroma: default chroma_wake reproduces the 'whole "
+          "spoke' behavior exactly as reported -- OK")
+
+
+def test_warp_hue_chroma_tight_chroma_wake_fixes_the_whole_spoke_bug():
+    """The actual fix: narrowing chroma_wake makes the SAME point from
+    the test above leave the far-chroma pixel essentially untouched,
+    while a pixel at the point's own anchor chroma is still fully
+    affected -- proving the new axis genuinely gates by how far a
+    pixel's OWN chroma sits from where the point was dropped, independent
+    of the hue axis (which stays fully satisfied for both pixels here)."""
+    points = [{"h0": 35.0, "c0": 0.05, "h": 185.0, "c": 0.05}]
+    H = np.array([35.0, 35.0])
+    C = np.array([0.05, 0.35])
+    H_out, _ = cw.warp_hue_chroma(H, C, points, wake=20.0, dropoff=0.0,
+                                   chroma_wake=0.05, chroma_dropoff=0.3)
+    deltas = ((H_out - H + 180.0) % 360.0) - 180.0
+    assert abs(deltas[0] - 150.0) < 1e-6, "at the point's own anchor chroma, the full delta still applies"
+    assert abs(deltas[1]) < 1.0, "far out in chroma, a tight chroma_wake leaves the pixel essentially untouched"
+    print("warp_hue_chroma: a tight chroma_wake stops a point from "
+          "pulling its own entire radial spoke -- OK")
+
+
 def test_warp_hue_chroma_single_point_does_not_rotate_the_whole_circle():
     """Regression test for a real bug (per Tom: "the whole graph will
     spin when i make and move a custom point"): with exactly ONE active
@@ -396,6 +436,8 @@ if __name__ == "__main__":
     test_warp_hue_chroma_exact_at_a_points_own_anchor()
     test_warp_hue_chroma_no_points_is_noop()
     test_warp_hue_chroma_far_outside_wake_is_unaffected()
+    test_warp_hue_chroma_default_chroma_wake_still_pulls_the_whole_spoke()
+    test_warp_hue_chroma_tight_chroma_wake_fixes_the_whole_spoke_bug()
     test_warp_hue_chroma_single_point_does_not_rotate_the_whole_circle()
     test_points_are_identity()
     test_apply_no_points_is_exact_noop()

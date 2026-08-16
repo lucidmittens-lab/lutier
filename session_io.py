@@ -400,6 +400,8 @@ def stage_to_session_dict(stage):
         entry["points"] = [dict(p) for p in stage.params.get("points") or []]
         entry["wake"] = stage.params.get("wake", color_warper.DEFAULT_WAKE)
         entry["dropoff"] = stage.params.get("dropoff", color_warper.DEFAULT_DROPOFF)
+        entry["chroma_wake"] = stage.params.get("chroma_wake", color_warper.DEFAULT_CHROMA_WAKE)
+        entry["chroma_dropoff"] = stage.params.get("chroma_dropoff", color_warper.DEFAULT_CHROMA_DROPOFF)
     elif stage.kind == "keyer":
         entry["working_colourspace"] = stage.params.get("working_colourspace", keyer.DEFAULT_WORKING_COLOURSPACE)
         entry["hue_center"] = stage.params.get("hue_center", keyer.DEFAULT_HUE_CENTER)
@@ -620,6 +622,8 @@ def stage_from_session_dict(entry):
             points=entry.get("points"),
             wake=entry.get("wake", color_warper.DEFAULT_WAKE),
             dropoff=entry.get("dropoff", color_warper.DEFAULT_DROPOFF),
+            chroma_wake=entry.get("chroma_wake", color_warper.DEFAULT_CHROMA_WAKE),
+            chroma_dropoff=entry.get("chroma_dropoff", color_warper.DEFAULT_CHROMA_DROPOFF),
             label=label,
             enabled=entry.get("enabled", True),
             opacity=entry.get("opacity", 1.0),

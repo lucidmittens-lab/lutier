@@ -353,6 +353,7 @@ def test_color_warper_stage_round_trips():
     ]
     stage = st.make_color_warper_stage(
         working_colourspace="ACEScg", points=points, wake=42.0, dropoff=0.4,
+        chroma_wake=0.08, chroma_dropoff=0.6,
         label="My Warp", opacity=0.7)
     stack = st.Stack(stages=[stage])
 
@@ -366,6 +367,8 @@ def test_color_warper_stage_round_trips():
     assert r.params["working_colourspace"] == "ACEScg"
     assert r.params["wake"] == 42.0
     assert r.params["dropoff"] == 0.4
+    assert r.params["chroma_wake"] == 0.08
+    assert r.params["chroma_dropoff"] == 0.6
     assert r.params["points"] == points
 
     original_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=stack.stages))
