@@ -1418,6 +1418,74 @@ def test_stage_cache_propagates_matte_across_a_block_boundary():
           "reused (not re-run) on a later, unrelated edit -- OK")
 
 
+# --- segment_mask stage (segmentation-groundwork second matte-producer) ---
+
+def test_segment_mask_stage_is_identity_passthrough_for_the_image():
+    image = _half_red_half_blue()
+    stage = st.make_segment_mask_stage(points=[{"x": 0.25, "y": 0.5}])
+    stack = st.Stack()
+    stack.add_stage(stage)
+    result = st.apply_stack_to_image_array(stack, image)
+    assert np.allclose(result, image, atol=1e-9)
+    print("segment_mask stage: never grades the image itself, regardless "
+          "of its own seed points -- OK")
+
+
+def test_matte_letters_for_shares_one_sequence_across_both_matte_kinds():
+    """A keyer and a segment_mask interleaved in the stack share ONE
+    letter sequence (A, B, C...) in stack order, not separate per-kind
+    sequences -- what produced a matte doesn't matter to how it's
+    referenced downstream."""
+    k1 = st.make_keyer_stage()
+    seg = st.make_segment_mask_stage()
+    k2 = st.make_keyer_stage()
+    letters = st.matte_letters_for([k1, seg, k2])
+    assert letters == {k1.id: "A", seg.id: "B", k2.id: "C"}
+    print("matte_letters_for: 'keyer' and 'segment_mask' share one "
+          "interleaved letter sequence -- OK")
+
+
+def test_matte_gates_a_downstream_stage_per_pixel_via_segment_mask():
+    image = _half_red_half_blue()
+    seg = st.make_segment_mask_stage(points=[{"x": 0.25, "y": 0.5}], tolerance=0.15)
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer.params["matte_source_id"] = seg.id
+
+    stack = st.Stack()
+    stack.add_stage(seg)
+    stack.add_stage(consumer)
+    result = st.apply_stack_to_image_array(stack, image)
+
+    red_half = result[:, :2]
+    blue_half = result[:, 2:]
+    assert np.all(red_half > image[:, :2] + 0.1), "the seeded (red) half should be brightened"
+    assert np.allclose(blue_half, image[:, 2:], atol=1e-6), \
+        "the unseeded (blue) half should be untouched"
+    print("matte_source_id: a downstream stage's opacity is gated per "
+          "pixel by an upstream segment_mask's matte -- OK")
+
+
+def test_segment_mask_matte_amount_is_scaled_by_its_own_opacity():
+    image = _half_red_half_blue()
+    seg_full = st.make_segment_mask_stage(points=[{"x": 0.25, "y": 0.5}], tolerance=0.15, opacity=1.0)
+    seg_half = st.make_segment_mask_stage(points=[{"x": 0.25, "y": 0.5}], tolerance=0.15, opacity=0.5)
+    consumer_full = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer_full.params["matte_source_id"] = seg_full.id
+    consumer_half = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer_half.params["matte_source_id"] = seg_half.id
+
+    stack_full = st.Stack(stages=[seg_full, consumer_full])
+    stack_half = st.Stack(stages=[seg_half, consumer_half])
+    result_full = st.apply_stack_to_image_array(stack_full, image)
+    result_half = st.apply_stack_to_image_array(stack_half, image)
+    delta_full = result_full[:, :2] - image[:, :2]
+    delta_half = result_half[:, :2] - image[:, :2]
+    assert np.all(delta_half > 1e-6)
+    assert np.all(delta_half < delta_full - 1e-6)
+    print("segment_mask opacity is repurposed as \"matte amount\" too, "
+          "same as keyer's own -- OK")
+
+
 if __name__ == "__main__":
     test_stage_rejects_unknown_kind()
     test_make_lut_stage_retarget_requires_both_or_neither()
@@ -1490,5 +1558,9 @@ if __name__ == "__main__":
     test_matte_amount_is_scaled_by_the_keyers_own_opacity()
     test_matte_gating_works_inside_a_fork_branch_and_after_the_merge()
     test_stage_cache_propagates_matte_across_a_block_boundary()
+    test_segment_mask_stage_is_identity_passthrough_for_the_image()
+    test_matte_letters_for_shares_one_sequence_across_both_matte_kinds()
+    test_matte_gates_a_downstream_stage_per_pixel_via_segment_mask()
+    test_segment_mask_matte_amount_is_scaled_by_its_own_opacity()
     print()
     print("All stack tests passed.")

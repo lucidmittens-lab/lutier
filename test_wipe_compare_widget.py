@@ -17,7 +17,7 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication
 
-from wipe_compare_widget import MAX_ZOOM, MIN_ZOOM, WipeCompareWidget
+from wipe_compare_widget import MAX_ZOOM, MIN_ZOOM, WipeCompareWidget, widget_pos_to_image_fraction
 
 
 def _app():
@@ -92,6 +92,49 @@ def test_zoom_scales_the_image_rect_relative_to_fit():
     assert abs(rect.height() - 400) < 1e-6
     print("WipeCompareWidget._image_rect: zoom multiplies the base fit "
           "scale -- OK")
+
+
+# --- widget_pos_to_image_fraction (segmentation-groundwork utility) -------
+
+def test_widget_pos_to_image_fraction_maps_corners_and_center():
+    w = _widget()  # image_rect = (left=0, top=50, width=400, height=200)
+    rect = w._image_rect()
+    assert widget_pos_to_image_fraction(QPointF(0, 50), rect) == (0.0, 0.0)
+    assert widget_pos_to_image_fraction(QPointF(400, 250), rect) == (1.0, 1.0)
+    cx, cy = widget_pos_to_image_fraction(QPointF(200, 150), rect)
+    assert abs(cx - 0.5) < 1e-9 and abs(cy - 0.5) < 1e-9
+    print("widget_pos_to_image_fraction: maps the image rect's own "
+          "corners/center to (0,0)/(1,1)/(0.5,0.5) -- OK")
+
+
+def test_widget_pos_to_image_fraction_returns_none_outside_the_image_rect():
+    w = _widget()
+    rect = w._image_rect()
+    # y=10 is above top=50 -- inside the letterboxed margin, not the image.
+    assert widget_pos_to_image_fraction(QPointF(200, 10), rect) is None
+    print("widget_pos_to_image_fraction: a click in the letterboxed "
+          "margin (outside the image itself) returns None -- OK")
+
+
+def test_widget_pos_to_image_fraction_none_image_rect_returns_none():
+    assert widget_pos_to_image_fraction(QPointF(10, 10), None) is None
+    print("widget_pos_to_image_fraction: no image loaded (image_rect is "
+          "None) returns None rather than raising -- OK")
+
+
+def test_widget_pos_to_image_fraction_is_stable_under_zoom():
+    """The SAME relative position on the image should map to the SAME
+    fraction regardless of zoom level -- confirms this is a genuine
+    inverse of _image_rect's own transform, not coincidentally correct
+    only at zoom=1."""
+    w = _widget()
+    w._zoom = 2.5
+    rect = w._image_rect()
+    quarter_point = QPointF(rect.left() + rect.width() * 0.25, rect.top() + rect.height() * 0.75)
+    frac = widget_pos_to_image_fraction(quarter_point, rect)
+    assert abs(frac[0] - 0.25) < 1e-9 and abs(frac[1] - 0.75) < 1e-9
+    print("widget_pos_to_image_fraction: stays correct at a non-default "
+          "zoom level -- OK")
 
 
 def test_canvas_aspect_ratio_letterboxes_a_square_canvas_into_a_wider_widget():
@@ -382,6 +425,10 @@ def test_left_drag_still_moves_the_wipe_divider_not_pan():
 if __name__ == "__main__":
     test_default_zoom_matches_original_fit_behavior()
     test_zoom_scales_the_image_rect_relative_to_fit()
+    test_widget_pos_to_image_fraction_maps_corners_and_center()
+    test_widget_pos_to_image_fraction_returns_none_outside_the_image_rect()
+    test_widget_pos_to_image_fraction_none_image_rect_returns_none()
+    test_widget_pos_to_image_fraction_is_stable_under_zoom()
     test_canvas_aspect_ratio_letterboxes_a_square_canvas_into_a_wider_widget()
     test_canvas_aspect_ratio_pillarboxes_a_wider_canvas_into_the_widget()
     test_canvas_rect_matches_the_box_image_rect_nests_inside()

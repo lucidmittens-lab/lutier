@@ -146,6 +146,38 @@ def _stack_fingerprint_or_none(stack):
     return tuple(_stage_fingerprint(s) for s in stack.stages)
 
 
+def widget_pos_to_image_fraction(pos, image_rect):
+    """Inverse of WipeCompareWidget._image_rect()'s own affine transform
+    -- maps a WIDGET-space point (e.g. a mouse click, via event.position())
+    back to IMAGE-relative fractional coordinates (x_frac, y_frac), each
+    in [0,1], or None if `image_rect` is None (no image loaded yet, see
+    _image_rect's own docstring) or `pos` falls outside it entirely (a
+    click landed in the letterboxed margin, not on the image itself).
+
+    GROUNDWORK for click-driven interaction (per Tom) -- the new
+    "segment_mask" stage kind (segmentation.py, stack.py's
+    make_segment_mask_stage) needs exactly this mapping to turn a Viewer
+    click into a point on the actual image, in the same resolution-
+    independent [0,1] fractional units its own stage params already use
+    (see segmentation.py's own docstring) rather than a raw pixel index
+    tied to whatever resolution happened to be loaded.
+    Deliberately NOT wired into any mouse handler yet -- no stage kind
+    currently consumes points this way, and wiring live click handling
+    into this widget's own hand-rolled drag/zoom/pan/wipe mouse logic is
+    real new interaction-mode territory that needs its own dedicated
+    pass (and Tom's own eyes on it -- this widget can't be visually
+    verified without a real display). Pure and Qt-widget-free (takes
+    already-extracted QPointF/QRectF values, not `self`), so it's
+    directly testable without constructing a real WipeCompareWidget."""
+    if image_rect is None or image_rect.width() <= 0 or image_rect.height() <= 0:
+        return None
+    x_frac = (pos.x() - image_rect.left()) / image_rect.width()
+    y_frac = (pos.y() - image_rect.top()) / image_rect.height()
+    if not (0.0 <= x_frac <= 1.0 and 0.0 <= y_frac <= 1.0):
+        return None
+    return x_frac, y_frac
+
+
 class _SideState:
     """GPU state for one side (before or after) of the wipe -- both
     support optional stack grading (see set_before/set_after) since

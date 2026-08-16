@@ -174,10 +174,22 @@ import grading_primary
 import grading_rgb_curve
 import grading_tone
 import keyer
+import segmentation
 
 STAGE_KINDS = ("lut", "printer_lights", "aces_drt", "custom_drt", "cdl", "colorspace",
                "grading_primary", "exposure_contrast", "grading_tone",
-               "grading_rgb_curve", "color_warper", "keyer", "fork_split", "fork_merge")
+               "grading_rgb_curve", "color_warper", "keyer", "segment_mask",
+               "fork_split", "fork_merge")
+
+# Every stage kind that PRODUCES a matte rather than grading the image --
+# see this module's docstring, "MATTE CHANNELS", matte_letters_for, and
+# _maybe_populate_matte. Both currently identity-passthrough their own
+# RGB output entirely (see _apply_stage_to_array) and are deliberately
+# left out of gpu_stack_renderer.GPU_ELIGIBLE_KINDS, so any stack using
+# either one already falls back to this module's own CPU path in full
+# via that module's existing all-or-nothing eligibility rule -- no GPU
+# work needed for either to stay correct.
+MATTE_PRODUCING_KINDS = frozenset({"keyer", "segment_mask"})
 
 _id_counter = itertools.count(1)
 
@@ -536,6 +548,37 @@ def make_keyer_stage(hue_center=keyer.DEFAULT_HUE_CENTER, hue_width=keyer.DEFAUL
     return Stage("keyer", label or "Keyer", params, enabled, opacity)
 
 
+def make_segment_mask_stage(points=None, tolerance=segmentation.DEFAULT_TOLERANCE,
+                             feather=segmentation.DEFAULT_FEATHER,
+                             invert=segmentation.DEFAULT_INVERT,
+                             label=None, enabled=True, opacity=1.0):
+    """A stage that produces a MATTE (see this module's docstring, "MATTE
+    CHANNELS") via segmentation.compute_mask_from_points' seeded region-
+    growing -- see that module's own docstring for why this is classical-
+    CV GROUNDWORK (per Tom) rather than a real Segment-Anything model
+    yet. Like "keyer", this stage's own RGB output is always an exact
+    identity passthrough (see _apply_stage_to_array's "segment_mask"
+    branch), so `opacity` is repurposed as "matte amount" the same way
+    make_keyer_stage's own docstring explains.
+
+    `points` defaults to an empty list (no seeded point -- same "opt-in,
+    no-op until the user actually does something" convention
+    make_color_warper_stage's own empty points list establishes),
+    populated by clicking the Viewer once that interaction is actually
+    wired up (see wipe_compare_widget.widget_pos_to_image_fraction --
+    added as groundwork for exactly this, not yet connected to any
+    mouse handler, and this stage kind is deliberately not yet exposed
+    in stack_panel.py's own Add-stage menu either, for the same reason:
+    a stage with no way to populate its own points from the UI yet
+    would just be a confusing dead end to discover there)."""
+    resolved_points = [dict(p) for p in points] if points is not None else []
+    params = {
+        "points": resolved_points,
+        "tolerance": float(tolerance), "feather": float(feather), "invert": bool(invert),
+    }
+    return Stage("segment_mask", label or "Segment Mask", params, enabled, opacity)
+
+
 def make_colorspace_stage(src, dst, config_name=None, label=None, enabled=True, opacity=1.0):
     """A stage that applies a plain (non-DRT) color space conversion, same
     math as colorspace_convert.apply_colorspace_conversion -- see that
@@ -715,6 +758,11 @@ def _apply_stage_to_array(stage, array):
         # this identity passthrough is handed.
         return array
 
+    if stage.kind == "segment_mask":
+        # Same identity-passthrough contract as "keyer" just above --
+        # see make_segment_mask_stage.
+        return array
+
     if stage.kind in ("fork_split", "fork_merge"):  # pragma: no cover -- see docstring above
         raise AssertionError(
             f"{stage.kind} stages are handled structurally by _run_stages "
@@ -724,20 +772,25 @@ def _apply_stage_to_array(stage, array):
 
 
 def matte_letters_for(stages):
-    """Maps each "keyer"-kind stage's own Stage.id to its current display
-    letter (A, B, C... then, past 26, Tom's own doubling scheme -- AA,
-    BB, CC... rather than spreadsheet-style AB/AC) -- computed FRESH by
-    scanning `stages` in order, never stored (see this module's
-    docstring, "MATTE CHANNELS", on why letters are display-only). Does
-    NOT skip disabled keyers -- a temporarily-disabled keyer keeps its
-    own stable letter rather than every subsequent letter shifting down
+    """Maps each MATTE_PRODUCING_KINDS stage's own Stage.id to its
+    current display letter (A, B, C... then, past 26, Tom's own doubling
+    scheme -- AA, BB, CC... rather than spreadsheet-style AB/AC) --
+    computed FRESH by scanning `stages` in order, never stored (see this
+    module's docstring, "MATTE CHANNELS", on why letters are display-
+    only). Every matte-producing kind shares ONE letter sequence (a
+    "keyer" and a "segment_mask" interleaved in the stack still just get
+    A, B, C... in stack order, not separate per-kind sequences) since
+    they're interchangeable from a consuming stage's own dropdown --
+    what produced the matte doesn't matter to how it's referenced. Does
+    NOT skip disabled stages -- a temporarily-disabled one keeps its own
+    stable letter rather than every subsequent letter shifting down
     while it's toggled off; a downstream stage still referencing it just
     gets no gating effect at render time (see _stage_blend_factor), same
     as any other unresolved matte_source_id."""
     letters = {}
     ordinal = 0
     for stage in stages:
-        if stage.kind != "keyer":
+        if stage.kind not in MATTE_PRODUCING_KINDS:
             continue
         letters[stage.id] = _ordinal_to_letter(ordinal)
         ordinal += 1
@@ -827,18 +880,38 @@ def _blend_two(a, b, blend):
     return a * (1.0 - blend) + b * blend
 
 
+def _compute_raw_matte(stage, running):
+    """Dispatches to whichever matte-producing kind's own compute
+    function `stage.kind` is (see MATTE_PRODUCING_KINDS) -- the one
+    place that needs to know both kinds' own function signatures, so
+    _maybe_populate_matte itself stays kind-agnostic."""
+    if stage.kind == "keyer":
+        return keyer.compute_matte(running, stage.params)
+    if stage.kind == "segment_mask":
+        p = stage.params
+        return segmentation.compute_mask_from_points(
+            running, p.get("points") or [],
+            tolerance=p.get("tolerance", segmentation.DEFAULT_TOLERANCE),
+            feather=p.get("feather", segmentation.DEFAULT_FEATHER),
+            invert=p.get("invert", segmentation.DEFAULT_INVERT),
+        )
+    raise AssertionError(  # pragma: no cover -- _maybe_populate_matte already checked
+        f"{stage.kind!r} is not in MATTE_PRODUCING_KINDS")
+
+
 def _maybe_populate_matte(stage, running, mattes):
-    """If `stage` is an enabled "keyer", computes its matte from
-    `running` AS IT STANDS RIGHT BEFORE this stage and stores it into
-    `mattes[stage.id]` (see this module's docstring, "MATTE CHANNELS") --
-    called at every point _run_stages is about to apply a stage
-    (top-level and inside either fork branch), so a keyer inside a fork
-    branch still populates the SAME shared `mattes` dict (a deliberate,
-    documented simplification -- see the docstring). A disabled keyer
+    """If `stage` is an enabled matte-producing kind (see
+    MATTE_PRODUCING_KINDS), computes its matte from `running` AS IT
+    STANDS RIGHT BEFORE this stage and stores it into `mattes[stage.id]`
+    (see this module's docstring, "MATTE CHANNELS") -- called at every
+    point _run_stages is about to apply a stage (top-level and inside
+    either fork branch), so a matte-producing stage inside a fork branch
+    still populates the SAME shared `mattes` dict (a deliberate,
+    documented simplification -- see the docstring). A disabled stage
     populates nothing, so any downstream reference to it resolves to "no
-    matte," same as an entirely-removed keyer would."""
-    if stage.kind == "keyer" and stage.enabled:
-        mattes[stage.id] = keyer.compute_matte(running, stage.params) * stage.opacity
+    matte," same as an entirely-removed one would."""
+    if stage.kind in MATTE_PRODUCING_KINDS and stage.enabled:
+        mattes[stage.id] = _compute_raw_matte(stage, running) * stage.opacity
 
 
 def _run_stages(stages, running, mattes=None):
