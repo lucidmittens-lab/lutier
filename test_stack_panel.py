@@ -26,6 +26,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMainWindow
 
 import stack as st
+import matte_combine as mc
 import color_warper as cw
 import keyer as ky
 from stack_panel import (
@@ -295,6 +296,17 @@ def _panel_with_one_keyer_stage():
     stage = panel.stack.stages[0]
     panel._on_row_clicked(stage.id)
     return panel, stage
+
+
+def _panel_with_two_keyers_and_a_matte_combine():
+    _app()
+    panel = StackPanel()
+    panel._on_add_keyer_clicked()
+    panel._on_add_keyer_clicked()
+    panel._on_add_matte_combine_clicked()
+    k1, k2, combine = panel.stack.stages
+    panel._on_row_clicked(combine.id)
+    return panel, k1, k2, combine
 
 
 def test_cdl_live_edit_updates_the_existing_row_widget_in_place():
@@ -1755,6 +1767,78 @@ def test_matte_combo_options_update_on_reorder():
           "row's own combo selection back to 'None' on refresh -- OK")
 
 
+# --- matte_combine inspector -----------------------------------------
+
+def test_matte_combine_badge_text():
+    assert _stage_kind_badge_text("matte_combine") == "CMB"
+    print("_stage_kind_badge_text('matte_combine') == 'CMB' -- OK")
+
+
+def test_add_matte_combine_starts_at_defaults():
+    panel, k1, k2, combine = _panel_with_two_keyers_and_a_matte_combine()
+    assert combine.kind == "matte_combine"
+    assert combine.params["matte_a_source_id"] is None
+    assert combine.params["matte_b_source_id"] is None
+    assert combine.params["op"] == mc.DEFAULT_OP
+    print("StackPanel: a freshly-added 'matte_combine' stage starts at "
+          "matte_combine.py's own defaults, no inputs selected -- OK")
+
+
+def test_matte_combine_inspector_offers_only_upstream_letters():
+    panel, k1, k2, combine = _panel_with_two_keyers_and_a_matte_combine()
+    a_items = [panel.mc_a_combo.itemText(i) for i in range(panel.mc_a_combo.count())]
+    b_items = [panel.mc_b_combo.itemText(i) for i in range(panel.mc_b_combo.count())]
+    assert a_items == ["None", "A", "B"]
+    assert b_items == ["None", "A", "B"]
+    print("StackPanel Matte Combine inspector: both dropdowns offer "
+          "exactly the two upstream keyers' own letters -- OK")
+
+
+def test_matte_combine_inspector_fields_apply_live():
+    panel, k1, k2, combine = _panel_with_two_keyers_and_a_matte_combine()
+    panel.mc_a_combo.setCurrentIndex(panel.mc_a_combo.findData(k1.id))
+    panel.mc_b_combo.setCurrentIndex(panel.mc_b_combo.findData(k2.id))
+    panel.mc_op_combo.setCurrentIndex(panel.mc_op_combo.findData("subtract"))
+    assert combine.params["matte_a_source_id"] == k1.id
+    assert combine.params["matte_b_source_id"] == k2.id
+    assert combine.params["op"] == "subtract"
+    print("StackPanel Matte Combine inspector: both matte dropdowns and "
+          "the Op combo apply live to the selected stage's params -- OK")
+
+
+def test_matte_combine_inspector_title_shows_its_own_matte_letter():
+    panel, k1, k2, combine = _panel_with_two_keyers_and_a_matte_combine()
+    assert panel.mc_group.title() == "Matte Combine (C)"
+    print("StackPanel Matte Combine inspector: the group title shows "
+          "this stage's own current matte letter -- OK")
+
+
+def test_matte_combine_row_hides_its_own_matte_combo():
+    """Like Keyer, a matte_combine row's own opacity is repurposed as
+    'matte amount' -- it never consumes ANOTHER stage's matte via the
+    per-row dropdown (it has its own dedicated Matte A/B dropdowns
+    instead), so that row-level combo should stay hidden."""
+    panel, k1, k2, combine = _panel_with_two_keyers_and_a_matte_combine()
+    row = panel._stage_row_widgets[combine.id]
+    assert row.matte_combo.isVisible() is False
+    print("_StageRowWidget: a 'matte_combine' row's own matte combo is "
+          "hidden -- OK")
+
+
+def test_matte_combine_refresh_on_select_does_not_corrupt_stored_values():
+    panel, k1, k2, combine = _panel_with_two_keyers_and_a_matte_combine()
+    panel.mc_a_combo.setCurrentIndex(panel.mc_a_combo.findData(k1.id))
+    panel.mc_op_combo.setCurrentIndex(panel.mc_op_combo.findData("difference"))
+
+    panel._on_row_clicked(k1.id)  # switch away
+    panel._on_row_clicked(combine.id)  # and back
+
+    assert combine.params["matte_a_source_id"] == k1.id
+    assert combine.params["op"] == "difference"
+    print("StackPanel Matte Combine inspector: switching away and back "
+          "does not corrupt the stage's stored params -- OK")
+
+
 if __name__ == "__main__":
     test_short_text_that_fits_is_not_elided_and_has_no_tooltip()
     test_long_text_at_narrow_width_is_elided_with_ellipsis_and_gets_a_tooltip()
@@ -1853,5 +1937,12 @@ if __name__ == "__main__":
     test_selecting_a_matte_option_writes_matte_source_id()
     test_matte_combo_never_offers_a_downstream_keyer()
     test_matte_combo_options_update_on_reorder()
+    test_matte_combine_badge_text()
+    test_add_matte_combine_starts_at_defaults()
+    test_matte_combine_inspector_offers_only_upstream_letters()
+    test_matte_combine_inspector_fields_apply_live()
+    test_matte_combine_inspector_title_shows_its_own_matte_letter()
+    test_matte_combine_row_hides_its_own_matte_combo()
+    test_matte_combine_refresh_on_select_does_not_corrupt_stored_values()
     print()
     print("All stack_panel tests passed.")

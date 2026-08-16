@@ -114,12 +114,14 @@ region means -- spoiler: nothing, it's just ignored).
 MATTE CHANNELS -- deliberately OPT-IN (per Tom: "instead of the way
 Baselight does it where usage is mandatory if it's in the stack"), unlike
 STACK FORKING above this involves no new stage-PAIR structure at all: a
-"keyer" stage (keyer.py's own OKLCh qualifier -- the first, and so far only,
-matte-PRODUCING kind) computes an (H,W) matte and never touches the
-running RGB image itself (_apply_stage_to_array's own "keyer" branch is a
-pure identity passthrough); ANY other stage can optionally reference that
-matte by setting `stage.params["matte_source_id"]` to the producing
-keyer's own `Stage.id` (the same id field stages already carry for
+"keyer" stage (keyer.py's own OKLCh qualifier -- the first matte-
+PRODUCING kind; "segment_mask" and "matte_combine" followed the same
+shape, see MATTE_PRODUCING_KINDS) computes an (H,W) matte and never
+touches the running RGB image itself (_apply_stage_to_array's own
+"keyer" branch is a pure identity passthrough); ANY other stage can
+optionally reference that matte by setting
+`stage.params["matte_source_id"]` to the producing stage's own
+`Stage.id` (the same id field stages already carry for
 selection/reorder tracking), which gates that stage's per-stage opacity
 PER PIXEL by the matte's own value instead of the usual flat scalar --
 see _stage_blend_factor. `matte_source_id` absent/None, or resolving to
@@ -147,12 +149,12 @@ Python bookkeeping keyed by stage id, not per-branch image state; the one
 accepted nuance is that the qualifier only ever sampled whichever
 branch's own image actually produced it).
 
-GPU note: "keyer" is deliberately left out of
+GPU note: every MATTE_PRODUCING_KINDS kind is deliberately left out of
 gpu_stack_renderer.GPU_ELIGIBLE_KINDS, so any stack containing an enabled
-keyer stage already falls back to this module's own CPU path in full
-(the same all-or-nothing rule that module already applies to every other
-GPU-ineligible kind/condition) -- matte gating therefore never needs (and
-doesn't have) a GPU implementation to stay correct.
+matte-producing stage already falls back to this module's own CPU path
+in full (the same all-or-nothing rule that module already applies to
+every other GPU-ineligible kind/condition) -- matte gating therefore
+never needs (and doesn't have) a GPU implementation to stay correct.
 
 Same rule as every other backend module in this app: no PySide6 import
 here, fully testable without a display.
@@ -174,22 +176,25 @@ import grading_primary
 import grading_rgb_curve
 import grading_tone
 import keyer
+import matte_combine
 import segmentation
 
 STAGE_KINDS = ("lut", "printer_lights", "aces_drt", "custom_drt", "cdl", "colorspace",
                "grading_primary", "exposure_contrast", "grading_tone",
-               "grading_rgb_curve", "color_warper", "keyer", "segment_mask",
+               "grading_rgb_curve", "color_warper", "keyer", "segment_mask", "matte_combine",
                "fork_split", "fork_merge")
 
 # Every stage kind that PRODUCES a matte rather than grading the image --
 # see this module's docstring, "MATTE CHANNELS", matte_letters_for, and
-# _maybe_populate_matte. Both currently identity-passthrough their own
-# RGB output entirely (see _apply_stage_to_array) and are deliberately
+# _maybe_populate_matte. All three currently identity-passthrough their
+# own RGB output entirely (see _apply_stage_to_array) and are deliberately
 # left out of gpu_stack_renderer.GPU_ELIGIBLE_KINDS, so any stack using
-# either one already falls back to this module's own CPU path in full
+# any of them already falls back to this module's own CPU path in full
 # via that module's existing all-or-nothing eligibility rule -- no GPU
-# work needed for either to stay correct.
-MATTE_PRODUCING_KINDS = frozenset({"keyer", "segment_mask"})
+# work needed for any of them to stay correct. "matte_combine" is the
+# odd one out: it never reads the image's own RGB at all, only OTHER
+# already-computed mattes (see matte_combine.py's own docstring).
+MATTE_PRODUCING_KINDS = frozenset({"keyer", "segment_mask", "matte_combine"})
 
 _id_counter = itertools.count(1)
 
@@ -590,6 +595,35 @@ def make_segment_mask_stage(points=None, tolerance=segmentation.DEFAULT_TOLERANC
     return Stage("segment_mask", label or "Segment Mask", params, enabled, opacity)
 
 
+def make_matte_combine_stage(matte_a_source_id=None, matte_b_source_id=None,
+                              op=matte_combine.DEFAULT_OP,
+                              label=None, enabled=True, opacity=1.0):
+    """A stage that produces a MATTE (see this module's docstring, "MATTE
+    CHANNELS") by combining TWO already-computed upstream mattes -- see
+    matte_combine.py's own docstring for the op vocabulary and why this
+    kind reads no image RGB at all, only other mattes via `mattes[...]`
+    entries `_run_stages` has already accumulated by this stage's own
+    position (same "unresolved -> gracefully treated as empty" fallback
+    every other `matte_source_id`-style reference in this app already
+    uses -- see _compute_raw_matte's own "matte_combine" branch). Like
+    "keyer"/"segment_mask", this stage's own RGB output is always an
+    exact identity passthrough (see _apply_stage_to_array's "matte_combine"
+    branch), so `opacity` is repurposed as "matte amount" the same way
+    make_keyer_stage's own docstring explains.
+
+    `matte_a_source_id`/`matte_b_source_id` default to None (no seeded
+    reference -- same "opt-in, no-op until the user actually does
+    something" convention every other matte reference in this app
+    starts at); a freshly-added stage with both unresolved combines two
+    empty mattes, which for every op except "union" (0 OR 0 -> still 0)
+    is itself an all-zero (empty) matte -- never an error."""
+    params = {
+        "matte_a_source_id": matte_a_source_id, "matte_b_source_id": matte_b_source_id,
+        "op": op,
+    }
+    return Stage("matte_combine", label or "Matte Combine", params, enabled, opacity)
+
+
 def make_colorspace_stage(src, dst, config_name=None, label=None, enabled=True, opacity=1.0):
     """A stage that applies a plain (non-DRT) color space conversion, same
     math as colorspace_convert.apply_colorspace_conversion -- see that
@@ -776,6 +810,14 @@ def _apply_stage_to_array(stage, array):
         # see make_segment_mask_stage.
         return array
 
+    if stage.kind == "matte_combine":
+        # Same identity-passthrough contract as "keyer"/"segment_mask" --
+        # see make_matte_combine_stage. Never reads `array`'s own values
+        # at all (its own matte comes from OTHER mattes, see
+        # _compute_raw_matte), but still hands the image straight through
+        # unchanged, same as every other matte-producing kind.
+        return array
+
     if stage.kind in ("fork_split", "fork_merge"):  # pragma: no cover -- see docstring above
         raise AssertionError(
             f"{stage.kind} stages are handled structurally by _run_stages "
@@ -893,11 +935,16 @@ def _blend_two(a, b, blend):
     return a * (1.0 - blend) + b * blend
 
 
-def _compute_raw_matte(stage, running):
+def _compute_raw_matte(stage, running, mattes):
     """Dispatches to whichever matte-producing kind's own compute
     function `stage.kind` is (see MATTE_PRODUCING_KINDS) -- the one
-    place that needs to know both kinds' own function signatures, so
-    _maybe_populate_matte itself stays kind-agnostic."""
+    place that needs to know every kind's own function signature, so
+    _maybe_populate_matte itself stays kind-agnostic. `mattes`: the SAME
+    dict[stage_id, (H,W) array] _run_stages has already accumulated by
+    this stage's own position -- unused by "keyer"/"segment_mask" (they
+    read `running`'s own pixel values instead), but "matte_combine"
+    reads ONLY this, never `running`'s values (see matte_combine.py's
+    own docstring)."""
     if stage.kind == "keyer":
         return keyer.compute_matte(running, stage.params)
     if stage.kind == "segment_mask":
@@ -908,23 +955,36 @@ def _compute_raw_matte(stage, running):
             feather=p.get("feather", segmentation.DEFAULT_FEATHER),
             invert=p.get("invert", segmentation.DEFAULT_INVERT),
         )
+    if stage.kind == "matte_combine":
+        p = stage.params
+        shape = running.shape[:2]
+        matte_a = mattes.get(p.get("matte_a_source_id")) if mattes else None
+        matte_b = mattes.get(p.get("matte_b_source_id")) if mattes else None
+        if matte_a is None:
+            matte_a = np.zeros(shape, dtype=np.float64)
+        if matte_b is None:
+            matte_b = np.zeros(shape, dtype=np.float64)
+        return matte_combine.compute_combined_matte(
+            matte_a, matte_b, op=p.get("op", matte_combine.DEFAULT_OP))
     raise AssertionError(  # pragma: no cover -- _maybe_populate_matte already checked
         f"{stage.kind!r} is not in MATTE_PRODUCING_KINDS")
 
 
 def _maybe_populate_matte(stage, running, mattes):
     """If `stage` is an enabled matte-producing kind (see
-    MATTE_PRODUCING_KINDS), computes its matte from `running` AS IT
-    STANDS RIGHT BEFORE this stage and stores it into `mattes[stage.id]`
-    (see this module's docstring, "MATTE CHANNELS") -- called at every
-    point _run_stages is about to apply a stage (top-level and inside
-    either fork branch), so a matte-producing stage inside a fork branch
-    still populates the SAME shared `mattes` dict (a deliberate,
-    documented simplification -- see the docstring). A disabled stage
-    populates nothing, so any downstream reference to it resolves to "no
-    matte," same as an entirely-removed one would."""
+    MATTE_PRODUCING_KINDS), computes its matte -- from `running` AS IT
+    STANDS RIGHT BEFORE this stage for "keyer"/"segment_mask", or from
+    OTHER already-computed entries in `mattes` for "matte_combine" (see
+    _compute_raw_matte) -- and stores it into `mattes[stage.id]` (see
+    this module's docstring, "MATTE CHANNELS"). Called at every point
+    _run_stages is about to apply a stage (top-level and inside either
+    fork branch), so a matte-producing stage inside a fork branch still
+    populates the SAME shared `mattes` dict (a deliberate, documented
+    simplification -- see the docstring). A disabled stage populates
+    nothing, so any downstream reference to it resolves to "no matte,"
+    same as an entirely-removed one would."""
     if stage.kind in MATTE_PRODUCING_KINDS and stage.enabled:
-        mattes[stage.id] = _compute_raw_matte(stage, running) * stage.opacity
+        mattes[stage.id] = _compute_raw_matte(stage, running, mattes) * stage.opacity
 
 
 def _run_stages(stages, running, mattes=None):

@@ -173,6 +173,7 @@ import grading_primary
 import grading_rgb_curve
 import grading_tone
 import keyer
+import matte_combine
 from stack_memory import StackMemory, StackMemoryLibrary, GalleryStill, GalleryStillLibrary
 from cdl_library import CDLEntry, CDLLibrary
 from lut_library import LUTLibraryEntry, LUTLibrary
@@ -412,6 +413,12 @@ def stage_to_session_dict(stage):
         entry["lightness_max"] = stage.params.get("lightness_max", keyer.DEFAULT_LIGHTNESS_MAX)
         entry["softness"] = stage.params.get("softness", keyer.DEFAULT_SOFTNESS)
         entry["invert"] = stage.params.get("invert", keyer.DEFAULT_INVERT)
+    elif stage.kind == "matte_combine":
+        entry["op"] = stage.params.get("op", matte_combine.DEFAULT_OP)
+        # matte_a_source_index/matte_b_source_index are written by
+        # stack_to_session_dict instead (needs the whole stack's own
+        # id_to_index map, same reason matte_source_index lives there --
+        # see that function's own docstring), not here.
     elif stage.kind == "fork_split":
         pass  # no extra fields -- see module docstring, STACK FORKING
     elif stage.kind == "fork_merge":
@@ -442,6 +449,13 @@ def stack_to_session_dict(stack):
     for stage in stack.stages:
         entry = stage_to_session_dict(stage)
         entry["matte_source_index"] = id_to_index.get(stage.params.get("matte_source_id"))
+        if stage.kind == "matte_combine":
+            # Same position-based translation as matte_source_index just
+            # above, for this kind's own TWO input references (see
+            # stage_to_session_dict's own "matte_combine" branch for why
+            # these live here instead).
+            entry["matte_a_source_index"] = id_to_index.get(stage.params.get("matte_a_source_id"))
+            entry["matte_b_source_index"] = id_to_index.get(stage.params.get("matte_b_source_id"))
         entries.append(entry)
     return {
         "size": stack.size,
@@ -643,6 +657,17 @@ def stage_from_session_dict(entry):
             enabled=entry.get("enabled", True),
             opacity=entry.get("opacity", 1.0),
         )
+    elif kind == "matte_combine":
+        stage = st.make_matte_combine_stage(
+            op=entry.get("op", matte_combine.DEFAULT_OP),
+            label=label,
+            enabled=entry.get("enabled", True),
+            opacity=entry.get("opacity", 1.0),
+        )
+        # matte_a_source_id/matte_b_source_id are resolved in stack_from_
+        # session_dict's own second pass (position-based, same as
+        # matte_source_id -- see that function's own docstring), not
+        # here.
     elif kind == "fork_split":
         stage = st.make_fork_split_stage(
             label=label,
@@ -711,11 +736,21 @@ def stack_from_session_dict(data):
         if stage is None:
             continue
         source_index = entry.get("matte_source_index")
-        if source_index is None or not (0 <= source_index < len(reconstructed)):
-            continue
-        source_stage = reconstructed[source_index]
-        if source_stage is not None:
-            stage.params["matte_source_id"] = source_stage.id
+        if source_index is not None and 0 <= source_index < len(reconstructed):
+            source_stage = reconstructed[source_index]
+            if source_stage is not None:
+                stage.params["matte_source_id"] = source_stage.id
+        if stage.kind == "matte_combine":
+            # Same position-based resolution as matte_source_id just
+            # above, for this kind's own TWO input references.
+            for index_key, id_key in (("matte_a_source_index", "matte_a_source_id"),
+                                       ("matte_b_source_index", "matte_b_source_id")):
+                index = entry.get(index_key)
+                if index is None or not (0 <= index < len(reconstructed)):
+                    continue
+                source_stage = reconstructed[index]
+                if source_stage is not None:
+                    stage.params[id_key] = source_stage.id
 
     return stack, warnings
 

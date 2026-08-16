@@ -18,6 +18,8 @@ from printer_lights import bake_printer_lights_on_lut
 import aces_drt
 import cdl
 import color_warper
+import keyer
+import matte_combine
 import colorspace_convert as csc
 import exposure_contrast
 import grading_primary
@@ -1564,6 +1566,138 @@ def test_segment_mask_matte_amount_is_scaled_by_its_own_opacity():
           "same as keyer's own -- OK")
 
 
+# --- matte_combine stage (boolean-style combination of two mattes) -------
+
+def _reddish_keyer():
+    return st.make_keyer_stage(working_colourspace=color_warper.REFERENCE_LINEAR_SPACE,
+                                hue_center=REDDISH_HUE, hue_width=20.0, softness=0.1)
+
+
+def _bluish_keyer():
+    return st.make_keyer_stage(working_colourspace=color_warper.REFERENCE_LINEAR_SPACE,
+                                hue_center=BLUISH_HUE, hue_width=20.0, softness=0.1)
+
+
+def test_matte_combine_stage_is_identity_passthrough_for_the_image():
+    image = _half_red_half_blue()
+    k1, k2 = _reddish_keyer(), _bluish_keyer()
+    combine = st.make_matte_combine_stage(matte_a_source_id=k1.id, matte_b_source_id=k2.id, op="union")
+    stack = st.Stack(stages=[k1, k2, combine])
+    result = st.apply_stack_to_image_array(stack, image)
+    assert np.allclose(result, image, atol=1e-9)
+    print("matte_combine stage: never grades the image itself, regardless "
+          "of its own op/inputs -- OK")
+
+
+def test_matte_letters_for_includes_matte_combine_in_the_shared_sequence():
+    k1 = st.make_keyer_stage()
+    combine = st.make_matte_combine_stage()
+    k2 = st.make_keyer_stage()
+    letters = st.matte_letters_for([k1, combine, k2])
+    assert letters == {k1.id: "A", combine.id: "B", k2.id: "C"}
+    print("matte_letters_for: 'matte_combine' shares the same interleaved "
+          "letter sequence as every other matte-producing kind -- OK")
+
+
+def test_matte_combine_union_gates_both_keyed_regions():
+    image = _half_red_half_blue()
+    k1, k2 = _reddish_keyer(), _bluish_keyer()
+    combine = st.make_matte_combine_stage(matte_a_source_id=k1.id, matte_b_source_id=k2.id, op="union")
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer.params["matte_source_id"] = combine.id
+
+    stack = st.Stack(stages=[k1, k2, combine, consumer])
+    result = st.apply_stack_to_image_array(stack, image)
+    assert np.all(result[:, :2] > image[:, :2] + 0.1), "the red half (keyed by k1) should be brightened"
+    assert np.all(result[:, 2:] > image[:, 2:] + 0.1), "the blue half (keyed by k2) should ALSO be brightened via union"
+    print("matte_combine 'union': a downstream consumer is gated by "
+          "EITHER upstream matte -- OK")
+
+
+def test_matte_combine_intersect_of_disjoint_keyers_gates_neither_half():
+    image = _half_red_half_blue()
+    k1, k2 = _reddish_keyer(), _bluish_keyer()
+    combine = st.make_matte_combine_stage(matte_a_source_id=k1.id, matte_b_source_id=k2.id, op="intersect")
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer.params["matte_source_id"] = combine.id
+
+    stack = st.Stack(stages=[k1, k2, combine, consumer])
+    result = st.apply_stack_to_image_array(stack, image)
+    assert np.allclose(result, image, atol=1e-3), \
+        "k1 and k2 key disjoint (non-overlapping) regions, so their intersection should be ~empty everywhere"
+    print("matte_combine 'intersect': two disjoint upstream mattes "
+          "combine to an effectively empty matte -- OK")
+
+
+def test_matte_combine_output_matches_manually_combining_the_two_keyer_mattes():
+    """Direct correctness check, bypassing the stack machinery for the
+    EXPECTED side: matte_combine's own dispatch (stack._compute_raw_matte's
+    "matte_combine" branch) must read the exact same two matte arrays
+    keyer.compute_matte would independently produce, and combine them via
+    matte_combine.compute_combined_matte with the SAME op this stage's
+    own params say -- confirmed here for 'intersect' specifically (not
+    just the coarser union/disjoint-region checks above, which can't
+    distinguish 'multiply' from 'min' or other AND-like ops)."""
+    image = _half_red_half_blue()
+    k1, k2 = _reddish_keyer(), _bluish_keyer()
+    combine = st.make_matte_combine_stage(matte_a_source_id=k1.id, matte_b_source_id=k2.id, op="intersect")
+
+    cache = st.StageCache()
+    stack = st.Stack(stages=[k1, k2, combine])
+    apply_stack_to_image_array_with_cache(stack, image, cache, input_key=1)
+    mattes = cache.last_mattes()
+
+    expected_a = keyer.compute_matte(image, k1.params)
+    expected_b = keyer.compute_matte(image, k2.params)
+    expected_combined = matte_combine.compute_combined_matte(expected_a, expected_b, op="intersect")
+    assert np.allclose(mattes[combine.id], expected_combined, atol=1e-9)
+    print("matte_combine: its own computed matte exactly matches "
+          "manually combining the two keyer mattes with the same op -- OK")
+
+
+def test_matte_combine_unresolved_input_degrades_to_an_empty_matte():
+    """A reference that never got set (still None) resolves to 'no
+    matte,' same as any other matte_source_id-style reference in this
+    app -- covered here via 'union', which should then reduce to just
+    the ONE resolved input."""
+    image = _half_red_half_blue()
+    k1 = _reddish_keyer()
+    combine = st.make_matte_combine_stage(matte_a_source_id=k1.id, matte_b_source_id=None, op="union")
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer.params["matte_source_id"] = combine.id
+
+    stack = st.Stack(stages=[k1, combine, consumer])
+    result = st.apply_stack_to_image_array(stack, image)
+    assert np.all(result[:, :2] > image[:, :2] + 0.1), "the red half should still be gated via matte_a alone"
+    assert np.allclose(result[:, 2:], image[:, 2:], atol=1e-3), "the blue half should be untouched (matte_b unresolved -> empty)"
+    print("matte_combine: an unresolved input degrades to an empty "
+          "matte, not an error -- OK")
+
+
+def test_matte_combine_matte_amount_is_scaled_by_its_own_opacity():
+    image = _half_red_half_blue()
+    k1, k2 = _reddish_keyer(), _bluish_keyer()
+    combine_full = st.make_matte_combine_stage(
+        matte_a_source_id=k1.id, matte_b_source_id=k2.id, op="union", opacity=1.0)
+    combine_half = st.make_matte_combine_stage(
+        matte_a_source_id=k1.id, matte_b_source_id=k2.id, op="union", opacity=0.5)
+    consumer_full = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer_full.params["matte_source_id"] = combine_full.id
+    consumer_half = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer_half.params["matte_source_id"] = combine_half.id
+
+    stack_full = st.Stack(stages=[k1, k2, combine_full, consumer_full])
+    stack_half = st.Stack(stages=[k1, k2, combine_half, consumer_half])
+    result_full = st.apply_stack_to_image_array(stack_full, image)
+    result_half = st.apply_stack_to_image_array(stack_half, image)
+    delta_full = result_full[:, :2] - image[:, :2]
+    delta_half = result_half[:, :2] - image[:, :2]
+    assert np.all(delta_half > 1e-6)
+    assert np.all(delta_half < delta_full - 1e-6)
+    print("matte_combine opacity is repurposed as \"matte amount\" too, "
+          "same as keyer's/segment_mask's own -- OK")
+
+
 if __name__ == "__main__":
     test_stage_rejects_unknown_kind()
     test_make_lut_stage_retarget_requires_both_or_neither()
@@ -1643,5 +1777,12 @@ if __name__ == "__main__":
     test_matte_letters_for_shares_one_sequence_across_both_matte_kinds()
     test_matte_gates_a_downstream_stage_per_pixel_via_segment_mask()
     test_segment_mask_matte_amount_is_scaled_by_its_own_opacity()
+    test_matte_combine_stage_is_identity_passthrough_for_the_image()
+    test_matte_letters_for_includes_matte_combine_in_the_shared_sequence()
+    test_matte_combine_union_gates_both_keyed_regions()
+    test_matte_combine_intersect_of_disjoint_keyers_gates_neither_half()
+    test_matte_combine_output_matches_manually_combining_the_two_keyer_mattes()
+    test_matte_combine_unresolved_input_degrades_to_an_empty_matte()
+    test_matte_combine_matte_amount_is_scaled_by_its_own_opacity()
     print()
     print("All stack tests passed.")

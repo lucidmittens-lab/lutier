@@ -425,6 +425,38 @@ def test_keyer_stage_round_trips():
           "round-trips through plain JSON -- OK")
 
 
+def test_matte_combine_stage_round_trips_via_position():
+    """Like matte_source_id, matte_a_source_id/matte_b_source_id are raw
+    Stage.id values -- only meaningful within THIS in-memory Stack -- so
+    they round-trip via POSITION (matte_a_source_index/matte_b_source_
+    index), resolving to whatever fresh id the referenced stage gets
+    reconstructed with, exactly like the single-reference case already
+    covered by test_matte_source_id_round_trips_via_position_not_raw_id
+    just below."""
+    k1 = st.make_keyer_stage(hue_center=10.0)
+    k2 = st.make_keyer_stage(hue_center=200.0)
+    combine = st.make_matte_combine_stage(
+        matte_a_source_id=k1.id, matte_b_source_id=k2.id, op="subtract",
+        label="My Combine", opacity=0.6)
+    stack = st.Stack(stages=[k1, k2, combine])
+
+    data = stack_to_session_dict_round_trip_via_json(stack)
+    rebuilt_stack, warnings = session_io.stack_from_session_dict(data)
+
+    assert warnings == []
+    assert len(rebuilt_stack.stages) == 3
+    r_k1, r_k2, r_combine = rebuilt_stack.stages
+    assert r_combine.kind == "matte_combine" and r_combine.label == "My Combine" and r_combine.opacity == 0.6
+    assert r_combine.params["op"] == "subtract"
+    assert r_combine.params["matte_a_source_id"] == r_k1.id
+    assert r_combine.params["matte_b_source_id"] == r_k2.id
+    assert r_combine.params["matte_a_source_id"] != k1.id, \
+        "the rebuilt reference must point at the REBUILT keyer's own fresh id, not the stale original"
+    print("stack_to_session_dict/stack_from_session_dict: a 'matte_combine' "
+          "stage's two inputs round-trip via stack position, resolving to "
+          "the rebuilt keyers' own fresh ids -- OK")
+
+
 def test_matte_source_id_round_trips_via_position_not_raw_id():
     """The core new mechanism (see stack_to_session_dict's own docstring):
     a raw Stage.id is meaningless after reload (ids are reassigned fresh
@@ -1099,6 +1131,7 @@ if __name__ == "__main__":
     test_color_warper_stage_round_trips()
     test_color_warper_stage_default_points_round_trip()
     test_keyer_stage_round_trips()
+    test_matte_combine_stage_round_trips_via_position()
     test_matte_source_id_round_trips_via_position_not_raw_id()
     test_matte_source_index_survives_an_earlier_skipped_stage()
     test_matte_source_index_pointing_at_a_skipped_stage_falls_back_to_none()

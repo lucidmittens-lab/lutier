@@ -115,6 +115,7 @@ from PySide6.QtWidgets import (
 )
 
 import stack as st
+import matte_combine
 import aces_drt
 import cdl
 import colorspace_convert as csc
@@ -369,6 +370,7 @@ STAGE_KIND_BADGES = {
     "grading_rgb_curve": "RGB",
     "color_warper": "WRP",
     "keyer": "KEY",
+    "matte_combine": "CMB",
     "fork_split": "FRK",
     "fork_merge": "MRG",
 }
@@ -829,7 +831,15 @@ class _StageRowWidget(QFrame):
         current_matte_source = stage.params.get("matte_source_id")
         idx = self.matte_combo.findData(current_matte_source)
         self.matte_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        if stage.kind == "keyer":
+        if stage.kind in st.MATTE_PRODUCING_KINDS:
+            # A matte-PRODUCING row's own opacity is repurposed as "matte
+            # amount" (see make_keyer_stage's own docstring) -- it never
+            # consumes ANOTHER stage's matte via this per-row dropdown,
+            # so hide it here too, not just for "keyer" specifically
+            # (generalized while adding "matte_combine" -- which reads
+            # its own TWO matte inputs via its own dedicated inspector
+            # dropdowns, a completely different mechanism from this row
+            # control).
             self.matte_combo.setVisible(False)
         elif on_matte_changed is not None:
             self.matte_combo.currentIndexChanged.connect(
@@ -1645,9 +1655,14 @@ class StackPanel(QObject):
         # either way (auto-dispatches to the colour-science fallback,
         # see color_warper.py's own docstring).
         menu.addAction("Add WARPier", self._on_add_color_warper_clicked)
-        # No OCIO gate either -- keyer.py is plain numpy HSL math, no OCIO
-        # dependency at all (see that module's own docstring).
+        # No OCIO gate either -- keyer.py auto-dispatches OCIO-vs-colour-
+        # science the same way WARPier's own decode does (see keyer.py's
+        # own docstring), so it works either way too.
         menu.addAction("Add Keyer", self._on_add_keyer_clicked)
+        # No OCIO gate -- pure numpy matte combination, no color-space
+        # conversion involved at all (see matte_combine.py's own
+        # docstring).
+        menu.addAction("Add Matte Combine", self._on_add_matte_combine_clicked)
         menu.addSeparator()
         fork_action = menu.addAction("Add Fork (Split + Merge)", self._on_add_fork_clicked)
         fork_action.setToolTip(
@@ -1678,6 +1693,7 @@ class StackPanel(QObject):
         self._build_grading_rgb_curve_inspector()
         self._build_color_warper_inspector()
         self._build_keyer_inspector()
+        self._build_matte_combine_inspector()
         self._build_fork_split_inspector()
         self._build_fork_merge_inspector()
         layout.addWidget(self.inspector_stack, stretch=1)
@@ -2605,6 +2621,10 @@ class StackPanel(QObject):
 
     def _on_add_keyer_clicked(self):
         stage = st.make_keyer_stage()
+        self._add_stage(stage)
+
+    def _on_add_matte_combine_clicked(self):
+        stage = st.make_matte_combine_stage()
         self._add_stage(stage)
 
     def _on_add_fork_clicked(self):
@@ -4905,6 +4925,73 @@ class StackPanel(QObject):
         self.ky_lightness_max_spin.setValue(
             min(self.ky_lightness_max_spin.maximum(), lightness + self.PICK_LIGHTNESS_HALF_WIDTH))
 
+    # ---- inspector: matte_combine stage ----------------------------------
+
+    def _build_matte_combine_inspector(self):
+        # Title updated live to show this stage's own matte letter, same
+        # convention as the Keyer inspector's own title (see
+        # _refresh_inspector_body's "matte_combine" branch below).
+        self.mc_group = QGroupBox("Matte Combine")
+        group = self.mc_group
+        outer = QVBoxLayout(group)
+
+        # Two matte-letter dropdowns, reusing the EXACT SAME (letter,
+        # stage_id) options _StageRowWidget's own per-row matte_combo
+        # already offers -- see self._matte_options (built once per
+        # _refresh_list, keyed by this stage's own position) and
+        # _matte_options_by_index's own docstring for why that's the
+        # right upstream-only, position-based source of truth rather
+        # than recomputing anything here.
+        a_row = QHBoxLayout()
+        a_row.addWidget(QLabel("Matte A:"))
+        self.mc_a_combo = QComboBox()
+        self.mc_a_combo.currentIndexChanged.connect(self._apply_matte_combine_live)
+        a_row.addWidget(self.mc_a_combo, stretch=1)
+        outer.addLayout(a_row)
+
+        b_row = QHBoxLayout()
+        b_row.addWidget(QLabel("Matte B:"))
+        self.mc_b_combo = QComboBox()
+        self.mc_b_combo.currentIndexChanged.connect(self._apply_matte_combine_live)
+        b_row.addWidget(self.mc_b_combo, stretch=1)
+        outer.addLayout(b_row)
+
+        # Colorist-familiar blend-mode vocabulary rather than raw
+        # boolean terms (see matte_combine.py's own docstring) -- itemData
+        # is the actual op string matte_combine.compute_combined_matte
+        # expects, item text is the human-readable label.
+        op_row = QHBoxLayout()
+        op_row.addWidget(QLabel("Op:"))
+        self.mc_op_combo = QComboBox()
+        self.mc_op_combo.addItem("Intersect (A AND B)", "intersect")
+        self.mc_op_combo.addItem("Union (A OR B)", "union")
+        self.mc_op_combo.addItem("Subtract (A minus B)", "subtract")
+        self.mc_op_combo.addItem("Difference (A XOR B)", "difference")
+        self.mc_op_combo.currentIndexChanged.connect(self._apply_matte_combine_live)
+        op_row.addWidget(self.mc_op_combo, stretch=1)
+        outer.addLayout(op_row)
+
+        outer.addStretch(1)
+
+        self.inspector_stack.addWidget(self._wrap_inspector_page(group))
+        self._matte_combine_inspector_index = self.inspector_stack.count() - 1
+
+    def _apply_matte_combine_live(self, *_args):
+        """Guarded by _refreshing_inspector, same convention as every
+        other live-apply handler -- switching TO a matte_combine stage
+        also drives the two combos via _refresh_inspector_body, which
+        shouldn't count as a live edit."""
+        if self._refreshing_inspector:
+            return
+        stage = self._selected_stage()
+        if stage is None or stage.kind != "matte_combine":
+            return
+        stage.params["matte_a_source_id"] = self.mc_a_combo.currentData()
+        stage.params["matte_b_source_id"] = self.mc_b_combo.currentData()
+        stage.params["op"] = self.mc_op_combo.currentData()
+        self._update_row_content(stage.id)
+        self._emit_changed()
+
     # ---- inspector: fork_split stage ------------------------------------
 
     def _build_fork_split_inspector(self):
@@ -5344,6 +5431,35 @@ class StackPanel(QObject):
             letter = st.matte_letters_for(self.stack.stages).get(stage.id)
             self.ky_group.setTitle(f"Keyer ({letter})" if letter else "Keyer")
             self.inspector_stack.setCurrentIndex(self._keyer_inspector_index)
+
+        elif stage.kind == "matte_combine":
+            p = stage.params
+            letters = st.matte_letters_for(self.stack.stages)
+            stage_index = next(i for i, s in enumerate(self.stack.stages) if s.id == stage.id)
+            upstream_options = _matte_options_by_index(self.stack.stages, letters)[stage_index]
+
+            self.mc_a_combo.clear()
+            self.mc_a_combo.addItem("None", None)
+            for letter, producer_id in upstream_options:
+                self.mc_a_combo.addItem(letter, producer_id)
+            idx = self.mc_a_combo.findData(p.get("matte_a_source_id"))
+            self.mc_a_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+            self.mc_b_combo.clear()
+            self.mc_b_combo.addItem("None", None)
+            for letter, producer_id in upstream_options:
+                self.mc_b_combo.addItem(letter, producer_id)
+            idx = self.mc_b_combo.findData(p.get("matte_b_source_id"))
+            self.mc_b_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+            idx = self.mc_op_combo.findData(p.get("op", matte_combine.DEFAULT_OP))
+            self.mc_op_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+            # Own matte letter in the group title, same convention as
+            # the Keyer inspector's own title just above.
+            own_letter = letters.get(stage.id)
+            self.mc_group.setTitle(f"Matte Combine ({own_letter})" if own_letter else "Matte Combine")
+            self.inspector_stack.setCurrentIndex(self._matte_combine_inspector_index)
 
         elif stage.kind == "fork_split":
             self.inspector_stack.setCurrentIndex(self._fork_split_inspector_index)
