@@ -185,19 +185,28 @@ WIPE_SOURCE_CHOICES = [
 ]
 
 
+# Flat neutral level painted outside the key in a Highlight-mode preview
+# (see _compose_highlight_overlay) -- per Tom: "solid gray for pixels
+# outside of the key," replacing an earlier per-pixel luma-grayscale
+# version (which still showed the ORIGINAL image's own brightness detail
+# outside the key, competing with the colored key itself for attention
+# instead of receding behind it, same as Resolve's own flat-gray
+# Highlight background does).
+HIGHLIGHT_GRAY_LEVEL = 0.2
+
+
 def _compose_highlight_overlay(graded_array, matte):
     """MATTE HIGHLIGHT (per Tom: "a way to preview the mask similar to
     resolve's highlight mode") -- `graded_array` (H,W,3) where `matte`
     (H,W, same convention every matte-producing stage kind already
-    returns -- see stack.py's docstring, "MATTE CHANNELS") is high,
-    Rec.709 luma-only grayscale where it's low, smoothly blended in
-    between by the matte's own soft edge. Pure numpy, no Qt -- called
-    from _array_and_gpu_stack_for_source's own "MATTE HIGHLIGHT" branch,
-    kept as its own free function so it's directly unit-testable without
+    returns -- see stack.py's docstring, "MATTE CHANNELS") is high, a
+    FLAT HIGHLIGHT_GRAY_LEVEL gray (not the original image's own
+    brightness) where it's low, smoothly blended in between by the
+    matte's own soft edge. Pure numpy, no Qt -- called from
+    _array_and_gpu_stack_for_source's own "MATTE HIGHLIGHT" branch, kept
+    as its own free function so it's directly unit-testable without
     constructing a real SampleImagePanel."""
-    luma = (0.2126 * graded_array[..., 0] + 0.7152 * graded_array[..., 1]
-            + 0.0722 * graded_array[..., 2])
-    gray = np.stack([luma, luma, luma], axis=-1)
+    gray = np.full_like(graded_array, HIGHLIGHT_GRAY_LEVEL)
     m = matte[..., np.newaxis]
     return graded_array * m + gray * (1.0 - m)
 

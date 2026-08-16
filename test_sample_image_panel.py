@@ -336,25 +336,41 @@ def test_compose_highlight_overlay_matte_one_is_unchanged():
           "graded array unchanged -- OK")
 
 
-def test_compose_highlight_overlay_matte_zero_is_rec709_luma_grayscale():
+def test_compose_highlight_overlay_matte_zero_is_solid_gray():
     graded = np.array([[[1.0, 0.0, 0.0]]])  # pure red
     matte = np.zeros((1, 1))
     result = sample_image_panel_module._compose_highlight_overlay(graded, matte)
-    expected_luma = 0.2126  # Rec.709: 0.2126*1 + 0.7152*0 + 0.0722*0
-    assert np.allclose(result[0, 0], [expected_luma] * 3, atol=1e-6)
-    print("_compose_highlight_overlay: matte=0 everywhere becomes plain "
-          "Rec.709 luma grayscale -- OK")
+    level = sample_image_panel_module.HIGHLIGHT_GRAY_LEVEL
+    assert np.allclose(result[0, 0], [level] * 3, atol=1e-6)
+    print("_compose_highlight_overlay: matte=0 everywhere becomes a "
+          "flat HIGHLIGHT_GRAY_LEVEL gray, not the image's own "
+          "brightness -- OK")
+
+
+def test_compose_highlight_overlay_gray_is_flat_regardless_of_underlying_brightness():
+    """The whole point of switching to a solid gray (per Tom: "solid
+    gray for pixels outside of the key") -- unlike a luma-derived
+    grayscale, two very differently-bright pixels must both key down to
+    the EXACT SAME gray level."""
+    bright = np.array([[[0.9, 0.9, 0.9]]])
+    dark = np.array([[[0.05, 0.05, 0.05]]])
+    matte = np.zeros((1, 1))
+    bright_result = sample_image_panel_module._compose_highlight_overlay(bright, matte)
+    dark_result = sample_image_panel_module._compose_highlight_overlay(dark, matte)
+    assert np.allclose(bright_result, dark_result, atol=1e-6)
+    print("_compose_highlight_overlay: the un-keyed gray is flat, not "
+          "derived from the underlying image's own brightness -- OK")
 
 
 def test_compose_highlight_overlay_blends_at_a_partial_matte():
     graded = np.array([[[1.0, 0.0, 0.0]]])
     matte = np.array([[0.5]])
     result = sample_image_panel_module._compose_highlight_overlay(graded, matte)
-    luma = 0.2126
-    expected = np.array([1.0, 0.0, 0.0]) * 0.5 + np.array([luma] * 3) * 0.5
+    level = sample_image_panel_module.HIGHLIGHT_GRAY_LEVEL
+    expected = np.array([1.0, 0.0, 0.0]) * 0.5 + np.array([level] * 3) * 0.5
     assert np.allclose(result[0, 0], expected, atol=1e-6)
     print("_compose_highlight_overlay: a partial matte blends real "
-          "color and grayscale proportionally -- OK")
+          "color and the flat gray proportionally -- OK")
 
 
 def test_no_highlight_getter_leaves_the_after_source_unchanged():
@@ -835,7 +851,8 @@ if __name__ == "__main__":
     test_scopes_array_is_capped_at_the_target_dimension()
     test_scopes_array_is_unchanged_for_a_small_source()
     test_compose_highlight_overlay_matte_one_is_unchanged()
-    test_compose_highlight_overlay_matte_zero_is_rec709_luma_grayscale()
+    test_compose_highlight_overlay_matte_zero_is_solid_gray()
+    test_compose_highlight_overlay_gray_is_flat_regardless_of_underlying_brightness()
     test_compose_highlight_overlay_blends_at_a_partial_matte()
     test_no_highlight_getter_leaves_the_after_source_unchanged()
     test_highlight_getter_composites_the_toggled_stages_matte()
