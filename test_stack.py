@@ -1698,6 +1698,98 @@ def test_matte_combine_matte_amount_is_scaled_by_its_own_opacity():
           "same as keyer's/segment_mask's own -- OK")
 
 
+# --- matte_shape stage (Power Window ellipse/rectangle garbage matte) ----
+
+def test_matte_shape_stage_is_identity_passthrough_for_the_image():
+    image = _half_red_half_blue()
+    stage = st.make_matte_shape_stage()
+    stack = st.Stack(stages=[stage])
+    result = st.apply_stack_to_image_array(stack, image)
+    assert np.allclose(result, image, atol=1e-9)
+    print("matte_shape stage: never grades the image itself, regardless "
+          "of its own geometry -- OK")
+
+
+def test_matte_letters_for_includes_matte_shape_in_the_shared_sequence():
+    k1 = st.make_keyer_stage()
+    shape = st.make_matte_shape_stage()
+    combine = st.make_matte_combine_stage()
+    letters = st.matte_letters_for([k1, shape, combine])
+    assert letters == {k1.id: "A", shape.id: "B", combine.id: "C"}
+    print("matte_letters_for: 'matte_shape' shares the same interleaved "
+          "letter sequence as every other matte-producing kind -- OK")
+
+
+# A rectangle covering columns 0-3 (the red half of an 8-wide
+# _half_red_half_blue image) with real margin before column 4 (where
+# blue starts) -- center_x=0.1875 puts the window's own center at
+# column 1.5 (the red half's own midpoint), width=0.5 gives a 2px
+# half-extent (span columns -0.5..3.5), comfortably clear of column 4
+# even with softness=0's own small transition floor (see matte_shape's
+# own tests for why that floor exists).
+_LEFT_HALF_WINDOW = dict(shape="rectangle", center_x=0.1875, center_y=0.5,
+                          width=0.5, height=1.0, softness=0.0)
+
+
+def test_matte_shape_gates_a_downstream_stage_per_pixel():
+    image = _half_red_half_blue(size=8)
+    shape = st.make_matte_shape_stage(**_LEFT_HALF_WINDOW)
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer.params["matte_source_id"] = shape.id
+
+    stack = st.Stack(stages=[shape, consumer])
+    result = st.apply_stack_to_image_array(stack, image)
+    assert np.all(result[:, :4] > image[:, :4] + 0.1), "the left (red) half, inside the shape, should be brightened"
+    assert np.allclose(result[:, 4:], image[:, 4:], atol=1e-3), "the right (blue) half, outside the shape, should be untouched"
+    print("matte_shape: a downstream stage's opacity is gated per pixel "
+          "by the shape's own footprint -- OK")
+
+
+def test_matte_shape_matte_amount_is_scaled_by_its_own_opacity():
+    image = _half_red_half_blue(size=8)
+    shape_full = st.make_matte_shape_stage(**_LEFT_HALF_WINDOW, opacity=1.0)
+    shape_half = st.make_matte_shape_stage(**_LEFT_HALF_WINDOW, opacity=0.5)
+    consumer_full = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer_full.params["matte_source_id"] = shape_full.id
+    consumer_half = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer_half.params["matte_source_id"] = shape_half.id
+
+    stack_full = st.Stack(stages=[shape_full, consumer_full])
+    stack_half = st.Stack(stages=[shape_half, consumer_half])
+    result_full = st.apply_stack_to_image_array(stack_full, image)
+    result_half = st.apply_stack_to_image_array(stack_half, image)
+    delta_full = result_full[:, :4] - image[:, :4]
+    delta_half = result_half[:, :4] - image[:, :4]
+    assert np.all(delta_half > 1e-6)
+    assert np.all(delta_half < delta_full - 1e-6)
+    print("matte_shape opacity is repurposed as \"matte amount\" too, "
+          "same as every other matte-producing kind's own -- OK")
+
+
+def test_matte_shape_combined_with_a_keyer_via_matte_combine():
+    """The real garbage-matte workflow this feature exists for (per Tom):
+    AND a shape with a keyer's own qualifier to restrict the key to
+    inside the window, even though the keyer's own hue match covers
+    BOTH halves of this test image."""
+    image = _half_red_half_blue(size=8)
+    both_halves_keyer = st.make_keyer_stage(
+        working_colourspace=color_warper.REFERENCE_LINEAR_SPACE,
+        hue_center=0.0, hue_width=180.0, softness=0.1)  # wide enough to key the whole image
+    left_window = st.make_matte_shape_stage(**_LEFT_HALF_WINDOW)
+    combine = st.make_matte_combine_stage(
+        matte_a_source_id=both_halves_keyer.id, matte_b_source_id=left_window.id, op="intersect")
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer.params["matte_source_id"] = combine.id
+
+    stack = st.Stack(stages=[both_halves_keyer, left_window, combine, consumer])
+    result = st.apply_stack_to_image_array(stack, image)
+    assert np.all(result[:, :4] > image[:, :4] + 0.1), "left half: keyed AND inside the window -- gated in"
+    assert np.allclose(result[:, 4:], image[:, 4:], atol=1e-3), "right half: keyed but OUTSIDE the window -- gated out"
+    print("matte_shape + matte_combine ('intersect'): a keyer's own wide "
+          "qualifier match is correctly restricted to inside the window "
+          "-- OK")
+
+
 if __name__ == "__main__":
     test_stage_rejects_unknown_kind()
     test_make_lut_stage_retarget_requires_both_or_neither()
@@ -1784,5 +1876,10 @@ if __name__ == "__main__":
     test_matte_combine_output_matches_manually_combining_the_two_keyer_mattes()
     test_matte_combine_unresolved_input_degrades_to_an_empty_matte()
     test_matte_combine_matte_amount_is_scaled_by_its_own_opacity()
+    test_matte_shape_stage_is_identity_passthrough_for_the_image()
+    test_matte_letters_for_includes_matte_shape_in_the_shared_sequence()
+    test_matte_shape_gates_a_downstream_stage_per_pixel()
+    test_matte_shape_matte_amount_is_scaled_by_its_own_opacity()
+    test_matte_shape_combined_with_a_keyer_via_matte_combine()
     print()
     print("All stack tests passed.")

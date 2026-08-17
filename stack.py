@@ -177,24 +177,26 @@ import grading_rgb_curve
 import grading_tone
 import keyer
 import matte_combine
+import matte_shape
 import segmentation
 
 STAGE_KINDS = ("lut", "printer_lights", "aces_drt", "custom_drt", "cdl", "colorspace",
                "grading_primary", "exposure_contrast", "grading_tone",
                "grading_rgb_curve", "color_warper", "keyer", "segment_mask", "matte_combine",
-               "fork_split", "fork_merge")
+               "matte_shape", "fork_split", "fork_merge")
 
 # Every stage kind that PRODUCES a matte rather than grading the image --
 # see this module's docstring, "MATTE CHANNELS", matte_letters_for, and
-# _maybe_populate_matte. All three currently identity-passthrough their
-# own RGB output entirely (see _apply_stage_to_array) and are deliberately
-# left out of gpu_stack_renderer.GPU_ELIGIBLE_KINDS, so any stack using
-# any of them already falls back to this module's own CPU path in full
-# via that module's existing all-or-nothing eligibility rule -- no GPU
+# _maybe_populate_matte. Every one of these currently identity-
+# passthroughs its own RGB output entirely (see _apply_stage_to_array)
+# and is deliberately left out of gpu_stack_renderer.GPU_ELIGIBLE_KINDS,
+# so any stack using any of them already falls back to this module's own
+# CPU path in full via that module's existing all-or-nothing eligibility
+# rule -- no GPU
 # work needed for any of them to stay correct. "matte_combine" is the
 # odd one out: it never reads the image's own RGB at all, only OTHER
 # already-computed mattes (see matte_combine.py's own docstring).
-MATTE_PRODUCING_KINDS = frozenset({"keyer", "segment_mask", "matte_combine"})
+MATTE_PRODUCING_KINDS = frozenset({"keyer", "segment_mask", "matte_combine", "matte_shape"})
 
 _id_counter = itertools.count(1)
 
@@ -624,6 +626,35 @@ def make_matte_combine_stage(matte_a_source_id=None, matte_b_source_id=None,
     return Stage("matte_combine", label or "Matte Combine", params, enabled, opacity)
 
 
+def make_matte_shape_stage(shape=matte_shape.DEFAULT_SHAPE,
+                            center_x=matte_shape.DEFAULT_CENTER_X, center_y=matte_shape.DEFAULT_CENTER_Y,
+                            width=matte_shape.DEFAULT_WIDTH, height=matte_shape.DEFAULT_HEIGHT,
+                            rotation=matte_shape.DEFAULT_ROTATION, softness=matte_shape.DEFAULT_SOFTNESS,
+                            invert=matte_shape.DEFAULT_INVERT,
+                            label=None, enabled=True, opacity=1.0):
+    """A stage that produces a MATTE (see this module's docstring, "MATTE
+    CHANNELS") -- a classic "Power Window" ellipse/rectangle garbage
+    matte, same math as matte_shape.compute_shape_matte. Reads no image
+    RGB at all, only the array's own (H, W) (see _compute_raw_matte's own
+    "matte_shape" branch). Like every other matte-producing kind, this
+    stage's own RGB output is always an exact identity passthrough (see
+    _apply_stage_to_array's "matte_shape" branch), so `opacity` is
+    repurposed as "matte amount" the same way make_keyer_stage's own
+    docstring explains.
+
+    Unlike keyer/matte_combine, a freshly-added shape does NOT start as
+    a no-op -- there's no "no points yet" state a shape can occupy (see
+    matte_shape.DEFAULT_WIDTH's own comment), so every param here
+    defaults to a concrete, immediately-visible ellipse centered in
+    frame."""
+    params = {
+        "shape": shape, "center_x": float(center_x), "center_y": float(center_y),
+        "width": float(width), "height": float(height), "rotation": float(rotation),
+        "softness": float(softness), "invert": bool(invert),
+    }
+    return Stage("matte_shape", label or "Matte Shape", params, enabled, opacity)
+
+
 def make_colorspace_stage(src, dst, config_name=None, label=None, enabled=True, opacity=1.0):
     """A stage that applies a plain (non-DRT) color space conversion, same
     math as colorspace_convert.apply_colorspace_conversion -- see that
@@ -818,6 +849,13 @@ def _apply_stage_to_array(stage, array):
         # unchanged, same as every other matte-producing kind.
         return array
 
+    if stage.kind == "matte_shape":
+        # Same identity-passthrough contract as every other matte-
+        # producing kind -- see make_matte_shape_stage. Never reads
+        # `array`'s own values at all (pure geometry, see
+        # _compute_raw_matte), only hands the image straight through.
+        return array
+
     if stage.kind in ("fork_split", "fork_merge"):  # pragma: no cover -- see docstring above
         raise AssertionError(
             f"{stage.kind} stages are handled structurally by _run_stages "
@@ -944,7 +982,8 @@ def _compute_raw_matte(stage, running, mattes):
     this stage's own position -- unused by "keyer"/"segment_mask" (they
     read `running`'s own pixel values instead), but "matte_combine"
     reads ONLY this, never `running`'s values (see matte_combine.py's
-    own docstring)."""
+    own docstring). "matte_shape" reads neither -- pure geometry, only
+    `running.shape` (see matte_shape.py's own docstring)."""
     if stage.kind == "keyer":
         return keyer.compute_matte(running, stage.params)
     if stage.kind == "segment_mask":
@@ -966,6 +1005,10 @@ def _compute_raw_matte(stage, running, mattes):
             matte_b = np.zeros(shape, dtype=np.float64)
         return matte_combine.compute_combined_matte(
             matte_a, matte_b, op=p.get("op", matte_combine.DEFAULT_OP))
+    if stage.kind == "matte_shape":
+        # Pure geometry -- reads only `running`'s own (H, W), never its
+        # pixel values (see matte_shape.py's own docstring).
+        return matte_shape.compute_shape_matte(running.shape[:2], stage.params)
     raise AssertionError(  # pragma: no cover -- _maybe_populate_matte already checked
         f"{stage.kind!r} is not in MATTE_PRODUCING_KINDS")
 

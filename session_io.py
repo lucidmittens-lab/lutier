@@ -174,6 +174,7 @@ import grading_rgb_curve
 import grading_tone
 import keyer
 import matte_combine
+import matte_shape
 from stack_memory import StackMemory, StackMemoryLibrary, GalleryStill, GalleryStillLibrary
 from cdl_library import CDLEntry, CDLLibrary
 from lut_library import LUTLibraryEntry, LUTLibrary
@@ -419,6 +420,15 @@ def stage_to_session_dict(stage):
         # stack_to_session_dict instead (needs the whole stack's own
         # id_to_index map, same reason matte_source_index lives there --
         # see that function's own docstring), not here.
+    elif stage.kind == "matte_shape":
+        entry["shape"] = stage.params.get("shape", matte_shape.DEFAULT_SHAPE)
+        entry["center_x"] = stage.params.get("center_x", matte_shape.DEFAULT_CENTER_X)
+        entry["center_y"] = stage.params.get("center_y", matte_shape.DEFAULT_CENTER_Y)
+        entry["width"] = stage.params.get("width", matte_shape.DEFAULT_WIDTH)
+        entry["height"] = stage.params.get("height", matte_shape.DEFAULT_HEIGHT)
+        entry["rotation"] = stage.params.get("rotation", matte_shape.DEFAULT_ROTATION)
+        entry["softness"] = stage.params.get("softness", matte_shape.DEFAULT_SOFTNESS)
+        entry["invert"] = stage.params.get("invert", matte_shape.DEFAULT_INVERT)
     elif stage.kind == "fork_split":
         pass  # no extra fields -- see module docstring, STACK FORKING
     elif stage.kind == "fork_merge":
@@ -668,6 +678,20 @@ def stage_from_session_dict(entry):
         # session_dict's own second pass (position-based, same as
         # matte_source_id -- see that function's own docstring), not
         # here.
+    elif kind == "matte_shape":
+        stage = st.make_matte_shape_stage(
+            shape=entry.get("shape", matte_shape.DEFAULT_SHAPE),
+            center_x=entry.get("center_x", matte_shape.DEFAULT_CENTER_X),
+            center_y=entry.get("center_y", matte_shape.DEFAULT_CENTER_Y),
+            width=entry.get("width", matte_shape.DEFAULT_WIDTH),
+            height=entry.get("height", matte_shape.DEFAULT_HEIGHT),
+            rotation=entry.get("rotation", matte_shape.DEFAULT_ROTATION),
+            softness=entry.get("softness", matte_shape.DEFAULT_SOFTNESS),
+            invert=entry.get("invert", matte_shape.DEFAULT_INVERT),
+            label=label,
+            enabled=entry.get("enabled", True),
+            opacity=entry.get("opacity", 1.0),
+        )
     elif kind == "fork_split":
         stage = st.make_fork_split_stage(
             label=label,

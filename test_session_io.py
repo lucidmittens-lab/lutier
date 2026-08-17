@@ -457,6 +457,35 @@ def test_matte_combine_stage_round_trips_via_position():
           "the rebuilt keyers' own fresh ids -- OK")
 
 
+def test_matte_shape_stage_round_trips():
+    """No id-reference translation needed here -- every matte_shape
+    param is a plain value (unlike matte_combine's two inputs), so this
+    is a direct field-for-field round trip."""
+    stage = st.make_matte_shape_stage(
+        shape="rectangle", center_x=0.3, center_y=0.7, width=0.6, height=0.4,
+        rotation=45.0, softness=0.5, invert=True,
+        label="My Shape", opacity=0.9)
+    stack = st.Stack(stages=[stage])
+
+    data = stack_to_session_dict_round_trip_via_json(stack)
+    rebuilt_stack, warnings = session_io.stack_from_session_dict(data)
+
+    assert warnings == []
+    assert len(rebuilt_stack.stages) == 1
+    r = rebuilt_stack.stages[0]
+    assert r.kind == "matte_shape" and r.label == "My Shape" and r.opacity == 0.9
+    assert r.params["shape"] == "rectangle"
+    assert r.params["center_x"] == 0.3
+    assert r.params["center_y"] == 0.7
+    assert r.params["width"] == 0.6
+    assert r.params["height"] == 0.4
+    assert r.params["rotation"] == 45.0
+    assert r.params["softness"] == 0.5
+    assert r.params["invert"] is True
+    print("stack_to_session_dict/stack_from_session_dict: a "
+          "'matte_shape' stage round-trips through plain JSON -- OK")
+
+
 def test_matte_source_id_round_trips_via_position_not_raw_id():
     """The core new mechanism (see stack_to_session_dict's own docstring):
     a raw Stage.id is meaningless after reload (ids are reassigned fresh
@@ -1132,6 +1161,7 @@ if __name__ == "__main__":
     test_color_warper_stage_default_points_round_trip()
     test_keyer_stage_round_trips()
     test_matte_combine_stage_round_trips_via_position()
+    test_matte_shape_stage_round_trips()
     test_matte_source_id_round_trips_via_position_not_raw_id()
     test_matte_source_index_survives_an_earlier_skipped_stage()
     test_matte_source_index_pointing_at_a_skipped_stage_falls_back_to_none()

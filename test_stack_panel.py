@@ -27,6 +27,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow
 
 import stack as st
 import matte_combine as mc
+import matte_shape
 import color_warper as cw
 import keyer as ky
 from stack_panel import (
@@ -307,6 +308,15 @@ def _panel_with_two_keyers_and_a_matte_combine():
     k1, k2, combine = panel.stack.stages
     panel._on_row_clicked(combine.id)
     return panel, k1, k2, combine
+
+
+def _panel_with_one_matte_shape_stage():
+    _app()
+    panel = StackPanel()
+    panel._on_add_matte_shape_clicked()
+    stage = panel.stack.stages[0]
+    panel._on_row_clicked(stage.id)
+    return panel, stage
 
 
 def test_cdl_live_edit_updates_the_existing_row_widget_in_place():
@@ -1876,6 +1886,99 @@ def test_highlight_auto_clears_switching_between_different_matte_kinds():
           "a 'keyer' to a 'matte_combine' -- OK")
 
 
+# --- matte_shape inspector -----------------------------------------
+
+def test_matte_shape_badge_text():
+    assert _stage_kind_badge_text("matte_shape") == "SHP"
+    print("_stage_kind_badge_text('matte_shape') == 'SHP' -- OK")
+
+
+def test_add_matte_shape_starts_at_defaults():
+    panel, stage = _panel_with_one_matte_shape_stage()
+    assert stage.kind == "matte_shape"
+    assert stage.params["shape"] == matte_shape.DEFAULT_SHAPE
+    assert stage.params["center_x"] == matte_shape.DEFAULT_CENTER_X
+    assert stage.params["width"] == matte_shape.DEFAULT_WIDTH
+    print("StackPanel: a freshly-added 'matte_shape' stage starts at "
+          "matte_shape.py's own defaults -- OK")
+
+
+def test_matte_shape_inspector_fields_apply_live():
+    panel, stage = _panel_with_one_matte_shape_stage()
+    panel.ms_shape_combo.setCurrentIndex(panel.ms_shape_combo.findData("rectangle"))
+    panel.ms_center_x_spin.setValue(0.3)
+    panel.ms_center_y_spin.setValue(0.7)
+    panel.ms_width_spin.setValue(0.6)
+    panel.ms_height_spin.setValue(0.5)
+    panel.ms_rotation_spin.setValue(30.0)
+    panel.ms_softness_spin.setValue(0.4)
+    panel.ms_invert_checkbox.setChecked(True)
+    assert stage.params["shape"] == "rectangle"
+    assert stage.params["center_x"] == 0.3
+    assert stage.params["center_y"] == 0.7
+    assert stage.params["width"] == 0.6
+    assert stage.params["height"] == 0.5
+    assert stage.params["rotation"] == 30.0
+    assert stage.params["softness"] == 0.4
+    assert stage.params["invert"] is True
+    print("StackPanel Matte Shape inspector: every field applies live "
+          "to the selected stage's params -- OK")
+
+
+def test_matte_shape_inspector_title_shows_its_own_matte_letter():
+    panel, stage = _panel_with_one_matte_shape_stage()
+    assert panel.ms_group.title() == "Matte Shape (A)"
+    print("StackPanel Matte Shape inspector: the group title shows "
+          "this stage's own current matte letter -- OK")
+
+
+def test_matte_shape_row_hides_its_own_matte_combo():
+    panel, stage = _panel_with_one_matte_shape_stage()
+    row = panel._stage_row_widgets[stage.id]
+    assert row.matte_combo.isVisible() is False
+    print("_StageRowWidget: a 'matte_shape' row's own matte combo is "
+          "hidden -- OK")
+
+
+def test_matte_shape_highlight_checkbox_toggles_get_highlight_stage_id():
+    panel, stage = _panel_with_one_matte_shape_stage()
+    assert panel.get_highlight_stage_id() is None
+    panel.ms_highlight_checkbox.setChecked(True)
+    assert panel.get_highlight_stage_id() == stage.id
+    panel.ms_highlight_checkbox.setChecked(False)
+    assert panel.get_highlight_stage_id() is None
+    print("StackPanel Matte Shape inspector: the Highlight checkbox "
+          "toggles get_highlight_stage_id() -- OK")
+
+
+def test_matte_shape_refresh_on_select_does_not_corrupt_stored_values():
+    panel, stage = _panel_with_one_matte_shape_stage()
+    panel.ms_center_x_spin.setValue(0.2)
+    panel.ms_rotation_spin.setValue(60.0)
+
+    other = st.make_cdl_stage()
+    panel._add_stage(other)
+    panel._on_row_clicked(stage.id)
+
+    assert stage.params["center_x"] == 0.2
+    assert stage.params["rotation"] == 60.0
+    print("StackPanel Matte Shape inspector: switching away and back "
+          "does not corrupt the stage's stored params -- OK")
+
+
+def test_matte_shape_is_offered_as_a_matte_option_downstream():
+    """A matte_shape row must show up in a later row's matte dropdown,
+    same as any other matte-producing kind."""
+    panel, stage = _panel_with_one_matte_shape_stage()
+    cdl_stage = st.make_cdl_stage()
+    panel._add_stage(cdl_stage)
+    row = panel._stage_row_widgets[cdl_stage.id]
+    items = [row.matte_combo.itemText(i) for i in range(row.matte_combo.count())]
+    assert items == ["None", "A"]
+    print("_StageRowWidget: a downstream row's matte combo offers an "
+          "upstream 'matte_shape' stage's own current letter -- OK")
+
+
 if __name__ == "__main__":
     test_short_text_that_fits_is_not_elided_and_has_no_tooltip()
     test_long_text_at_narrow_width_is_elided_with_ellipsis_and_gets_a_tooltip()
@@ -1984,5 +2087,13 @@ if __name__ == "__main__":
     test_matte_combine_highlight_checkbox_toggles_get_highlight_stage_id()
     test_matte_combine_highlight_checkbox_resyncs_on_refresh()
     test_highlight_auto_clears_switching_between_different_matte_kinds()
+    test_matte_shape_badge_text()
+    test_add_matte_shape_starts_at_defaults()
+    test_matte_shape_inspector_fields_apply_live()
+    test_matte_shape_inspector_title_shows_its_own_matte_letter()
+    test_matte_shape_row_hides_its_own_matte_combo()
+    test_matte_shape_highlight_checkbox_toggles_get_highlight_stage_id()
+    test_matte_shape_refresh_on_select_does_not_corrupt_stored_values()
+    test_matte_shape_is_offered_as_a_matte_option_downstream()
     print()
     print("All stack_panel tests passed.")

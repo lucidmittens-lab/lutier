@@ -116,6 +116,7 @@ from PySide6.QtWidgets import (
 
 import stack as st
 import matte_combine
+import matte_shape
 import aces_drt
 import cdl
 import colorspace_convert as csc
@@ -371,6 +372,7 @@ STAGE_KIND_BADGES = {
     "color_warper": "WRP",
     "keyer": "KEY",
     "matte_combine": "CMB",
+    "matte_shape": "SHP",
     "fork_split": "FRK",
     "fork_merge": "MRG",
 }
@@ -1663,6 +1665,9 @@ class StackPanel(QObject):
         # conversion involved at all (see matte_combine.py's own
         # docstring).
         menu.addAction("Add Matte Combine", self._on_add_matte_combine_clicked)
+        # No OCIO gate -- pure numpy geometry, no color-space conversion
+        # involved at all (see matte_shape.py's own docstring).
+        menu.addAction("Add Matte Shape", self._on_add_matte_shape_clicked)
         menu.addSeparator()
         fork_action = menu.addAction("Add Fork (Split + Merge)", self._on_add_fork_clicked)
         fork_action.setToolTip(
@@ -1694,6 +1699,7 @@ class StackPanel(QObject):
         self._build_color_warper_inspector()
         self._build_keyer_inspector()
         self._build_matte_combine_inspector()
+        self._build_matte_shape_inspector()
         self._build_fork_split_inspector()
         self._build_fork_merge_inspector()
         layout.addWidget(self.inspector_stack, stretch=1)
@@ -2625,6 +2631,10 @@ class StackPanel(QObject):
 
     def _on_add_matte_combine_clicked(self):
         stage = st.make_matte_combine_stage()
+        self._add_stage(stage)
+
+    def _on_add_matte_shape_clicked(self):
+        stage = st.make_matte_shape_stage()
         self._add_stage(stage)
 
     def _on_add_fork_clicked(self):
@@ -5022,6 +5032,139 @@ class StackPanel(QObject):
         self._highlight_stage_id = stage.id if checked else None
         self._emit_changed()
 
+    # ---- inspector: matte_shape stage --------------------------------
+
+    def _build_matte_shape_inspector(self):
+        # Title updated live to show this stage's own matte letter, same
+        # convention as Keyer/Matte Combine's own titles.
+        self.ms_group = QGroupBox("Matte Shape")
+        group = self.ms_group
+        outer = QVBoxLayout(group)
+
+        shape_row = QHBoxLayout()
+        shape_row.addWidget(QLabel("Shape:"))
+        self.ms_shape_combo = QComboBox()
+        self.ms_shape_combo.addItem("Ellipse", "ellipse")
+        self.ms_shape_combo.addItem("Rectangle", "rectangle")
+        self.ms_shape_combo.currentIndexChanged.connect(self._apply_matte_shape_live)
+        shape_row.addWidget(self.ms_shape_combo, stretch=1)
+        outer.addLayout(shape_row)
+
+        center_row = QHBoxLayout()
+        self.ms_center_x_spin = QDoubleSpinBox()
+        self.ms_center_y_spin = QDoubleSpinBox()
+        for spin, default in ((self.ms_center_x_spin, matte_shape.DEFAULT_CENTER_X),
+                               (self.ms_center_y_spin, matte_shape.DEFAULT_CENTER_Y)):
+            spin.setRange(0.0, 1.0)
+            spin.setDecimals(3)
+            spin.setSingleStep(0.01)
+            spin.setValue(default)
+            enable_drag_to_scrub(spin)
+            spin.valueChanged.connect(self._apply_matte_shape_live)
+        center_row.addWidget(_ParamLabel(
+            "Center X:", lambda: self.ms_center_x_spin.setValue(matte_shape.DEFAULT_CENTER_X)))
+        center_row.addWidget(self.ms_center_x_spin, stretch=1)
+        center_row.addWidget(_ParamLabel(
+            "Center Y:", lambda: self.ms_center_y_spin.setValue(matte_shape.DEFAULT_CENTER_Y)))
+        center_row.addWidget(self.ms_center_y_spin, stretch=1)
+        outer.addLayout(center_row)
+
+        size_row = QHBoxLayout()
+        self.ms_width_spin = QDoubleSpinBox()
+        self.ms_height_spin = QDoubleSpinBox()
+        for spin, default in ((self.ms_width_spin, matte_shape.DEFAULT_WIDTH),
+                               (self.ms_height_spin, matte_shape.DEFAULT_HEIGHT)):
+            spin.setRange(0.01, 2.0)
+            spin.setDecimals(3)
+            spin.setSingleStep(0.01)
+            spin.setValue(default)
+            enable_drag_to_scrub(spin)
+            spin.valueChanged.connect(self._apply_matte_shape_live)
+        size_row.addWidget(_ParamLabel(
+            "Width:", lambda: self.ms_width_spin.setValue(matte_shape.DEFAULT_WIDTH)))
+        size_row.addWidget(self.ms_width_spin, stretch=1)
+        size_row.addWidget(_ParamLabel(
+            "Height:", lambda: self.ms_height_spin.setValue(matte_shape.DEFAULT_HEIGHT)))
+        size_row.addWidget(self.ms_height_spin, stretch=1)
+        outer.addLayout(size_row)
+
+        rotation_softness_row = QHBoxLayout()
+        self.ms_rotation_spin = QDoubleSpinBox()
+        self.ms_rotation_spin.setRange(-180.0, 180.0)
+        self.ms_rotation_spin.setDecimals(1)
+        self.ms_rotation_spin.setSingleStep(1.0)
+        self.ms_rotation_spin.setValue(matte_shape.DEFAULT_ROTATION)
+        self.ms_rotation_spin.setWrapping(True)
+        enable_drag_to_scrub(self.ms_rotation_spin)
+        self.ms_rotation_spin.valueChanged.connect(self._apply_matte_shape_live)
+        rotation_softness_row.addWidget(_ParamLabel(
+            "Rotation:", lambda: self.ms_rotation_spin.setValue(matte_shape.DEFAULT_ROTATION)))
+        rotation_softness_row.addWidget(self.ms_rotation_spin, stretch=1)
+
+        self.ms_softness_spin = QDoubleSpinBox()
+        self.ms_softness_spin.setRange(0.0, 1.0)
+        self.ms_softness_spin.setDecimals(2)
+        self.ms_softness_spin.setSingleStep(0.05)
+        self.ms_softness_spin.setValue(matte_shape.DEFAULT_SOFTNESS)
+        enable_drag_to_scrub(self.ms_softness_spin)
+        self.ms_softness_spin.valueChanged.connect(self._apply_matte_shape_live)
+        rotation_softness_row.addWidget(_ParamLabel(
+            "Softness:", lambda: self.ms_softness_spin.setValue(matte_shape.DEFAULT_SOFTNESS)))
+        rotation_softness_row.addWidget(self.ms_softness_spin, stretch=1)
+        outer.addLayout(rotation_softness_row)
+
+        invert_highlight_row = QHBoxLayout()
+        self.ms_invert_checkbox = QCheckBox("Invert")
+        self.ms_invert_checkbox.setChecked(matte_shape.DEFAULT_INVERT)
+        self.ms_invert_checkbox.toggled.connect(self._apply_matte_shape_live)
+        invert_highlight_row.addWidget(self.ms_invert_checkbox)
+
+        # Highlight -- same generic mechanism the Keyer/Matte Combine
+        # inspectors' own checkboxes already drive.
+        self.ms_highlight_checkbox = QCheckBox("Highlight")
+        self.ms_highlight_checkbox.setToolTip(
+            "Show this stage's own shape matte in the Viewer -- full "
+            "color where selected, grayscale elsewhere.")
+        self.ms_highlight_checkbox.toggled.connect(self._on_ms_highlight_toggled)
+        invert_highlight_row.addWidget(self.ms_highlight_checkbox)
+        invert_highlight_row.addStretch(1)
+        outer.addLayout(invert_highlight_row)
+
+        outer.addStretch(1)
+
+        self.inspector_stack.addWidget(self._wrap_inspector_page(group))
+        self._matte_shape_inspector_index = self.inspector_stack.count() - 1
+
+    def _apply_matte_shape_live(self, *_args):
+        """Guarded by _refreshing_inspector, same convention as every
+        other live-apply handler."""
+        if self._refreshing_inspector:
+            return
+        stage = self._selected_stage()
+        if stage is None or stage.kind != "matte_shape":
+            return
+        stage.params["shape"] = self.ms_shape_combo.currentData()
+        stage.params["center_x"] = self.ms_center_x_spin.value()
+        stage.params["center_y"] = self.ms_center_y_spin.value()
+        stage.params["width"] = self.ms_width_spin.value()
+        stage.params["height"] = self.ms_height_spin.value()
+        stage.params["rotation"] = self.ms_rotation_spin.value()
+        stage.params["softness"] = self.ms_softness_spin.value()
+        stage.params["invert"] = self.ms_invert_checkbox.isChecked()
+        self._update_row_content(stage.id)
+        self._emit_changed()
+
+    def _on_ms_highlight_toggled(self, checked):
+        """Same convention as _on_ky_highlight_toggled/_on_mc_highlight_
+        toggled -- guarded, ephemeral UI state, still re-renders."""
+        if self._refreshing_inspector:
+            return
+        stage = self._selected_stage()
+        if stage is None or stage.kind != "matte_shape":
+            return
+        self._highlight_stage_id = stage.id if checked else None
+        self._emit_changed()
+
     # ---- inspector: fork_split stage ------------------------------------
 
     def _build_fork_split_inspector(self):
@@ -5494,6 +5637,29 @@ class StackPanel(QObject):
             own_letter = letters.get(stage.id)
             self.mc_group.setTitle(f"Matte Combine ({own_letter})" if own_letter else "Matte Combine")
             self.inspector_stack.setCurrentIndex(self._matte_combine_inspector_index)
+
+        elif stage.kind == "matte_shape":
+            p = stage.params
+            idx = self.ms_shape_combo.findData(p.get("shape", matte_shape.DEFAULT_SHAPE))
+            if idx >= 0:
+                self.ms_shape_combo.setCurrentIndex(idx)
+            self.ms_center_x_spin.setValue(p.get("center_x", matte_shape.DEFAULT_CENTER_X))
+            self.ms_center_y_spin.setValue(p.get("center_y", matte_shape.DEFAULT_CENTER_Y))
+            self.ms_width_spin.setValue(p.get("width", matte_shape.DEFAULT_WIDTH))
+            self.ms_height_spin.setValue(p.get("height", matte_shape.DEFAULT_HEIGHT))
+            self.ms_rotation_spin.setValue(p.get("rotation", matte_shape.DEFAULT_ROTATION))
+            self.ms_softness_spin.setValue(p.get("softness", matte_shape.DEFAULT_SOFTNESS))
+            self.ms_invert_checkbox.blockSignals(True)
+            self.ms_invert_checkbox.setChecked(p.get("invert", matte_shape.DEFAULT_INVERT))
+            self.ms_invert_checkbox.blockSignals(False)
+            self.ms_highlight_checkbox.blockSignals(True)
+            self.ms_highlight_checkbox.setChecked(self._highlight_stage_id == stage.id)
+            self.ms_highlight_checkbox.blockSignals(False)
+
+            letters = st.matte_letters_for(self.stack.stages)
+            own_letter = letters.get(stage.id)
+            self.ms_group.setTitle(f"Matte Shape ({own_letter})" if own_letter else "Matte Shape")
+            self.inspector_stack.setCurrentIndex(self._matte_shape_inspector_index)
 
         elif stage.kind == "fork_split":
             self.inspector_stack.setCurrentIndex(self._fork_split_inspector_index)
