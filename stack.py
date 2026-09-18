@@ -546,6 +546,9 @@ def make_keyer_stage(working_colourspace=keyer.DEFAULT_WORKING_COLOURSPACE,
                       chroma_min=keyer.DEFAULT_CHROMA_MIN, chroma_max=keyer.DEFAULT_CHROMA_MAX,
                       lightness_min=keyer.DEFAULT_LIGHTNESS_MIN, lightness_max=keyer.DEFAULT_LIGHTNESS_MAX,
                       softness=keyer.DEFAULT_SOFTNESS, invert=keyer.DEFAULT_INVERT,
+                      prefilter_blur=keyer.DEFAULT_PREFILTER_BLUR,
+                      matte_blur=keyer.DEFAULT_MATTE_BLUR,
+                      clip_black=keyer.DEFAULT_CLIP_BLACK, clip_white=keyer.DEFAULT_CLIP_WHITE,
                       label=None, enabled=True, opacity=1.0):
     """A stage that produces a MATTE (see this module's docstring, "MATTE
     CHANNELS") via keyer.compute_matte's OKLCh qualifier -- this stage's
@@ -562,6 +565,8 @@ def make_keyer_stage(working_colourspace=keyer.DEFAULT_WORKING_COLOURSPACE,
         "chroma_min": float(chroma_min), "chroma_max": float(chroma_max),
         "lightness_min": float(lightness_min), "lightness_max": float(lightness_max),
         "softness": float(softness), "invert": bool(invert),
+        "prefilter_blur": float(prefilter_blur), "matte_blur": float(matte_blur),
+        "clip_black": float(clip_black), "clip_white": float(clip_white),
     }
     return Stage("keyer", label or "Keyer", params, enabled, opacity)
 
@@ -1487,3 +1492,86 @@ def apply_stack_to_image_array(stack, image_array, cache=None, input_key=None):
     else:
         result = _run_stages(stack.stages, result)
     return np.clip(result, 0.0, 1.0).astype(np.float32)
+
+
+def compose_stacks(*stacks):
+    """Concatenates each Stack's own `.stages`, in the order given, into
+    one NEW, transient Stack -- for the Continuity Grading Timeline (see
+    timeline.py): a clip's own per-shot grade composed with the app's
+    existing global/Sequence Stack, so a frame gets graded through BOTH
+    in one pass (`compose_stacks(clip.stack, global_stack)`).
+
+    Deliberately NOT "apply the first Stack, then apply the second Stack
+    to its result" -- apply_stack_to_image_array clips its own output to
+    [0,1] before returning, so two separate applies back to back would
+    clip TWICE, silently discarding legitimate out-of-[0,1] intermediate
+    range between the two grades (the same "don't silently discard
+    legitimate range" rule this module's docstring already states for
+    every individual stage). Concatenating into one flat stage list and
+    folding it through the usual single `_run_stages` pass (via
+    apply_stack_to_image_array/StageCache, both completely unchanged --
+    a composed Stack is just an ordinary Stack as far as they're
+    concerned) means exactly one final clamp, applied once, in the right
+    place.
+
+    Every stage id is already globally unique (next_stage_id -- one
+    shared counter for the life of the process), so concatenating stage
+    lists from different Stack instances can never collide; a stage's
+    own `matte_source_id` is only ever assigned to another stage from
+    WITHIN the same stack it was edited in (see stack_panel.py's own
+    matte-dropdown, which only ever offers upstream stages already in
+    that same panel's list), so no reference can dangle or accidentally
+    cross from one input Stack's stages into another's after composing.
+
+    The result's own `size`/`domain_min`/`domain_max` are left at
+    Stack's own plain defaults -- inert here, since they only matter for
+    BAKING to a LUT3D (see Stack's own docstring), never for the direct-
+    pixel apply path this exists for; decide what they should mean if a
+    composed Stack ever needs to be baked instead."""
+    return Stack(stages=[stage for stack in stacks for stage in stack.stages])
+
+
+def running_array_before_stage(stack, image_array, stage_id):
+    """The RUNNING array exactly as it would stand immediately BEFORE
+    `stage_id` is applied -- i.e., that stage's own actual input, after
+    every enabled stage strictly before it in `stack.stages` (disabled
+    stages are already skipped the normal way, same as any other apply
+    path -- see _apply_single_stage_with_opacity). Unlike
+    apply_stack_to_image_array, this does NOT clip to [0,1] -- a stage
+    reading this (see keyer.py's own module docstring on why clipping a
+    log/HDR-encoded pixel before decode was a real, fixed bug) needs the
+    real value, not a display-clamped one.
+
+    Deliberately NOT run through a StageCache checkpoint, even though
+    one may already hold this exact array cached from the live preview
+    (see StageCache's own docstring) -- reusing it would need validating
+    the cached prefix is still fresh relative to `stack.stages` right
+    now, and re-deriving the stage's own block index into that cache's
+    private bookkeeping, for a call site (eyedropper picking, one-shot
+    per click) where the extra correctness-tracking isn't worth it.
+    `image_array` can safely be a SINGLE pixel (1,1,3) rather than a
+    full image -- see this function's own caller (SampleImagePanel.
+    pick_pixel_color_for_stage) for why: every stage kind's own apply
+    function is a plain per-pixel elementwise numpy op, and every
+    matte-producing kind is an identity RGB passthrough regardless of
+    shape (see MATTE_PRODUCING_KINDS' own docstring) -- nothing anywhere
+    in this stack grades one pixel differently depending on its
+    neighbors, so a 1x1 fold gives back the exact same number a full-
+    image fold would at that same pixel, far cheaper than re-grading
+    the whole image just to read one of its pixels back out.
+
+    Returns None if stage_id isn't found in stack.stages, or if it sits
+    inside an unmatched/open fork region once the stack is sliced at
+    its own position (see this module's docstring, "STACK FORKING") --
+    _run_stages raises ValueError in exactly that case (an open
+    fork_split with no fork_merge before the slice ends), caught here
+    and treated the same as "unresolved," the same silent-no-op
+    convention every other matte/stage reference in this app already
+    uses rather than surfacing a raise up into a UI click handler."""
+    index = next((i for i, s in enumerate(stack.stages) if s.id == stage_id), None)
+    if index is None:
+        return None
+    try:
+        return _run_stages(stack.stages[:index], np.asarray(image_array, dtype=np.float32))
+    except ValueError:
+        return None

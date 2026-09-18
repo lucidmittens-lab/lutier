@@ -20,6 +20,7 @@ from PIL import Image
 import canvas as cv
 import color_warper
 import custom_drt
+import keyer
 import exposure_contrast
 import grading_primary
 import grading_rgb_curve
@@ -27,6 +28,7 @@ import grading_tone
 import session_io
 import stack as st
 import stack_memory as st_mem
+import timeline as tl
 import thumbnail
 import media_cache
 from lut_library import LUTLibraryEntry, LUTLibrary
@@ -402,6 +404,7 @@ def test_keyer_stage_round_trips():
         working_colourspace="ACEScct",
         hue_center=210.0, hue_width=45.0, chroma_min=0.2, chroma_max=0.35,
         lightness_min=0.1, lightness_max=0.8, softness=0.6, invert=True,
+        prefilter_blur=2.5, matte_blur=1.25, clip_black=0.05, clip_white=0.95,
         label="My Keyer", opacity=0.8)
     stack = st.Stack(stages=[stage])
 
@@ -421,8 +424,37 @@ def test_keyer_stage_round_trips():
     assert r.params["lightness_max"] == 0.8
     assert r.params["softness"] == 0.6
     assert r.params["invert"] is True
+    assert r.params["prefilter_blur"] == 2.5
+    assert r.params["matte_blur"] == 1.25
+    assert r.params["clip_black"] == 0.05
+    assert r.params["clip_white"] == 0.95
     print("stack_to_session_dict/stack_from_session_dict: a 'keyer' stage "
           "round-trips through plain JSON -- OK")
+
+
+def test_keyer_stage_prefilter_and_clip_default_on_load_when_absent():
+    """An old saved session (from before Phase 4) never wrote prefilter_
+    blur/clip_black/clip_white at all -- loading it must silently fall
+    back to keyer.py's own no-op defaults, not KeyError."""
+    stage = st.make_keyer_stage(hue_center=10.0)
+    stack = st.Stack(stages=[stage])
+    data = stack_to_session_dict_round_trip_via_json(stack)
+    del data["stages"][0]["prefilter_blur"]
+    del data["stages"][0]["matte_blur"]
+    del data["stages"][0]["clip_black"]
+    del data["stages"][0]["clip_white"]
+
+    rebuilt_stack, warnings = session_io.stack_from_session_dict(data)
+
+    assert warnings == []
+    r = rebuilt_stack.stages[0]
+    assert r.params["prefilter_blur"] == keyer.DEFAULT_PREFILTER_BLUR
+    assert r.params["matte_blur"] == keyer.DEFAULT_MATTE_BLUR
+    assert r.params["clip_black"] == keyer.DEFAULT_CLIP_BLACK
+    assert r.params["clip_white"] == keyer.DEFAULT_CLIP_WHITE
+    print("stack_from_session_dict: an old session missing prefilter_blur/"
+          "matte_blur/clip_black/clip_white falls back to keyer.py's own "
+          "no-op defaults -- OK")
 
 
 def test_matte_combine_stage_round_trips_via_position():
@@ -646,7 +678,7 @@ def test_load_session_with_unknown_future_stage_kind_still_loads_others():
             json.dump(data, f)
 
         (loaded_stack, _sample_image_state, _memory_library, _gallery_still_library,
-         _cdl_library, _lut_library, _image_library, _undo_history_state, _canvas,
+         _cdl_library, _lut_library, _image_library, _undo_history_state, _canvas, _timeline,
          warnings) = session_io.load_session(path)
 
         assert len(loaded_stack.stages) == 1
@@ -706,7 +738,7 @@ def test_save_and_load_session_round_trips_lut_library_and_embedded_stage():
 
         (loaded_stack, sample_image_state, memory_library, gallery_still_library,
          cdl_library, loaded_lut_library, loaded_image_library, undo_history_state,
-         canvas, warnings) = session_io.load_session(path)
+         canvas, timeline, warnings) = session_io.load_session(path)
 
         assert warnings == []
         assert len(loaded_lut_library.entries) == 1
@@ -759,7 +791,7 @@ def test_load_session_ignores_a_leftover_workspace_key_from_version_6():
             json.dump(data, f)
 
         result = session_io.load_session(path)
-        assert len(result) == 10  # no workspace element in the returned tuple
+        assert len(result) == 11  # no workspace element in the returned tuple
         warnings = result[-1]
         assert warnings == []
     print("load_session: a VERSION 6 file's leftover 'workspace' key is "
@@ -892,7 +924,9 @@ def test_memory_library_session_round_trip_with_thumbnail():
     library = st_mem.StackMemoryLibrary()
     library.save("My Grade", stack, thumbnail=thumb, full_still=full_still)
 
-    serialized = json.loads(json.dumps(session_io.memory_library_to_session_list(library)))
+    entries, save_warnings = session_io.memory_library_to_session_list(library)
+    assert save_warnings == []
+    serialized = json.loads(json.dumps(entries))
     rebuilt_library, warnings = session_io.memory_library_from_session_list(serialized)
 
     assert warnings == []
@@ -906,6 +940,31 @@ def test_memory_library_session_round_trip_with_thumbnail():
           "plain JSON -- OK")
 
 
+def test_memory_library_to_session_list_drops_a_broken_memory_with_a_warning():
+    """Regression guard for the fix: before this, ANY one memory whose
+    own stack_to_session_dict raised (see test_stack_to_session_dict_
+    raises_loudly_for_unreconstructable_lut_stage above) blocked saving
+    the WHOLE library -- including every other, perfectly valid memory,
+    and by extension the whole session save (see save_session's own
+    docstring). Now that one memory is dropped, with a warning naming
+    it, and the rest save normally."""
+    broken_stage = st.make_lut_stage(_make_lut3d(size=3), label="Mystery")
+    broken_stage.params["source_kind"] = "not_a_real_source_kind"
+    library = st_mem.StackMemoryLibrary()
+    library.save("Good Grade", st.Stack(stages=[st.make_cdl_stage(slope=(1.1, 1.0, 0.9))]))
+    library.save("Broken Grade", st.Stack(stages=[broken_stage]))
+    library.save("Also Good", st.Stack())
+
+    entries, warnings = session_io.memory_library_to_session_list(library)
+
+    assert len(entries) == 2
+    assert [e["name"] for e in entries] == ["Good Grade", "Also Good"]
+    assert len(warnings) == 1
+    assert "Broken Grade" in warnings[0]
+    print("memory_library_to_session_list: a broken memory is dropped "
+          "with a warning naming it, the rest save normally -- OK")
+
+
 def test_memory_library_from_session_list_defaults_thumbnail_for_old_files():
     """A pre-VERSION-10 file has no thumbnail/full_still keys at all."""
     old_data = [{"name": "Old Memory", "stack": session_io.stack_to_session_dict(st.Stack())}]
@@ -915,6 +974,139 @@ def test_memory_library_from_session_list_defaults_thumbnail_for_old_files():
     assert library.memories[0].full_still is None
     print("memory_library_from_session_list: a pre-VERSION-10 file with no "
           "thumbnail/full_still keys defaults both to None -- OK")
+
+
+# ---- timeline_to_session_dict / timeline_from_session_dict (VERSION 11) --
+
+def test_timeline_to_session_dict_round_trips_via_json():
+    timeline = tl.Timeline(name="Reel 1", frame_rate=25.0)
+    clip = tl.TimelineClip(
+        "Shot 01", "/footage/shot01.mov", "video", 10, 109,
+        stack=st.Stack(stages=[st.make_cdl_stage(slope=(1.1, 1.0, 0.9))]),
+        thumbnail={"mode": "embedded", "data_b64": "Zm9v"})
+    timeline.add_clip(clip)
+
+    data, warnings = session_io.timeline_to_session_dict(timeline)
+    assert warnings == []
+    serialized = json.loads(json.dumps(data))
+    rebuilt, warnings = session_io.timeline_from_session_dict(serialized)
+
+    assert warnings == []
+    assert rebuilt.name == "Reel 1"
+    assert rebuilt.frame_rate == 25.0
+    assert len(rebuilt.clips) == 1
+    rebuilt_clip = rebuilt.clips[0]
+    assert rebuilt_clip.name == "Shot 01"
+    assert rebuilt_clip.source_path == "/footage/shot01.mov"
+    assert rebuilt_clip.media_kind == "video"
+    assert rebuilt_clip.in_frame == 10
+    assert rebuilt_clip.out_frame == 109
+    assert rebuilt_clip.thumbnail == {"mode": "embedded", "data_b64": "Zm9v"}
+    assert rebuilt_clip.id != clip.id, "a reconstructed clip gets a fresh id, never the saved one"
+    assert len(rebuilt_clip.stack.stages) == 1
+    assert rebuilt_clip.stack.stages[0].kind == "cdl"
+    print("timeline_to_session_dict/timeline_from_session_dict: name, "
+          "frame_rate, and every clip field (including its own Stack) "
+          "round-trip through plain JSON -- OK")
+
+
+def test_timeline_from_session_dict_defaults_to_an_empty_timeline_when_absent():
+    """None/{} (no 'timeline' key at all -- a pre-VERSION-11 file) must
+    load fine as a brand-new, empty Timeline, same 'old file loads fine,
+    just without the newer feature' convention every prior version bump
+    in this module already follows."""
+    for absent in (None, {}):
+        timeline, warnings = session_io.timeline_from_session_dict(absent)
+        assert warnings == []
+        assert timeline.clips == []
+        assert timeline.name == "Timeline"
+        assert timeline.frame_rate == tl.DEFAULT_FRAME_RATE
+    print("timeline_from_session_dict: None/{} loads as a brand-new, "
+          "empty Timeline -- OK")
+
+
+def test_timeline_to_session_dict_drops_a_broken_clip_with_a_warning():
+    """Same resilience memory_library_to_session_list already has (this
+    session's own earlier fix): one clip whose own Stack can't be
+    serialized must be dropped, with a warning naming it, rather than
+    sinking the whole save."""
+    broken_stage = st.make_lut_stage(_make_lut3d(gain=1.0, size=3), label="Mystery")
+    broken_stage.params["source_kind"] = "not_a_real_source_kind"
+    timeline = tl.Timeline()
+    timeline.add_clip(tl.TimelineClip(
+        "Good Shot", "/a.mov", "video", 0, 99,
+        stack=st.Stack(stages=[st.make_cdl_stage(slope=(1.1, 1.0, 0.9))])))
+    timeline.add_clip(tl.TimelineClip(
+        "Broken Shot", "/b.mov", "video", 0, 99,
+        stack=st.Stack(stages=[broken_stage])))
+    timeline.add_clip(tl.TimelineClip("Also Good", "/c.mov", "video", 0, 99))
+
+    data, warnings = session_io.timeline_to_session_dict(timeline)
+
+    assert [c["name"] for c in data["clips"]] == ["Good Shot", "Also Good"]
+    assert len(warnings) == 1
+    assert "Broken Shot" in warnings[0]
+    print("timeline_to_session_dict: a broken clip is dropped with a "
+          "warning naming it, the rest save normally -- OK")
+
+
+def test_save_and_load_session_round_trips_a_timeline():
+    timeline = tl.Timeline(name="Dailies", frame_rate=23.976)
+    timeline.add_clip(tl.TimelineClip(
+        "Shot 01", "/a.mov", "video", 0, 47,
+        stack=st.Stack(stages=[st.make_cdl_stage(sat=0.8)])))
+    timeline.add_clip(tl.TimelineClip("Shot 02", "/b.mov", "video", 100, 199))
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "test_session.ltr")
+        warnings = session_io.save_session(path, st.Stack(), None, timeline=timeline)
+        assert warnings == []
+
+        result = session_io.load_session(path)
+        loaded_timeline = result[-2]
+        assert loaded_timeline.name == "Dailies"
+        assert loaded_timeline.frame_rate == 23.976
+        assert [c.name for c in loaded_timeline.clips] == ["Shot 01", "Shot 02"]
+        assert len(loaded_timeline.clips[0].stack.stages) == 1
+    print("save_session/load_session: a Timeline (every clip, its own "
+          "Stack, name, frame_rate) survives a real file round trip -- OK")
+
+
+def test_save_session_with_no_timeline_omits_it_and_load_returns_an_empty_one():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "test_session.ltr")
+        session_io.save_session(path, st.Stack(), None)  # timeline=None (default)
+        with open(path) as f:
+            data = json.load(f)
+        assert data["timeline"] is None
+
+        result = session_io.load_session(path)
+        loaded_timeline = result[-2]
+        assert loaded_timeline.clips == []
+    print("save_session: timeline=None writes a null 'timeline', "
+          "load_session reports a brand-new empty Timeline -- OK")
+
+
+def test_load_session_without_timeline_key_defaults_to_empty():
+    """A pre-VERSION-11 file has no 'timeline' key at all -- must still
+    load fine, per this module's own VERSION 11 note."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "old_session.ltr")
+        session_io.save_session(path, st.Stack(), None)
+        with open(path) as f:
+            data = json.load(f)
+        del data["timeline"]
+        data["version"] = 10
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+        result = session_io.load_session(path)
+        loaded_timeline = result[-2]
+        warnings = result[-1]
+        assert loaded_timeline.clips == []
+        assert warnings == []
+    print("load_session: a pre-version-11 file with no 'timeline' key "
+          "loads fine, reports a brand-new empty Timeline -- OK")
 
 
 def test_gallery_stills_session_round_trip():
@@ -963,7 +1155,7 @@ def test_save_and_load_session_round_trips_memories_and_gallery_stills():
             gallery_still_library=gallery_library)
 
         (_stack, _sample_image_state, loaded_memory_library, loaded_gallery_library,
-         _cdl_library, _lut_library, _image_library, _undo_history_state, _canvas,
+         _cdl_library, _lut_library, _image_library, _undo_history_state, _canvas, _timeline,
          warnings) = session_io.load_session(path)
 
         assert warnings == []
@@ -1010,7 +1202,7 @@ def test_load_session_without_lut_library_key_defaults_to_empty():
             json.dump(data, f)
 
         (_stack, _sample_image_state, _memory_library, _gallery_still_library,
-         _cdl_library, lut_library, image_library, _undo_history_state, _canvas,
+         _cdl_library, lut_library, image_library, _undo_history_state, _canvas, _timeline,
          warnings) = session_io.load_session(path)
         assert warnings == []
         assert lut_library.entries == []
@@ -1036,7 +1228,7 @@ def test_save_and_load_session_round_trips_undo_history():
         session_io.save_session(path, stack_b, None, undo_history=history)
 
         (_stack, _sample_image_state, _memory_library, _gallery_still_library,
-         _cdl_library, _lut_library, _image_library, undo_history_state, _canvas,
+         _cdl_library, _lut_library, _image_library, undo_history_state, _canvas, _timeline,
          warnings) = session_io.load_session(path)
 
         assert warnings == []
@@ -1061,7 +1253,7 @@ def test_save_session_with_no_undo_history_omits_it_and_load_returns_none():
         assert data["undo_history"] is None
 
         result = session_io.load_session(path)
-        undo_history_state = result[-3]
+        undo_history_state = result[-4]
         assert undo_history_state is None
     print("save_session: undo_history=None writes a null 'undo_history', "
           "load_session reports None (fresh history) rather than an empty "
@@ -1083,7 +1275,7 @@ def test_load_session_without_undo_history_key_defaults_to_none():
             json.dump(data, f)
 
         result = session_io.load_session(path)
-        undo_history_state = result[-3]
+        undo_history_state = result[-4]
         warnings = result[-1]
         assert undo_history_state is None
         assert warnings == []
@@ -1098,7 +1290,7 @@ def test_canvas_round_trips_through_save_and_load():
         path = os.path.join(tmp_dir, "test_session.ltr")
         session_io.save_session(path, st.Stack(), None, canvas=canvas)
         result = session_io.load_session(path)
-        loaded_canvas = result[-2]
+        loaded_canvas = result[-3]
         assert loaded_canvas == canvas
     print("save_session/load_session: canvas round-trips exactly through a real file -- OK")
 
@@ -1116,7 +1308,7 @@ def test_canvas_defaults_when_absent_or_none():
             data = json.load(f)
         assert data["canvas"] is None
         result = session_io.load_session(path)
-        assert result[-2] == cv.DEFAULT_CANVAS
+        assert result[-3] == cv.DEFAULT_CANVAS
 
         old_path = os.path.join(tmp_dir, "old_session.ltr")
         with open(old_path, "w") as f:
@@ -1124,7 +1316,7 @@ def test_canvas_defaults_when_absent_or_none():
             data["version"] = 8
             json.dump(data, f)
         old_result = session_io.load_session(old_path)
-        assert old_result[-2] == cv.DEFAULT_CANVAS
+        assert old_result[-3] == cv.DEFAULT_CANVAS
     print("load_session: canvas=None and a missing 'canvas' key (pre-version-9 file) "
           "both load as DEFAULT_CANVAS -- OK")
 
@@ -1136,7 +1328,8 @@ def test_undo_history_to_session_list_caps_at_max_persisted_states():
         history.push(state)
     assert history.pointer == len(states) - 1
 
-    data = session_io.undo_history_to_session_list(history)
+    data, warnings = session_io.undo_history_to_session_list(history)
+    assert warnings == []
     assert len(data["states"]) == session_io.MAX_PERSISTED_UNDO_STATES
     # Dropped from the oldest end -- current position (the redo-tail-free
     # end) is preserved exactly, just shifted to match the shorter list.
@@ -1144,6 +1337,101 @@ def test_undo_history_to_session_list_caps_at_max_persisted_states():
     print("undo_history_to_session_list: caps at MAX_PERSISTED_UNDO_STATES, "
           "dropping from the oldest end and shifting the pointer to match "
           "-- OK")
+
+
+def _broken_stack():
+    """A Stack containing exactly one stage that raises when
+    stack_to_session_dict tries to serialize it -- same construction
+    test_stack_to_session_dict_raises_loudly_for_unreconstructable_lut_
+    stage uses above."""
+    stage = st.make_lut_stage(_make_lut3d(size=3), label="Mystery")
+    stage.params["source_kind"] = "not_a_real_source_kind"
+    return st.Stack(stages=[stage])
+
+
+def test_undo_history_to_session_list_drops_a_broken_state_and_shifts_pointer():
+    """Regression guard for the fix: before this, ANY one undo state
+    whose own stack_to_session_dict raised blocked saving the whole
+    session, including the current, perfectly valid working stack (see
+    save_session's own docstring). Now that one state is dropped, with a
+    warning, and `pointer` shifts to still land on the same logical
+    position."""
+    good_a = st.Stack()
+    good_b = st.Stack(stages=[st.make_cdl_stage(slope=(1.1, 1.0, 0.9))])
+    good_c = st.Stack(stages=[st.make_cdl_stage(sat=1.2)])
+    history = UndoHistory(good_a)
+    history.push(_broken_stack())  # index 1 -- will be dropped
+    history.push(good_b)
+    history.push(good_c)  # pointer == 3 (current position)
+
+    data, warnings = session_io.undo_history_to_session_list(history)
+
+    assert len(data["states"]) == 3  # good_a, good_b, good_c -- the broken one dropped
+    assert len(warnings) == 1
+    assert "#1" in warnings[0]
+    # One state dropped BEFORE the original pointer (3) -- shifts down by one.
+    assert data["pointer"] == 2
+    print("undo_history_to_session_list: a broken state is dropped with "
+          "a warning, pointer shifts to still land on the same logical "
+          "position -- OK")
+
+
+def test_undo_history_to_session_list_drops_the_state_at_the_pointer_itself():
+    good_a = st.Stack()
+    history = UndoHistory(good_a)
+    history.push(_broken_stack())  # index 1 -- the CURRENT position, and it's broken
+
+    data, warnings = session_io.undo_history_to_session_list(history)
+
+    assert len(data["states"]) == 1  # only good_a survives
+    assert len(warnings) == 1
+    assert "#1" in warnings[0]
+    # Nothing left after the dropped state -- clamps onto the last survivor.
+    assert data["pointer"] == 0
+    print("undo_history_to_session_list: dropping the state AT the "
+          "pointer clamps onto the nearest surviving state rather than "
+          "an out-of-range index -- OK")
+
+
+def test_save_session_succeeds_despite_a_broken_stack_memory():
+    """Integration-level regression guard, end to end through the real
+    file-writing path: a broken Stack Memory must not block saving the
+    CURRENT, valid working stack -- exactly the failure Tom's review
+    flagged."""
+    library = st_mem.StackMemoryLibrary()
+    library.save("Broken", _broken_stack())
+    good_stack = st.Stack(stages=[st.make_cdl_stage(slope=(1.2, 0.9, 1.0))])
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "test_session.ltr")
+        warnings = session_io.save_session(path, good_stack, None, stack_memory_library=library)
+        assert len(warnings) == 1
+        assert "Broken" in warnings[0]
+
+        (loaded_stack, *_rest) = session_io.load_session(path)
+        assert len(loaded_stack.stages) == 1
+        assert loaded_stack.stages[0].kind == "cdl"
+    print("save_session: a broken Stack Memory doesn't block saving the "
+          "current, valid working stack -- returns a warning instead of "
+          "raising -- OK")
+
+
+def test_save_session_still_raises_if_the_current_stack_itself_is_broken():
+    """The deliberate asymmetry (see save_session's own docstring): only
+    OLD data (stack_memories/undo_history) gets the resilient "drop and
+    warn" treatment. If the CURRENT working stack itself can't be
+    serialized, save_session must still raise immediately -- silently
+    dropping part of the user's actual active work would be far worse
+    than a hard, loud failure."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "test_session.ltr")
+        try:
+            session_io.save_session(path, _broken_stack(), None)
+            assert False, "must raise for a broken CURRENT stack, not silently drop it"
+        except ValueError:
+            pass
+    print("save_session: still raises immediately if the CURRENT working "
+          "stack itself is unreconstructable -- OK")
 
 
 if __name__ == "__main__":
@@ -1178,7 +1466,14 @@ if __name__ == "__main__":
     test_image_library_from_session_list_defaults_media_kind_for_old_files()
     test_image_library_from_session_list_skips_missing_file_with_warning()
     test_memory_library_session_round_trip_with_thumbnail()
+    test_memory_library_to_session_list_drops_a_broken_memory_with_a_warning()
     test_memory_library_from_session_list_defaults_thumbnail_for_old_files()
+    test_timeline_to_session_dict_round_trips_via_json()
+    test_timeline_from_session_dict_defaults_to_an_empty_timeline_when_absent()
+    test_timeline_to_session_dict_drops_a_broken_clip_with_a_warning()
+    test_save_and_load_session_round_trips_a_timeline()
+    test_save_session_with_no_timeline_omits_it_and_load_returns_an_empty_one()
+    test_load_session_without_timeline_key_defaults_to_empty()
     test_gallery_stills_session_round_trip()
     test_gallery_stills_from_session_list_skips_entry_with_no_source_path()
     test_save_and_load_session_round_trips_memories_and_gallery_stills()
@@ -1191,5 +1486,9 @@ if __name__ == "__main__":
     test_canvas_round_trips_through_save_and_load()
     test_canvas_defaults_when_absent_or_none()
     test_undo_history_to_session_list_caps_at_max_persisted_states()
+    test_undo_history_to_session_list_drops_a_broken_state_and_shifts_pointer()
+    test_undo_history_to_session_list_drops_the_state_at_the_pointer_itself()
+    test_save_session_succeeds_despite_a_broken_stack_memory()
+    test_save_session_still_raises_if_the_current_stack_itself_is_broken()
     print()
     print("All session_io tests passed.")

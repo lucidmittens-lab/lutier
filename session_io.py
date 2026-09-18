@@ -176,13 +176,26 @@ import keyer
 import matte_combine
 import matte_shape
 from stack_memory import StackMemory, StackMemoryLibrary, GalleryStill, GalleryStillLibrary
+from timeline import Timeline, TimelineClip, DEFAULT_FRAME_RATE
 from cdl_library import CDLEntry, CDLLibrary
 from lut_library import LUTLibraryEntry, LUTLibrary
 from image_library import ImageLibraryEntry, ImageLibrary
 from atomic_write import atomic_open
 
 SESSION_FORMAT = "lutier-session"
-SESSION_VERSION = 10
+SESSION_VERSION = 11
+
+# VERSION 11 (Continuity Grading Timeline, per Tom: "we need to start
+# thinking about a video sequence" -> a multi-clip timeline) adds a
+# brand-new top-level "timeline" object -- see timeline_to_session_dict/
+# timeline_from_session_dict's own docstrings -- holding the ordered list
+# of timeline.TimelineClip entries the user's built up, each with its own
+# OWNED, independently-graded Stack (see timeline.py's own module
+# docstring on why this is a live Stack, not a copy-on-save snapshot the
+# way a Stack Memory is). A file saved before this version has no
+# "timeline" key at all; it defaults to an EMPTY Timeline on load, same
+# "old file loads fine, just without the newer feature" convention every
+# prior version bump in this module already follows.
 
 # VERSION 10 (Media Library Phase 2 + Stills Gallery Phase 3, per Tom's
 # "comprehensive media library" / "stack memories ... enhanced to be a
@@ -414,6 +427,10 @@ def stage_to_session_dict(stage):
         entry["lightness_max"] = stage.params.get("lightness_max", keyer.DEFAULT_LIGHTNESS_MAX)
         entry["softness"] = stage.params.get("softness", keyer.DEFAULT_SOFTNESS)
         entry["invert"] = stage.params.get("invert", keyer.DEFAULT_INVERT)
+        entry["prefilter_blur"] = stage.params.get("prefilter_blur", keyer.DEFAULT_PREFILTER_BLUR)
+        entry["matte_blur"] = stage.params.get("matte_blur", keyer.DEFAULT_MATTE_BLUR)
+        entry["clip_black"] = stage.params.get("clip_black", keyer.DEFAULT_CLIP_BLACK)
+        entry["clip_white"] = stage.params.get("clip_white", keyer.DEFAULT_CLIP_WHITE)
     elif stage.kind == "matte_combine":
         entry["op"] = stage.params.get("op", matte_combine.DEFAULT_OP)
         # matte_a_source_index/matte_b_source_index are written by
@@ -663,6 +680,10 @@ def stage_from_session_dict(entry):
             lightness_max=entry.get("lightness_max", keyer.DEFAULT_LIGHTNESS_MAX),
             softness=entry.get("softness", keyer.DEFAULT_SOFTNESS),
             invert=entry.get("invert", keyer.DEFAULT_INVERT),
+            prefilter_blur=entry.get("prefilter_blur", keyer.DEFAULT_PREFILTER_BLUR),
+            matte_blur=entry.get("matte_blur", keyer.DEFAULT_MATTE_BLUR),
+            clip_black=entry.get("clip_black", keyer.DEFAULT_CLIP_BLACK),
+            clip_white=entry.get("clip_white", keyer.DEFAULT_CLIP_WHITE),
             label=label,
             enabled=entry.get("enabled", True),
             opacity=entry.get("opacity", 1.0),
@@ -780,7 +801,7 @@ def stack_from_session_dict(data):
 
 
 def memory_library_to_session_list(library):
-    """StackMemoryLibrary -> plain JSON-able list, each entry a name plus
+    """StackMemoryLibrary -> (entries, warnings), each entry a name plus
     its own stack_to_session_dict -- a memory IS just an independent
     stack, serialized the identical way the working one is. VERSION 10
     (Stills Gallery, Phase 3) additionally writes thumbnail (a
@@ -789,12 +810,28 @@ def memory_library_to_session_list(library):
     of its own thumbnail field) and full_still (Phase 3 follow-up, per
     Tom: "also capture full canvas-res still" -- a SECOND, same-shaped
     media_cache.py descriptor, see stack_memory.StackMemory's own
-    docstring)."""
-    return [
-        {"name": memory.name, "stack": stack_to_session_dict(memory.stack),
-         "thumbnail": memory.thumbnail, "full_still": memory.full_still}
-        for memory in library.memories
-    ]
+    docstring).
+
+    A memory whose OWN stack_to_session_dict raises (an unreconstructable
+    stage -- e.g. a LUT stage that's since lost its source file) is
+    DROPPED, with a warning, rather than sinking the whole save -- same
+    "one bad thing doesn't sink everything else" rule the FROM-session
+    side already applies per memory. Before this, ANY one broken memory
+    anywhere in the library -- possibly one the user forgot even existed
+    -- made save_session fail outright, blocking the save of the
+    CURRENT, perfectly valid working stack too."""
+    entries = []
+    warnings = []
+    for memory in library.memories:
+        try:
+            stack_dict = stack_to_session_dict(memory.stack)
+        except Exception as e:  # noqa: BLE001 -- one bad memory must not sink the whole save
+            warnings.append(f'[Stack Memory "{memory.name}"] Dropped from the saved '
+                             f"file (couldn't be reconstructed): {e}")
+            continue
+        entries.append({"name": memory.name, "stack": stack_dict,
+                         "thumbnail": memory.thumbnail, "full_still": memory.full_still})
+    return entries, warnings
 
 
 def memory_library_from_session_list(entries):
@@ -816,6 +853,80 @@ def memory_library_from_session_list(entries):
             name, stack, thumbnail=entry.get("thumbnail"),
             full_still=entry.get("full_still")))
     return library, warnings
+
+
+def timeline_to_session_dict(timeline):
+    """Timeline -> ({"name", "frame_rate", "clips": [...]}, warnings) --
+    VERSION 11 (Continuity Grading Timeline, see this module's own
+    VERSION 11 note). A dict, not a bare list like memory_library_to_
+    session_list/etc, because a Timeline itself carries metadata beyond
+    just its ordered clips (name, frame_rate) -- same "the collection
+    itself has fields worth keeping" reasoning stack_to_session_dict
+    already has for a Stack's own size/domain alongside its stages.
+
+    Each clip entry embeds its own stack_to_session_dict(clip.stack) --
+    a clip's Stack is exactly as independently reconstructable as a
+    Stack Memory's (see timeline.py's own module docstring on the one
+    real difference: LIVE vs. copy-on-save, which doesn't matter for
+    serialization -- both are just "a Stack" on disk). A clip whose own
+    Stack fails to serialize (an unreconstructable stage -- e.g. a LUT
+    stage that's since lost its source file) is DROPPED, with a
+    warning, rather than sinking the whole save -- same "one bad thing
+    doesn't sink everything else" rule memory_library_to_session_list
+    already established (and the same reasoning: a stale clip buried in
+    a long timeline the user isn't actively looking at shouldn't block
+    saving everything else)."""
+    clips = []
+    warnings = []
+    for clip in timeline.clips:
+        try:
+            stack_dict = stack_to_session_dict(clip.stack)
+        except Exception as e:  # noqa: BLE001 -- one bad clip must not sink the whole save
+            warnings.append(f'[Timeline Clip "{clip.name}"] Dropped from the saved '
+                             f"file (couldn't be reconstructed): {e}")
+            continue
+        clips.append({
+            "name": clip.name,
+            "source_path": clip.source_path,
+            "media_kind": clip.media_kind,
+            "in_frame": clip.in_frame,
+            "out_frame": clip.out_frame,
+            "thumbnail": clip.thumbnail,
+            "stack": stack_dict,
+        })
+    return {"name": timeline.name, "frame_rate": timeline.frame_rate, "clips": clips}, warnings
+
+
+def timeline_from_session_dict(data):
+    """Inverse of timeline_to_session_dict. Returns (timeline, warnings)
+    -- a broken clip (bad stage inside its own Stack) reports its
+    warnings prefixed with that clip's own name and is otherwise
+    skipped, same "one bad thing doesn't sink everything else" rule
+    stack_from_session_dict already uses per-stage, just one level up.
+    `data` may be `{}`/`None` (no "timeline" key at all -- a pre-
+    VERSION-11 file) -- defaults to a brand-new, empty Timeline, same
+    "old file loads fine, just without the newer feature" convention
+    every prior version bump in this module already follows. Every
+    reconstructed clip gets a FRESH id (via TimelineClip's own default),
+    never the id it happened to have when saved -- same "ids are only
+    ever meaningful within one in-memory session" convention every other
+    id-bearing entity in this app already follows (see stack_to_session_
+    dict's own docstring on why matte_source_id round-trips via
+    POSITION, never a raw id, for the identical reason)."""
+    data = data or {}
+    timeline = Timeline(name=data.get("name", "Timeline"),
+                         frame_rate=data.get("frame_rate", DEFAULT_FRAME_RATE))
+    warnings = []
+    for entry in data.get("clips", []):
+        name = entry.get("name", "Clip")
+        stack, stage_warnings = stack_from_session_dict(entry.get("stack", {}))
+        warnings.extend(f'[Timeline Clip "{name}"] {msg}' for msg in stage_warnings)
+        timeline.clips.append(TimelineClip(
+            name, entry.get("source_path"), entry.get("media_kind", "video"),
+            entry.get("in_frame", 0), entry.get("out_frame", 0),
+            stack=stack, thumbnail=entry.get("thumbnail"),
+        ))
+    return timeline, warnings
 
 
 def gallery_stills_to_session_list(library):
@@ -864,25 +975,49 @@ def gallery_stills_from_session_list(entries_data):
 
 
 def undo_history_to_session_list(undo_history):
-    """undo_history.UndoHistory -> plain JSON-able dict of {"states":
-    [...], "pointer": int}, each state its own stack_to_session_dict --
-    same "it's just an independent stack, serialized the identical way"
-    relationship memory_library_to_session_list has to a Stack Memory.
-    Capped to the most recent MAX_PERSISTED_UNDO_STATES states (see this
-    module's VERSION 8 note on why, unlike the in-memory case, this can't
-    be left uncapped) -- states are dropped from the OLDEST end first,
-    with `pointer` shifted to match so the current position/redo tail is
-    preserved exactly; only how far back undo can reach is reduced."""
+    """undo_history.UndoHistory -> ({"states": [...], "pointer": int},
+    warnings), each state its own stack_to_session_dict -- same "it's
+    just an independent stack, serialized the identical way" relationship
+    memory_library_to_session_list has to a Stack Memory. Capped to the
+    most recent MAX_PERSISTED_UNDO_STATES states (see this module's
+    VERSION 8 note on why, unlike the in-memory case, this can't be left
+    uncapped) -- states are dropped from the OLDEST end first, with
+    `pointer` shifted to match so the current position/redo tail is
+    preserved exactly; only how far back undo can reach is reduced.
+
+    A state whose OWN stack_to_session_dict raises (an unreconstructable
+    stage) is separately DROPPED, with a warning, rather than sinking the
+    whole save -- same "one bad thing doesn't sink everything else" rule
+    the FROM-session side already applies per state (and the same fix
+    memory_library_to_session_list just above gets, for the identical
+    reason: up to MAX_PERSISTED_UNDO_STATES states of old history is a
+    lot of surface area for exactly one stale, unreconstructable stage to
+    hide in). `pointer` is shifted down by one for every dropped state at
+    or before it, so it still lands on the same logical position (or the
+    nearest surviving one, if the exact state it pointed at was itself
+    the one dropped) rather than a stale/out-of-range index."""
     states = undo_history.states
     pointer = undo_history.pointer
     if len(states) > MAX_PERSISTED_UNDO_STATES:
         dropped = len(states) - MAX_PERSISTED_UNDO_STATES
         states = states[dropped:]
         pointer = max(0, pointer - dropped)
-    return {
-        "states": [stack_to_session_dict(state) for state in states],
-        "pointer": pointer,
-    }
+
+    serialized = []
+    warnings = []
+    dropped_at_or_before_pointer = 0
+    for i, state in enumerate(states):
+        try:
+            serialized.append(stack_to_session_dict(state))
+        except Exception as e:  # noqa: BLE001 -- one bad state must not sink the whole save
+            warnings.append(f"[Undo history #{i}] Dropped from the saved file "
+                             f"(couldn't be reconstructed): {e}")
+            if i <= pointer:
+                dropped_at_or_before_pointer += 1
+
+    new_pointer = pointer - dropped_at_or_before_pointer
+    new_pointer = max(0, min(new_pointer, len(serialized) - 1)) if serialized else 0
+    return {"states": serialized, "pointer": new_pointer}, warnings
 
 
 def undo_history_from_session_list(data):
@@ -1069,7 +1204,7 @@ def image_library_from_session_list(entries_data):
 
 def save_session(path, stack, sample_image_state, stack_memory_library=None,
                   gallery_still_library=None, cdl_library=None, lut_library=None,
-                  image_library=None, undo_history=None, canvas=None):
+                  image_library=None, undo_history=None, canvas=None, timeline=None):
     """sample_image_state: whatever SampleImagePanel.get_session_state()
     returned (a dict, or None if no image is currently loaded).
     stack_memory_library: whatever StackMemoriesPanel.get_library()
@@ -1091,20 +1226,53 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
     Stack Memory export -- that have no undo history of their own; see
     this module's VERSION 8 note). canvas: a canvas.CanvasSettings, or
     None to save with no canvas section at all (loads back as
-    canvas.DEFAULT_CANVAS -- see VERSION 9 note).
+    canvas.DEFAULT_CANVAS -- see VERSION 9 note). timeline: a
+    timeline.Timeline (see this module's own VERSION 11 note), or None
+    to save with no Continuity Grading Timeline at all (loads back as a
+    brand-new, empty Timeline -- see timeline_from_session_dict).
 
     No `workspace` parameter as of VERSION 7 (see this module's docstring)
     -- workspace layout is saved/loaded independently now, via
-    workspace_io.py, not as part of a session at all."""
+    workspace_io.py, not as part of a session at all.
+
+    Returns `warnings`, a list of strings describing anything DROPPED
+    from stack_memories/undo_history/timeline while saving (see memory_
+    library_to_session_list/undo_history_to_session_list/timeline_to_
+    session_dict's own docstrings) -- empty for a fully clean save. The
+    CURRENT working `stack` is deliberately NOT covered by this
+    resilience: if IT fails to serialize, this function still raises
+    immediately, same as always -- that's the user's own active work,
+    not old history, so silently dropping any part of it would be far
+    worse than a hard, immediate error. Only stack_memory_library/
+    undo_history/timeline -- old, already-set-aside data the user isn't
+    actively looking at RIGHT NOW -- get the "one bad entry doesn't
+    block the save" treatment, which is exactly the asymmetry that used
+    to make a single stale, unreconstructable stage buried in 50 states
+    of undo history (or a Stack Memory the user might not even remember
+    exists) block saving an otherwise-perfectly-valid current session
+    outright."""
+    warnings = []
+    stack_memories, memory_warnings = (
+        memory_library_to_session_list(stack_memory_library)
+        if stack_memory_library is not None else ([], [])
+    )
+    warnings.extend(memory_warnings)
+    undo_history_data, undo_warnings = (
+        undo_history_to_session_list(undo_history)
+        if undo_history is not None else (None, [])
+    )
+    warnings.extend(undo_warnings)
+    timeline_data, timeline_warnings = (
+        timeline_to_session_dict(timeline)
+        if timeline is not None else (None, [])
+    )
+    warnings.extend(timeline_warnings)
     data = {
         "format": SESSION_FORMAT,
         "version": SESSION_VERSION,
         "stack": stack_to_session_dict(stack),
         "sample_image": sample_image_state,
-        "stack_memories": (
-            memory_library_to_session_list(stack_memory_library)
-            if stack_memory_library is not None else []
-        ),
+        "stack_memories": stack_memories,
         "gallery_stills": (
             gallery_stills_to_session_list(gallery_still_library)
             if gallery_still_library is not None else []
@@ -1121,23 +1289,22 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
             image_library_to_session_list(image_library)
             if image_library is not None else []
         ),
-        "undo_history": (
-            undo_history_to_session_list(undo_history)
-            if undo_history is not None else None
-        ),
+        "undo_history": undo_history_data,
         "canvas": (
             cv.canvas_to_session_dict(canvas)
             if canvas is not None else None
         ),
+        "timeline": timeline_data,
     }
     with atomic_open(path, "w") as f:
         json.dump(data, f, indent=2)
+    return warnings
 
 
 def load_session(path):
     """Returns (stack, sample_image_state_or_None, stack_memory_library,
     gallery_still_library, cdl_library, lut_library, image_library,
-    undo_history_state, canvas, warnings).
+    undo_history_state, canvas, timeline, warnings).
     Raises ValueError if `path` isn't a LUTier session file at all (wrong
     format/not JSON) -- that's a hard failure, unlike a single
     unreconstructable stage/memory/LUT Library/Image Library entry. Files
@@ -1164,7 +1331,12 @@ def load_session(path):
     canvas is a canvas.CanvasSettings -- canvas.DEFAULT_CANVAS for any
     file with no "canvas" key (version < 9, or a version 9+ file saved
     with canvas=None), same convention every prior version bump follows
-    (see VERSION 9 note above)."""
+    (see VERSION 9 note above).
+
+    timeline is a timeline.Timeline -- a brand-new, empty Timeline for
+    any file with no "timeline" key at all (version < 11, or a version
+    11+ file saved with timeline=None), same convention (see VERSION 11
+    note above)."""
     with open(path, "r") as f:
         data = json.load(f)
     if data.get("format") != SESSION_FORMAT:
@@ -1195,6 +1367,9 @@ def load_session(path):
 
     canvas = cv.canvas_from_session_dict(data.get("canvas"))
 
+    timeline, timeline_warnings = timeline_from_session_dict(data.get("timeline"))
+    warnings = warnings + timeline_warnings
+
     return (stack, sample_image_state, memory_library, gallery_still_library,
             cdl_library, lut_library, image_library, undo_history_state, canvas,
-            warnings)
+            timeline, warnings)

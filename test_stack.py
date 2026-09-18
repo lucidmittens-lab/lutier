@@ -134,6 +134,160 @@ def test_empty_stack_apply_to_image_is_noop():
     print("apply_stack_to_image_array: empty stack leaves the image unchanged -- OK")
 
 
+# --- compose_stacks (Continuity Grading Timeline: clip Stack + global Stack) -
+
+def test_compose_stacks_concatenates_stages_in_order():
+    a = st.Stack()
+    a.add_stage(st.make_cdl_stage(slope=(1.2, 1.0, 1.0)))
+    b = st.Stack()
+    b.add_stage(st.make_cdl_stage(offset=(0.1, 0.0, 0.0)))
+    b.add_stage(st.make_cdl_stage(sat=0.5))
+    composed = st.compose_stacks(a, b)
+    assert [s.id for s in composed.stages] == [a.stages[0].id, b.stages[0].id, b.stages[1].id]
+    print("compose_stacks: concatenates every input Stack's own stages, "
+          "in order -- OK")
+
+
+def test_compose_stacks_matches_a_single_flat_stack_with_the_same_stages():
+    """The actual grading contract: compose_stacks(clip, global) applied
+    to an image must give the EXACT same result as if every stage from
+    both had simply been added to one Stack to begin with."""
+    clip_stack = st.Stack()
+    clip_stack.add_stage(st.make_cdl_stage(slope=(1.3, 0.9, 1.0)))
+    global_stack = st.Stack()
+    global_stack.add_stage(st.make_cdl_stage(offset=(0.05, -0.02, 0.0)))
+
+    rng = np.random.default_rng(0)
+    image = rng.uniform(0.0, 1.0, size=(6, 6, 3)).astype(np.float32)
+
+    composed_result = st.apply_stack_to_image_array(st.compose_stacks(clip_stack, global_stack), image)
+
+    flat = st.Stack()
+    flat.add_stage(st.make_cdl_stage(slope=(1.3, 0.9, 1.0)))
+    flat.add_stage(st.make_cdl_stage(offset=(0.05, -0.02, 0.0)))
+    flat_result = st.apply_stack_to_image_array(flat, image)
+
+    assert np.allclose(composed_result, flat_result, atol=1e-6)
+    print("compose_stacks: applying the composed Stack matches applying "
+          "one flat Stack built from the same stages directly -- OK")
+
+
+def test_compose_stacks_does_not_double_clip_an_intermediate_range():
+    """Regression guard for the actual reason this exists rather than
+    just calling apply_stack_to_image_array twice: a legitimate out-of-
+    [0,1] value BETWEEN the two grades must survive into the second
+    grade's own math, not get clamped away first. A big slope pushes a
+    mid-gray well past 1.0; a big negative offset in the SECOND stack
+    then pulls it back down -- if the intermediate got clipped to 1.0
+    first, the final result would be wrong (too dark)."""
+    clip_stack = st.Stack()
+    clip_stack.add_stage(st.make_cdl_stage(slope=(3.0, 3.0, 3.0)))  # 0.5 -> 1.5, past 1.0
+    global_stack = st.Stack()
+    global_stack.add_stage(st.make_cdl_stage(offset=(-1.0, -1.0, -1.0)))
+
+    image = np.full((2, 2, 3), 0.5, dtype=np.float32)
+
+    # Unclipped path (compose_stacks): 0.5*3.0=1.5, then 1.5-1.0=0.5.
+    # Clipped path (naive double-apply): apply_stack_to_image_array clips
+    # the FIRST stack's own output to [0,1] before the second ever sees
+    # it -- min(1.5,1.0)=1.0, then 1.0-1.0=0.0. The two must diverge.
+    composed_result = st.apply_stack_to_image_array(st.compose_stacks(clip_stack, global_stack), image)
+    naive_double_apply = st.apply_stack_to_image_array(
+        global_stack, st.apply_stack_to_image_array(clip_stack, image))
+    assert np.allclose(composed_result, 0.5, atol=1e-6), composed_result
+    assert np.allclose(naive_double_apply, 0.0, atol=1e-6), naive_double_apply
+    assert not np.allclose(composed_result, naive_double_apply, atol=1e-6)
+    print("compose_stacks: the intermediate value between the two Stacks "
+          "is NOT clipped -- differs from a naive apply-then-apply, which "
+          "would silently clamp it first -- OK")
+
+
+def test_compose_stacks_order_matters():
+    a = st.Stack()
+    a.add_stage(st.make_cdl_stage(slope=(2.0, 1.0, 1.0)))
+    b = st.Stack()
+    b.add_stage(st.make_cdl_stage(offset=(0.1, 0.0, 0.0)))
+    image = np.full((2, 2, 3), 0.3, dtype=np.float32)
+    ab = st.apply_stack_to_image_array(st.compose_stacks(a, b), image)
+    ba = st.apply_stack_to_image_array(st.compose_stacks(b, a), image)
+    assert not np.allclose(ab, ba, atol=1e-6)
+    print("compose_stacks: the order given actually matters -- clip-then-"
+          "global differs from global-then-clip -- OK")
+
+
+def test_compose_stacks_with_an_empty_stack_is_the_other_stacks_own_stages():
+    clip_stack = st.Stack()  # a freshly-added clip's own default empty Stack
+    global_stack = st.Stack()
+    global_stack.add_stage(st.make_cdl_stage(sat=0.5))
+    composed = st.compose_stacks(clip_stack, global_stack)
+    assert [s.id for s in composed.stages] == [global_stack.stages[0].id]
+    print("compose_stacks: an empty input Stack (e.g. a clip with no "
+          "grade yet) contributes nothing, doesn't break composition -- OK")
+
+
+def test_compose_stacks_of_only_empty_stacks_is_a_noop():
+    composed = st.compose_stacks(st.Stack(), st.Stack())
+    rng = np.random.default_rng(1)
+    image = rng.uniform(0.0, 1.0, size=(4, 4, 3)).astype(np.float32)
+    result = st.apply_stack_to_image_array(composed, image)
+    assert np.allclose(result, image, atol=1e-6)
+    print("compose_stacks: composing only empty Stacks is a complete "
+          "no-op -- OK")
+
+
+def test_compose_stacks_matte_reference_stays_scoped_to_its_own_source_stack():
+    """A clip's own internal matte_source_id (a keyer feeding a CDL
+    stage's opacity, both from the SAME clip Stack) must keep resolving
+    correctly after composing with a separate global Stack that also has
+    its own stages -- confirms no id collision/crossover between the two
+    inputs' own stages after concatenation."""
+    clip_stack = st.Stack()
+    keyer_stage = st.make_keyer_stage(hue_center=0.0, hue_width=180.0, softness=1.0)  # keys everything
+    consumer = st.make_cdl_stage(offset=(0.3, 0.3, 0.3))
+    consumer.params["matte_source_id"] = keyer_stage.id
+    clip_stack.add_stage(keyer_stage)
+    clip_stack.add_stage(consumer)
+
+    global_stack = st.Stack()
+    global_stack.add_stage(st.make_cdl_stage(sat=0.8))
+
+    image = np.full((2, 2, 3), 0.2, dtype=np.float32)
+    composed_result = st.apply_stack_to_image_array(st.compose_stacks(clip_stack, global_stack), image)
+    clip_only_result = st.apply_stack_to_image_array(clip_stack, image)
+    # The keyer keys everything (hue_width=180, softness=1.0 -> full
+    # weight everywhere), so the CDL offset should be fully applied,
+    # exactly matching what the clip stack alone already produces for
+    # those first two stages -- then the global Stack's own saturation
+    # stage applies on top.
+    global_only_on_top = st.apply_stack_to_image_array(global_stack, clip_only_result)
+    assert np.allclose(composed_result, global_only_on_top, atol=1e-6)
+    print("compose_stacks: a clip's own internal matte reference still "
+          "resolves correctly after composing with a separate global "
+          "Stack -- OK")
+
+
+def test_compose_stacks_gpu_eligibility_matches_the_flat_equivalent():
+    import gpu_stack_renderer
+    eligible_a = st.Stack()
+    eligible_a.add_stage(st.make_cdl_stage(slope=(1.1, 1.0, 1.0)))
+    eligible_b = st.Stack()
+    eligible_b.add_stage(st.make_grading_primary_stage())
+    composed_eligible = st.compose_stacks(eligible_a, eligible_b)
+    assert gpu_stack_renderer.is_stack_gpu_eligible(composed_eligible) is True, (
+        "composing two GPU-eligible Stacks should give a GPU-eligible composed Stack")
+
+    ineligible = st.Stack()
+    lut_stage = st.make_lut_stage(colour.LUT3D(size=5))
+    lut_stage.params["retarget_from"] = "ACEScct"
+    lut_stage.params["retarget_to"] = "ACES2065-1"  # retarget-wrapped LUT: permanently GPU-ineligible
+    ineligible.add_stage(lut_stage)
+    composed_ineligible = st.compose_stacks(eligible_a, ineligible)
+    assert gpu_stack_renderer.is_stack_gpu_eligible(composed_ineligible) is False, (
+        "one GPU-ineligible stage anywhere in the composed Stack must fall the whole thing back to CPU")
+    print("compose_stacks: GPU eligibility on the composed Stack matches "
+          "what a single flat Stack with the same stages would give -- OK")
+
+
 # --- single-stage stacks match the existing single-purpose bake functions -
 
 def test_single_lut_stage_matches_direct_apply():
@@ -1169,6 +1323,104 @@ def apply_stack_to_image_array_with_cache(stack, image, cache, input_key):
     return st.apply_stack_to_image_array(stack, image, cache=cache, input_key=input_key)
 
 
+def test_running_array_before_stage_matches_a_manual_prefix_apply():
+    """Core correctness claim: running_array_before_stage(stack, image,
+    stage_id) must give the EXACT same numbers as applying only the
+    stages strictly before stage_id by hand."""
+    stack = st.Stack()
+    first = st.make_cdl_stage(slope=(1.2, 0.8, 1.0))
+    keyer_stage = st.make_keyer_stage()
+    third = st.make_cdl_stage(slope=(2.0, 2.0, 2.0))  # AFTER the keyer -- must be ignored
+    stack.add_stage(first)
+    stack.add_stage(keyer_stage)
+    stack.add_stage(third)
+
+    rng = np.random.default_rng(0)
+    image = rng.uniform(-0.2, 1.2, size=(4, 4, 3)).astype(np.float32)  # includes out-of-range values
+
+    result = st.running_array_before_stage(stack, image, keyer_stage.id)
+    manual = st.apply_stack_to_image_array(st.Stack(stages=[first]), image)
+    # apply_stack_to_image_array clips to [0,1] for display -- running_
+    # array_before_stage deliberately doesn't (see its own docstring), so
+    # compare against the unclipped math directly instead of that helper.
+    expected = image * np.array([1.2, 0.8, 1.0], dtype=np.float32)
+    assert np.allclose(result, expected, atol=1e-5)
+    assert not np.allclose(result, image * 2.0, atol=1e-2), \
+        "must not reflect the third stage, which comes AFTER the keyer"
+    print("running_array_before_stage: matches a manual apply of only "
+          "the stages strictly before the target stage, unclipped -- OK")
+
+
+def test_running_array_before_stage_works_on_a_single_pixel():
+    """The whole point (per Tom: "I imagine you could flip just that
+    pixel") -- a 1x1 array must give the identical number a full-image
+    apply would give at that same pixel, since no stage kind in this app
+    grades one pixel differently depending on its neighbors."""
+    stack = st.Stack()
+    stack.add_stage(st.make_cdl_stage(slope=(1.3, 0.7, 1.1), offset=(0.05, -0.02, 0.0)))
+    target = st.make_keyer_stage()
+    stack.add_stage(target)
+
+    rng = np.random.default_rng(1)
+    image = rng.random((6, 6, 3)).astype(np.float32)
+    full = st.running_array_before_stage(stack, image, target.id)
+    single_pixel = image[2:3, 3:4, :]
+    single = st.running_array_before_stage(stack, single_pixel, target.id)
+    assert np.allclose(single[0, 0], full[2, 3], atol=1e-6)
+    print("running_array_before_stage: a single-pixel (1,1,3) array "
+          "matches the full-image result at that exact pixel -- OK")
+
+
+def test_running_array_before_stage_of_the_first_stage_is_the_raw_input():
+    stack = st.Stack()
+    target = st.make_keyer_stage()
+    stack.add_stage(target)
+    stack.add_stage(st.make_cdl_stage(slope=(3.0, 3.0, 3.0)))  # after -- irrelevant
+    image = np.array([[[0.1, 0.2, 0.3]]], dtype=np.float32)
+    result = st.running_array_before_stage(stack, image, target.id)
+    assert np.allclose(result, image)
+    print("running_array_before_stage: the FIRST stage's own input is "
+          "the raw image, untouched -- OK")
+
+
+def test_running_array_before_stage_unresolved_stage_id_is_none():
+    stack = st.Stack()
+    stack.add_stage(st.make_cdl_stage())
+    image = np.zeros((2, 2, 3), dtype=np.float32)
+    assert st.running_array_before_stage(stack, image, "not-a-real-id") is None
+    print("running_array_before_stage: an unresolved stage_id returns "
+          "None -- OK")
+
+
+def test_running_array_before_stage_inside_an_open_fork_region_is_none():
+    stack = st.Stack()
+    split = st.make_fork_split_stage()
+    inside = _tagged(st.make_cdl_stage(), "a")
+    stack.add_stage(split)
+    stack.add_stage(inside)
+    stack.add_stage(st.make_fork_merge_stage())
+    image = np.zeros((2, 2, 3), dtype=np.float32)
+    # Slicing the stack right before `inside` cuts the fork region in
+    # half (an open fork_split with no matching fork_merge in the
+    # slice) -- _run_stages itself raises ValueError for exactly that,
+    # caught here and treated as "unresolved," not a crash.
+    assert st.running_array_before_stage(stack, image, inside.id) is None
+    print("running_array_before_stage: a stage inside an open fork "
+          "region (unresolvable slice) returns None rather than raising -- OK")
+
+
+def test_running_array_before_stage_does_not_clip_out_of_range_values():
+    stack = st.Stack()
+    stack.add_stage(st.make_cdl_stage())  # identity CDL -- doesn't touch the values
+    target = st.make_keyer_stage()
+    stack.add_stage(target)
+    image = np.array([[[-0.4, 1.6, 2.2]]], dtype=np.float32)
+    result = st.running_array_before_stage(stack, image, target.id)
+    assert np.allclose(result[0, 0], image[0, 0])
+    print("running_array_before_stage: out-of-[0,1] values pass through "
+          "unclipped, unlike apply_stack_to_image_array -- OK")
+
+
 def test_stage_cache_handles_fork_regions_as_one_block():
     cache = st.StageCache()
     stack = st.Stack(size=4)
@@ -1243,6 +1495,22 @@ def test_keyer_stage_is_identity_passthrough_for_the_image():
     assert np.allclose(result, image, atol=1e-9)
     print("keyer stage: never grades the image itself, regardless of its "
           "own qualifier settings -- OK")
+
+
+def test_make_keyer_stage_prefilter_and_clip_default_and_thread_through_params():
+    default_stage = st.make_keyer_stage()
+    assert default_stage.params["prefilter_blur"] == keyer.DEFAULT_PREFILTER_BLUR
+    assert default_stage.params["matte_blur"] == keyer.DEFAULT_MATTE_BLUR
+    assert default_stage.params["clip_black"] == keyer.DEFAULT_CLIP_BLACK
+    assert default_stage.params["clip_white"] == keyer.DEFAULT_CLIP_WHITE
+    explicit_stage = st.make_keyer_stage(prefilter_blur=3.5, matte_blur=1.5, clip_black=0.1, clip_white=0.9)
+    assert explicit_stage.params["prefilter_blur"] == 3.5
+    assert explicit_stage.params["matte_blur"] == 1.5
+    assert explicit_stage.params["clip_black"] == 0.1
+    assert explicit_stage.params["clip_white"] == 0.9
+    print("make_keyer_stage: prefilter_blur/matte_blur/clip_black/"
+          "clip_white default to keyer.py's own no-op constants and "
+          "thread through into params when given explicitly -- OK")
 
 
 def test_matte_letters_for_assigns_sequential_letters_to_keyer_stages_only():
@@ -1796,6 +2064,14 @@ if __name__ == "__main__":
     test_add_remove_find_move_stage()
     test_empty_stack_bakes_to_plain_identity()
     test_empty_stack_apply_to_image_is_noop()
+    test_compose_stacks_concatenates_stages_in_order()
+    test_compose_stacks_matches_a_single_flat_stack_with_the_same_stages()
+    test_compose_stacks_does_not_double_clip_an_intermediate_range()
+    test_compose_stacks_order_matters()
+    test_compose_stacks_with_an_empty_stack_is_the_other_stacks_own_stages()
+    test_compose_stacks_of_only_empty_stacks_is_a_noop()
+    test_compose_stacks_matte_reference_stays_scoped_to_its_own_source_stack()
+    test_compose_stacks_gpu_eligibility_matches_the_flat_equivalent()
     test_single_lut_stage_matches_direct_apply()
     test_lut_stage_with_retarget_matches_bake_retargeted_lut()
     test_lut_stage_with_empty_string_retarget_spaces_fails_loudly()
