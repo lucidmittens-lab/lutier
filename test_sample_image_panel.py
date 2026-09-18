@@ -837,6 +837,105 @@ def test_viewer_stays_in_source_mode_for_a_plain_loaded_video():
           "-- OK")
 
 
+def _panel_with_two_clip_timeline(frame_counts=(10, 6), frame_rate=24, size=(64, 48)):
+    """Same shape as _panel_with_timeline_clip, but TWO clips -- needed
+    for confirming the scrub bar's RECORD-mode range spans the whole
+    Timeline (per direct feedback: "the scrub bar seems to only
+    represent a single clip in the timeline. it should represent the
+    whole timeline"), not just one clip's own frame_count."""
+    _app()
+    panel = SampleImagePanel()
+    clips = [
+        tl.TimelineClip(f"clip{i}", _make_test_video(frame_count=n, frame_rate=frame_rate, size=size),
+                         "video", 0, n - 1)
+        for i, n in enumerate(frame_counts)
+    ]
+    timeline_obj = tl.Timeline(clips=clips)
+    panel.set_timeline_getter(lambda: timeline_obj)
+    panel.set_sequence_stack_getter(lambda: Stack())
+    return panel, timeline_obj
+
+
+def test_scrub_bar_range_spans_the_whole_timeline_in_record_mode():
+    panel, timeline_obj = _panel_with_two_clip_timeline(frame_counts=(10, 6))
+    panel._viewer_mode_badge.setChecked(True)  # RECORD
+    assert panel._video_scrub_slider.maximum() == 15, (
+        f"expected 16 total frames (10+6) - 1 = 15, got {panel._video_scrub_slider.maximum()}")
+    print("SampleImagePanel: RECORD mode's scrub bar range spans the "
+          "whole Timeline's total_frame_count, not one clip -- OK")
+
+
+def test_scrub_bar_range_is_the_single_clip_in_source_mode():
+    """The same panel/Timeline as the RECORD test above -- confirms
+    SOURCE mode's range is unaffected by the Timeline's own total and
+    reflects only the directly-loaded clip."""
+    panel, timeline_obj = _panel_with_two_clip_timeline(frame_counts=(10, 6))
+    panel.load_video(_make_test_video(frame_count=8, size=(64, 48)))
+    assert panel._viewer_mode == "source"
+    assert panel._video_scrub_slider.maximum() == 7
+    print("SampleImagePanel: SOURCE mode's scrub bar range is the "
+          "single loaded clip's own, unaffected by the Timeline's "
+          "total -- OK")
+
+
+def test_dragging_scrub_bar_in_record_mode_seeks_the_whole_timeline():
+    panel, timeline_obj = _panel_with_two_clip_timeline(frame_counts=(10, 6))
+    panel._viewer_mode_badge.setChecked(True)  # RECORD
+
+    panel._on_video_scrub_slider_changed(12)  # clip 0 has 10 frames -> clip 1's own offset 2
+    assert panel._timeline_controller.current_record_frame() == 12
+    assert panel._timeline_controller._clip_index == 1
+    assert not panel._playback_controller.is_playing
+    print("SampleImagePanel: dragging the scrub bar in RECORD mode "
+          "seeks the whole Timeline via TimelineController."
+          "seek_to_record_frame -- OK")
+
+
+def test_dragging_scrub_bar_in_source_mode_seeks_only_the_single_clip():
+    """Regression guard: RECORD-mode routing must not have broken the
+    original SOURCE-mode scrub behavior, or leaked into the Timeline
+    controller's own state at all."""
+    panel, timeline_obj = _panel_with_two_clip_timeline(frame_counts=(10, 6))
+    panel.load_video(_make_test_video(frame_count=8, size=(64, 48)))
+    assert panel._viewer_mode == "source"
+    untouched_record_frame = panel._timeline_controller.current_record_frame()
+
+    panel._on_video_scrub_slider_changed(5)
+    assert panel._video_frame_index == 5
+    assert panel._timeline_controller.current_record_frame() == untouched_record_frame, (
+        "dragging the scrub bar in SOURCE mode must not touch the Timeline controller at all")
+    print("SampleImagePanel: dragging the scrub bar in SOURCE mode "
+          "still only seeks the single directly-loaded clip -- OK")
+
+
+def test_scrub_bar_tracks_record_position_during_timeline_playback():
+    panel, timeline_obj = _panel_with_two_clip_timeline(frame_counts=(10, 6))
+    panel._viewer_mode_badge.setChecked(True)  # RECORD
+    panel._on_video_play_pause_clicked()
+    assert panel._timeline_controller.is_playing
+
+    panel._timeline_controller._tick()
+    panel._timeline_controller._tick()
+    assert panel._video_scrub_slider.value() == panel._timeline_controller.current_record_frame()
+    panel._timeline_controller.stop()
+    print("SampleImagePanel: the scrub bar's VALUE tracks live during "
+          "RECORD-mode Timeline playback -- OK")
+
+
+def test_switching_to_record_mode_positions_scrub_bar_at_current_record_frame():
+    """Switching the toggle isn't just a range change -- the scrub bar's
+    VALUE should immediately reflect wherever the Timeline controller
+    already is (e.g. from an earlier seek_to_clip), not silently reset
+    to 0."""
+    panel, timeline_obj = _panel_with_two_clip_timeline(frame_counts=(10, 6))
+    panel._timeline_controller.seek_to_record_frame(4)
+
+    panel._viewer_mode_badge.setChecked(True)  # RECORD
+    assert panel._video_scrub_slider.value() == 4
+    print("SampleImagePanel: switching to RECORD mode positions the "
+          "scrub bar at the Timeline controller's current position -- OK")
+
+
 def test_video_set_in_out_and_clear_buttons_are_disabled_and_are_noops():
     """Timeline-level in/out is out of scope for this pass (see
     timeline_playback_controller.py's own module docstring) -- these

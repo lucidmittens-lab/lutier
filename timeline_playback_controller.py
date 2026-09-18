@@ -6,20 +6,25 @@ result into a SampleImagePanel's Viewer -- coexists with (does not
 replace) video_playback_controller.VideoPlaybackController, which still
 drives a single directly-loaded clip.
 
-TRANSPORT SPLIT (Tom, 2026-08-24): "the transport can be exclusive to
-the timeline BUT there should be a scrub bar only that's exclusive to
-the clip." The Viewer's transport bar (Play/Pause/Step/Loop/Speed) is
-now EXCLUSIVE to Timeline playback -- driving THIS controller, not
-VideoPlaybackController -- while the Viewer's own scrub slider stays
-exclusive to whatever single clip is directly loaded as Source
-(VideoPlaybackController's own domain, untouched). See sample_image_
-panel.py's transport-bar wiring for exactly how the buttons are
-retargeted. Timeline-level Set In/Set Out/Clear In-Out (a partial-range
-sub-selection of the WHOLE timeline) is explicitly NOT implemented here
--- the approved Timeline plan's own scope note rules out "complex trim
-editing" for this pass, so those three buttons are simply disabled while
-this controller is what Play drives. Loop, here, means "loop the whole
-timeline back to its first clip," not an in/out sub-range.
+TRANSPORT SPLIT -- originally (Tom, 2026-08-24) "the transport can be
+exclusive to the timeline BUT there should be a scrub bar only that's
+exclusive to the clip," later replaced by a manual SOURCE/RECORD toggle
+(per further direct feedback: "it should be a toggle you can control
+all the time and play should work for either"): the Viewer's transport
+bar (Play/Pause/Loop/Speed) now drives THIS controller only while that
+toggle is set to RECORD -- see sample_image_panel.py's own
+_active_transport_controller/_on_viewer_mode_toggled for the actual
+routing, this module doesn't know the toggle exists. The scrub bar
+follows the same toggle (seek_to_record_frame, below, is its RECORD-mode
+seek target -- per still further feedback: "the scrub bar seems to only
+represent a single clip in the timeline. it should represent the whole
+timeline"). Step/Set In/Set Out/Clear In-Out (a partial-range
+sub-selection of the WHOLE timeline) are still explicitly NOT
+implemented here -- the approved Timeline plan's own scope note rules
+out "complex trim editing" for this pass, so those three buttons stay
+disabled regardless of which mode the toggle is on. Loop, here, means
+"loop the whole timeline back to its first clip," not an in/out
+sub-range.
 
 PER-FRAME GRADING mirrors VideoPlaybackController's own GPU-eligible/
 CPU-fallback split exactly, via the shared push_graded_frame_to_viewer
@@ -143,6 +148,50 @@ class TimelineController(QObject):
         self._close_video_source()
         self._clip_index = clip_index
         self._frame_in_clip = 0
+
+    def seek_to_record_frame(self, record_frame):
+        """Repositions this controller (pausing first if currently
+        playing) to an arbitrary frame within the WHOLE Timeline, not
+        just a clip's own start (see seek_to_clip) -- `record_frame` is
+        a position in the same numbering current_record_frame() returns,
+        clamped into [0, total_frame_count-1]. Unlike seek_to_clip, this
+        immediately pushes the resulting frame to the Viewer (via
+        _enter_clip) rather than only affecting where a LATER play()
+        resumes from -- this is the Timeline-level counterpart to
+        VideoPlaybackController.seek_video_frame/sample_image_panel.
+        _on_video_scrub_slider_changed for the single-clip case, driving
+        the RECORD half of the Viewer's SOURCE/RECORD scrub bar (per
+        direct feedback: "the scrub bar seems to only represent a single
+        clip in the timeline. it should represent the whole timeline" --
+        see sample_image_panel.py's own wiring). No-op on an empty
+        Timeline, same as play()."""
+        self.pause()
+        timeline_obj = self._timeline_getter() if self._timeline_getter else None
+        if timeline_obj is None or not timeline_obj.clips:
+            return
+        total = timeline_obj.total_frame_count()
+        record_frame = max(0, min(record_frame, total - 1))
+        clip_index, frame_in_clip = self._locate_record_frame(timeline_obj, record_frame)
+        clip = timeline_obj.clips[clip_index]
+        if self._enter_clip(clip, frame_in_clip=frame_in_clip):
+            self._clip_index = clip_index
+
+    @staticmethod
+    def _locate_record_frame(timeline_obj, record_frame):
+        """(clip_index, frame_in_clip) for an absolute position within
+        the whole Timeline -- the inverse of current_record_frame()'s
+        own "sum every earlier clip's frame_count" computation. Assumes
+        record_frame is already clamped into [0, total_frame_count-1]
+        by the caller (seek_to_record_frame) -- the final clip's last
+        frame is still returned as a defensive fallback if rounding
+        somehow overshoots, rather than raising an IndexError."""
+        offset = record_frame
+        for index, clip in enumerate(timeline_obj.clips):
+            if offset < clip.frame_count:
+                return index, offset
+            offset -= clip.frame_count
+        last_index = len(timeline_obj.clips) - 1
+        return last_index, max(0, timeline_obj.clips[last_index].frame_count - 1)
 
     def play(self):
         """No-op if already playing, or if the Timeline has no clips.

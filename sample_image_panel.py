@@ -446,8 +446,14 @@ class SampleImagePanel(QWidget):
         viewer_mode_layout.addWidget(self.compare, stretch=1)
 
         layout.addWidget(self._viewer_mode_frame, stretch=1)
-        self._viewer_mode = None
-        self._set_viewer_mode("source")
+        # Plain attribute here, NOT _set_viewer_mode(...) -- that method
+        # touches self._video_scrub_slider/self._timeline_controller,
+        # neither of which exist yet at this point in construction (both
+        # built further below). The real initial badge/frame/scrub-bar
+        # refresh happens once everything it needs exists, at the very
+        # end of this method.
+        self._viewer_mode = "source"
+        self._viewer_mode_frame.setProperty("viewerMode", "source")
 
         self._build_video_transport_bar(layout)
         self._playback_controller = video_playback_controller.VideoPlaybackController(self, parent=self)
@@ -471,6 +477,12 @@ class SampleImagePanel(QWidget):
         self._timeline_controller.playback_stopped.connect(self._update_video_play_button_text)
         self._timeline_controller.frame_changed.connect(self._on_timeline_frame_changed)
         self._build_video_keyboard_shortcuts()
+        # Deferred from the plain self._viewer_mode = "source" assignment
+        # above -- everything _refresh_scrub_slider_for_mode touches
+        # (the scrub slider, both playback controllers) exists now.
+        # Harmless 0..0 range at this point (no video/Timeline loaded
+        # yet); real ranges get set the first time either one is.
+        self._refresh_scrub_slider_for_mode()
 
     def _active_transport_controller(self):
         """Whichever controller the transport bar's Play/Pause/Loop/
@@ -918,11 +930,11 @@ class SampleImagePanel(QWidget):
         self._video_loop_button.setChecked(False)  # keep the button in sync with the controller reset above
         ok = self._load_video_frame_core(0)
         if ok:
-            self._suppress_video_scrub_signal = True
-            self._video_scrub_slider.setMaximum(max(0, source.frame_count - 1))
-            self._video_scrub_slider.setValue(0)
-            self._suppress_video_scrub_signal = False
-            self._sync_video_in_out_markers()  # after setMaximum -- marker positions depend on the slider's own range
+            # Only actually touches the scrub bar if SOURCE mode is
+            # current (see _refresh_scrub_slider_for_mode's own
+            # docstring) -- loading a new Source clip while parked in
+            # RECORD mode must leave the Timeline-range scrub bar alone.
+            self._refresh_scrub_slider_for_mode()
             self.refresh_video_transport_visibility()
             self.video_loaded.emit(source.frame_count, source.frame_rate)
         return ok
@@ -967,11 +979,15 @@ class SampleImagePanel(QWidget):
     def _set_video_transport_position(self, frame_index):
         """Updates the scrub slider + timecode label to reflect
         `frame_index` WITHOUT re-triggering a seek -- called after every
-        successful parked-frame load (_load_video_frame_core) and on
-        every realtime-playback tick (_on_video_frame_changed)."""
-        self._suppress_video_scrub_signal = True
-        self._video_scrub_slider.setValue(frame_index)
-        self._suppress_video_scrub_signal = False
+        successful parked-frame load (_load_video_frame_core). Scrub bar
+        write gated to SOURCE mode, same reasoning as _on_video_frame_
+        changed/_on_timeline_frame_changed's own gates -- a parked
+        single-clip seek (e.g. session restore) while RECORD mode is
+        active must not stomp the Timeline-range scrub bar."""
+        if self._viewer_mode == "source":
+            self._suppress_video_scrub_signal = True
+            self._video_scrub_slider.setValue(frame_index)
+            self._suppress_video_scrub_signal = False
         self._update_video_timecode_label(frame_index)
 
     def _update_video_timecode_label(self, frame_index):
@@ -994,7 +1010,12 @@ class SampleImagePanel(QWidget):
         current_source_frame/current_record_frame docstrings) and
         formats both as timecode at the Timeline's own frame_rate (see
         _build_video_transport_bar's own docstring on this label for why
-        mixed-fps-aware timecode isn't attempted here)."""
+        mixed-fps-aware timecode isn't attempted here). Also keeps the
+        scrub bar's VALUE live during RECORD-mode playback/seeking (its
+        RANGE is set separately, see _refresh_scrub_slider_for_mode) --
+        gated to RECORD only, so a stray tick while SOURCE mode is
+        active can't overwrite the scrub bar's current SOURCE-range
+        value with a position from the wrong numbering."""
         timeline_obj = self._timeline_getter() if self._timeline_getter else None
         source_frame = self._timeline_controller.current_source_frame()
         record_frame = self._timeline_controller.current_record_frame()
@@ -1004,6 +1025,10 @@ class SampleImagePanel(QWidget):
         source_tc = timecode.frames_to_timecode(source_frame, timeline_obj.frame_rate)
         record_tc = timecode.frames_to_timecode(record_frame, timeline_obj.frame_rate)
         self._timeline_timecode_label.setText(f"Src {source_tc}  Rec {record_tc}")
+        if self._viewer_mode == "record":
+            self._suppress_video_scrub_signal = True
+            self._video_scrub_slider.setValue(record_frame)
+            self._suppress_video_scrub_signal = False
 
     def _on_video_play_pause_clicked(self):
         self._active_transport_controller().toggle()
@@ -1053,6 +1078,43 @@ class SampleImagePanel(QWidget):
         self._viewer_mode_frame.setProperty("viewerMode", mode)
         self._viewer_mode_frame.style().unpolish(self._viewer_mode_frame)
         self._viewer_mode_frame.style().polish(self._viewer_mode_frame)
+        self._refresh_scrub_slider_for_mode()
+
+    def _refresh_scrub_slider_for_mode(self):
+        """Recomputes the scrub bar's range AND position to match
+        self._viewer_mode -- SOURCE shows the single directly-loaded/
+        selected clip's own frame range (self._video_source), RECORD
+        shows the WHOLE Timeline's (timeline.Timeline.total_frame_count
+        -- per direct feedback: "the scrub bar seems to only represent a
+        single clip in the timeline. it should represent the whole
+        timeline"). Called on every mode switch (_set_viewer_mode) and
+        whenever the underlying thing that mode's range depends on
+        changes (refresh_video_transport_visibility -- a new Source
+        video loaded/closed, or the Timeline's own clip list changing,
+        see that method's own docstring on both triggers) -- NOT on
+        every playback tick, see _on_video_frame_changed/_on_timeline_
+        frame_changed for the per-tick position updates that keep the
+        already-set range's VALUE live during actual playback.
+
+        No Timeline-level in/out sub-range exists yet (see this
+        module's own docstring and timeline_playback_controller.py's),
+        so RECORD mode always clears the scrub bar's in/out markers --
+        SOURCE mode still shows the single clip's own, via the existing
+        _sync_video_in_out_markers."""
+        self._suppress_video_scrub_signal = True
+        if self._viewer_mode == "record":
+            timeline_obj = self._timeline_getter() if self._timeline_getter else None
+            total = timeline_obj.total_frame_count() if timeline_obj else 0
+            self._video_scrub_slider.setMaximum(max(0, total - 1))
+            record_frame = self._timeline_controller.current_record_frame()
+            self._video_scrub_slider.setValue(record_frame if record_frame is not None else 0)
+            self._video_scrub_slider.set_in_out(None, None)
+        else:
+            source = self._video_source
+            self._video_scrub_slider.setMaximum(max(0, source.frame_count - 1) if source else 0)
+            self._video_scrub_slider.setValue(self._video_frame_index if source else 0)
+            self._sync_video_in_out_markers()
+        self._suppress_video_scrub_signal = False
 
     def _on_video_step_back_clicked(self):
         """Disabled for now (button greyed out, see _build_video_transport
@@ -1071,33 +1133,49 @@ class SampleImagePanel(QWidget):
         return
 
     def _on_video_scrub_slider_changed(self, value):
+        """Mode-aware (per direct feedback: "the scrub bar seems to only
+        represent a single clip in the timeline. it should represent
+        the whole timeline") -- SOURCE seeks the single directly-loaded
+        clip (unchanged from before the SOURCE/RECORD toggle existed);
+        RECORD seeks the whole Timeline via TimelineController.
+        seek_to_record_frame, which pauses it first the same way
+        _playback_controller.pause() does here for the SOURCE case."""
         if self._suppress_video_scrub_signal:
             return
-        self._playback_controller.pause()
-        self.seek_video_frame(value)
+        if self._viewer_mode == "record":
+            self._timeline_controller.seek_to_record_frame(value)
+        else:
+            self._playback_controller.pause()
+            self.seek_video_frame(value)
 
     def _on_video_frame_changed(self, frame_index):
         # Realtime playback ticking -- update the slider/timecode WITHOUT
         # touching self._video_frame_index (that stays at the last
         # PARKED position until pause re-syncs it -- see
-        # VideoPlaybackController.pause's own docstring).
-        self._suppress_video_scrub_signal = True
-        self._video_scrub_slider.setValue(frame_index)
-        self._suppress_video_scrub_signal = False
+        # VideoPlaybackController.pause's own docstring). Scrub bar
+        # write gated to SOURCE mode, same reasoning as _on_timeline_
+        # frame_changed's own RECORD-only gate -- its RANGE belongs to
+        # whichever mode is active (see _refresh_scrub_slider_for_mode),
+        # so a stray SOURCE tick while RECORD is active must not stomp
+        # the Timeline-range value with a single-clip frame index.
+        if self._viewer_mode == "source":
+            self._suppress_video_scrub_signal = True
+            self._video_scrub_slider.setValue(frame_index)
+            self._suppress_video_scrub_signal = False
         self._update_video_timecode_label(frame_index)
 
     def _on_video_playback_stopped(self):
         self._update_video_play_button_text()
 
     def _sync_video_in_out_markers(self):
-        """Pushes the controller's own in_point/out_point onto the scrub
-        slider's visual markers (Phase 4 follow-up, per Tom: "hard to
-        tell where the marks are") -- called after every action that can
-        change either bound, so the slider never shows stale marks.
-        Still reads _playback_controller (the single-clip controller,
-        untouched -- see module docstring) since the SCRUB bar stays
-        exclusive to the directly-loaded clip, unlike the transport
-        buttons below."""
+        """Pushes _playback_controller's own in_point/out_point onto the
+        scrub slider's visual markers (Phase 4 follow-up, per Tom: "hard
+        to tell where the marks are") -- called after every action that
+        can change either bound, so the slider never shows stale marks.
+        Only ever called for SOURCE mode's own range (see
+        _refresh_scrub_slider_for_mode) -- RECORD mode has no in/out
+        sub-range concept yet, so it clears the markers instead of
+        calling this."""
         self._video_scrub_slider.set_in_out(
             self._playback_controller.in_point, self._playback_controller.out_point)
 
@@ -1231,20 +1309,27 @@ class SampleImagePanel(QWidget):
 
     def refresh_video_transport_visibility(self):
         """Shows the transport bar whenever there's ANYTHING for it to
-        play: a directly-loaded video (self._video_source, the scrub
-        bar's own exclusive domain -- see module docstring on the
-        Sequence/Shot-style "transport is exclusive to the timeline,
-        scrub is exclusive to the clip" split, Tom 2026-08-24) OR the
-        Timeline has at least one clip (this controller's own domain).
-        Called from load_video/_close_video_source (single-clip load/
-        unload) and wired in main_window.py to TimelinePanel.
-        timeline_changed (Timeline add/remove/clear/load) -- either
-        source of change needs to re-evaluate this independently, since
-        a Timeline built without ever loading a single video directly
-        must still make the transport visible."""
+        play: a directly-loaded video (self._video_source, SOURCE mode's
+        own domain) OR the Timeline has at least one clip (RECORD mode's
+        domain, see _active_transport_controller). Called from load_
+        video/_close_video_source (single-clip load/unload) and wired in
+        main_window.py to TimelinePanel.timeline_changed (Timeline add/
+        remove/clear/load) -- either source of change needs to
+        re-evaluate this independently, since a Timeline built without
+        ever loading a single video directly must still make the
+        transport visible.
+
+        Also the hook point for keeping RECORD mode's scrub-bar RANGE in
+        sync with the Timeline's own clip list (per direct feedback:
+        "the scrub bar seems to only represent a single clip in the
+        timeline. it should represent the whole timeline") -- a clip
+        added/removed/reordered changes total_frame_count, and this is
+        already called on every such change via the timeline_changed
+        wiring above, so there's no need for a second, separate hook."""
         timeline_obj = self._timeline_getter() if self._timeline_getter else None
         has_timeline_clips = bool(timeline_obj and timeline_obj.clips)
         self._video_transport_widget.setVisible(self._video_source is not None or has_timeline_clips)
+        self._refresh_scrub_slider_for_mode()
 
     def set_highlight_getter(self, getter):
         """getter: a zero-arg callable returning the Stage.id currently

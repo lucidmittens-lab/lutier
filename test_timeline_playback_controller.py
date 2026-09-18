@@ -331,6 +331,78 @@ def test_seek_to_clip_is_a_noop_while_playing():
     print("TimelineController.seek_to_clip: no-op while already playing -- OK")
 
 
+def test_seek_to_record_frame_lands_in_the_right_clip_and_offset():
+    """Per direct feedback: "the scrub bar seems to only represent a
+    single clip in the timeline. it should represent the whole
+    timeline" -- seek_to_record_frame takes a position in the WHOLE
+    Timeline's own numbering (current_record_frame's), not a per-clip
+    one (unlike seek_to_clip, which only ever jumps to a clip's start)."""
+    clip_a = _video_clip(5, name="A")
+    clip_b = _video_clip(5, name="B", color_offset=100)
+    timeline_obj = tl.Timeline(clips=[clip_a, clip_b])
+    panel, controller = _controller(timeline_obj)
+
+    controller.seek_to_record_frame(2)
+    assert controller._clip_index == 0 and controller._frame_in_clip == 2
+    assert controller.current_record_frame() == 2
+
+    controller.seek_to_record_frame(7)  # clip A has 5 frames -> clip B's own offset 2
+    assert controller._clip_index == 1 and controller._frame_in_clip == 2
+    assert controller.current_record_frame() == 7
+    print("TimelineController.seek_to_record_frame: lands in the right "
+          "clip at the right offset for a whole-Timeline position -- OK")
+
+
+def test_seek_to_record_frame_pushes_the_resulting_frame_to_the_viewer():
+    clip_a = _video_clip(5, name="A")
+    clip_b = _video_clip(5, name="B", color_offset=100)
+    timeline_obj = tl.Timeline(clips=[clip_a, clip_b])
+    panel, controller = _controller(timeline_obj)
+
+    controller.seek_to_record_frame(7)  # clip B, offset 2
+    pushed = panel.compare._after_state.array
+    assert pushed is not None
+    assert pushed.shape == (HEIGHT, WIDTH, 3)
+    print("TimelineController.seek_to_record_frame: pushes the "
+          "resulting frame to the Viewer immediately, unlike "
+          "seek_to_clip -- OK")
+
+
+def test_seek_to_record_frame_clamps_out_of_range_positions():
+    timeline_obj = tl.Timeline(clips=[_video_clip(5), _video_clip(5)])
+    panel, controller = _controller(timeline_obj)
+
+    controller.seek_to_record_frame(-3)
+    assert controller.current_record_frame() == 0
+
+    controller.seek_to_record_frame(999)
+    assert controller.current_record_frame() == 9, "should clamp to the last frame (10 total, 0-indexed)"
+    print("TimelineController.seek_to_record_frame: clamps an "
+          "out-of-range position into [0, total_frame_count-1] -- OK")
+
+
+def test_seek_to_record_frame_pauses_playback_first():
+    timeline_obj = tl.Timeline(clips=[_video_clip(5), _video_clip(5)])
+    panel, controller = _controller(timeline_obj)
+    controller.play()
+    assert controller.is_playing
+
+    controller.seek_to_record_frame(6)
+    assert not controller.is_playing
+    assert controller.current_record_frame() == 6
+    print("TimelineController.seek_to_record_frame: pauses an "
+          "in-progress play before seeking, unlike seek_to_clip's "
+          "no-op-while-playing -- OK")
+
+
+def test_seek_to_record_frame_is_a_noop_with_no_clips():
+    panel, controller = _controller(tl.Timeline())
+    controller.seek_to_record_frame(5)  # must not raise
+    assert controller.current_record_frame() is None
+    print("TimelineController.seek_to_record_frame: no-op on an empty "
+          "Timeline -- OK")
+
+
 def test_toggle_flips_between_play_and_pause():
     timeline_obj = tl.Timeline(clips=[_video_clip(10)])
     panel, controller = _controller(timeline_obj)
