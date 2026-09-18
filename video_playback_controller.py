@@ -296,16 +296,46 @@ class VideoPlaybackController(QObject):
                 return
             self._frame_index = next_index
 
-        # Same GPU-eligible/CPU-fallback split sample_image_panel.py's
-        # own live-preview path already uses -- see module docstring.
         stack_getter = self._panel._stack_getter
         stack = stack_getter() if stack_getter else None
-        if stack is not None and stack.stages and gpu_stack_renderer.is_stack_gpu_eligible(stack):
-            self._panel.compare.set_after(proxy, gpu_stack=stack)
-        elif stack is not None and stack.stages:
-            graded = st.apply_stack_to_image_array(stack, proxy)
-            self._panel.compare.set_after(graded, gpu_stack=None)
-        else:
-            self._panel.compare.set_after(proxy, gpu_stack=None)
-
+        push_graded_frame_to_viewer(self._panel, stack, proxy)
         self.frame_changed.emit(self._frame_index)
+
+
+def push_graded_frame_to_viewer(panel, stack, array):
+    """Shared by VideoPlaybackController and TimelineController's own
+    per-tick logic -- grades `array` through `stack` (or None) and pushes
+    the result to `panel`'s Viewer + Scopes, same GPU-eligible/CPU-
+    fallback split sample_image_panel.py's own live-preview path already
+    uses (see this module's docstring). Takes the already-resolved Stack,
+    not a getter -- VideoPlaybackController resolves its single stack_
+    getter once per tick same as before; TimelineController resolves a
+    freshly-composed Stack (stack.compose_stacks(clip.stack, sequence_
+    stack)) per tick instead, which isn't a plain getter callable at all.
+
+    Scopes (via after_image_changed, see sample_image_panel.py's own
+    "GPU-ELIGIBLE STACKS ALWAYS RECOMPUTE AT SCOPES RESOLUTION" comment)
+    never reads a GPU-graded frame directly -- it always wants a small,
+    CPU-graded representative sample instead, the same one refresh_
+    preview's own _recompute_sample_after(scopes=True) produces for an
+    ordinary parameter edit. Without this, realtime playback pushed
+    frames straight to the Viewer and never called _set_current_after_
+    array at all, so Scopes froze on whichever frame playback started
+    from for the entire duration it played. Downsize FIRST, then grade,
+    so this stays cheap enough for every tick even during playback --
+    `array` is already capped to DECODE_PROXY_MAX_DIMENSION by the caller,
+    but that's still well above SCOPES_MAX_DIMENSION."""
+    if stack is not None and stack.stages and gpu_stack_renderer.is_stack_gpu_eligible(stack):
+        panel.compare.set_after(array, gpu_stack=stack)
+        scopes_proxy = panel._make_scopes_array(array)
+        panel._set_current_after_array(st.apply_stack_to_image_array(stack, scopes_proxy))
+    elif stack is not None and stack.stages:
+        graded = st.apply_stack_to_image_array(stack, array)
+        panel.compare.set_after(graded, gpu_stack=None)
+        # Same Scopes notification as the GPU-eligible branch above --
+        # `graded` is already this tick's own full grade, just downsized
+        # for Scopes rather than re-running the stack a second time.
+        panel._set_current_after_array(panel._make_scopes_array(graded))
+    else:
+        panel.compare.set_after(array, gpu_stack=None)
+        panel._set_current_after_array(panel._make_scopes_array(array))

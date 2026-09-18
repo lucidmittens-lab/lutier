@@ -109,11 +109,12 @@ from video_scrub_slider import VideoScrubSlider
 from app_logic import (
     load_image_as_array, export_image_array_to_file, default_sample_image_path,
 )
-from stack import apply_stack_to_image_array, StageCache
+from stack import apply_stack_to_image_array, running_array_before_stage, StageCache
 from floating_dialog import make_floating_tool_window, show_floating
 import gpu_stack_renderer
 import video_source
 import video_playback_controller
+import timeline_playback_controller
 import timecode
 from casting_controller import CastingController
 from airplay_output_sink import AirPlayOutputSink
@@ -289,6 +290,14 @@ class SampleImagePanel(QWidget):
         self._image_array_scopes = None
         self._preview_cache_scopes = StageCache()
         self._stack_getter = None  # zero-arg callable -> the live stack.Stack
+        # zero-arg callables -> the current timeline.Timeline and the
+        # Sequence Stack (StackPanel.get_sequence_stack, NOT get_stack --
+        # see stack_panel.py's own docstring on why those two can diverge
+        # while Shot mode is active) -- both wired from MainWindow, read
+        # by self._timeline_controller (built below) once per tick, same
+        # "callback, not a stored reference" reasoning as _stack_getter.
+        self._timeline_getter = None
+        self._sequence_stack_getter = None
         # zero-arg callable -> the currently Highlight-toggled stage's own
         # id, or None -- see set_highlight_getter/_array_and_gpu_stack_
         # for_source's own "MATTE HIGHLIGHT" comment.
@@ -404,27 +413,53 @@ class SampleImagePanel(QWidget):
         self._playback_controller = video_playback_controller.VideoPlaybackController(self, parent=self)
         self._playback_controller.frame_changed.connect(self._on_video_frame_changed)
         self._playback_controller.playback_stopped.connect(self._on_video_playback_stopped)
+        # Transport is exclusive to the Timeline (Tom, 2026-08-24) --
+        # _playback_controller above still exists and still owns the
+        # single directly-loaded clip's OWN state (scrub bar seeks
+        # through it via seek_video_frame, see _on_video_scrub_slider_
+        # changed), but nothing in the transport bar's Play/Pause/Loop/
+        # Speed buttons drives it anymore -- see _on_video_play_pause_
+        # clicked/_on_video_loop_toggled/_on_video_speed_changed below,
+        # all retargeted to this controller instead. The getters are
+        # indirection lambdas (not bound directly) because set_timeline_
+        # getter/set_sequence_stack_getter are called later, from
+        # MainWindow, well after this constructor returns.
+        self._timeline_controller = timeline_playback_controller.TimelineController(
+            self,
+            timeline_getter=lambda: self._timeline_getter() if self._timeline_getter else None,
+            sequence_stack_getter=lambda: self._sequence_stack_getter() if self._sequence_stack_getter else None,
+            parent=self)
+        self._timeline_controller.playback_stopped.connect(self._update_video_play_button_text)
+        self._timeline_controller.frame_changed.connect(self._on_timeline_frame_changed)
         self._build_video_keyboard_shortcuts()
 
     def _build_video_transport_bar(self, layout):
         """Play/Pause, step-back/step-forward, in/out points + loop,
         speed, and a scrub slider -- a thin bar below the Viewer, visible
-        only while a video is loaded (see load_video/_close_video_source).
-        Deliberately colocated here in sample_image_panel.py rather than
-        a new panel file -- this bar drives the exact array-state
-        (self._video_source/self._video_frame_index) that already lives
-        here, same "own the state, own the UI that changes it" shape
-        every other control in this panel already follows.
+        while a video is loaded OR the Timeline has clips (see
+        refresh_video_transport_visibility, load_video/_close_video_
+        source, and main_window.py's own TimelinePanel.timeline_changed
+        wiring). Deliberately colocated here in sample_image_panel.py
+        rather than a new panel file -- same "own the state, own the UI
+        that changes it" shape every other control in this panel already
+        follows.
 
-        IN/OUT + LOOP + SPEED (Phase 4 transport upgrade, per Tom) --
-        this widget only ever reflects VideoPlaybackController's own
-        state (in_point/out_point/loop_enabled/speed); it owns none of
-        it directly, same "this panel drives, the controller decides"
-        split _on_video_play_pause_clicked already has for play/pause.
+        TRANSPORT / SCRUB SPLIT (Tom, 2026-08-24): "the transport can be
+        exclusive to the timeline BUT there should be a scrub bar only
+        that's exclusive to the clip." Play/Pause/Loop/Speed all drive
+        self._timeline_controller now (see timeline_playback_controller
+        .py) -- Step/Set In/Set Out/Clear In-Out are disabled outright
+        (see _on_video_step_back_clicked's own docstring on why, and
+        what's deferred). Only the scrub slider below still drives
+        self._playback_controller / self._video_source -- the single
+        directly-loaded clip, untouched by any of this.
+
         Keyboard shortcuts (Space/Left/Right/I/O/Home/End) are wired
         separately in _build_video_keyboard_shortcuts, called once from
         __init__ (not per-transport-bar-build, since shortcuts attach to
-        `self`, not this bar's own widgets)."""
+        `self`, not this bar's own widgets) -- Left/Right/I/O/Home/End
+        are effectively inert now too, routed to the same disabled
+        handlers as their matching buttons."""
         self._video_transport_widget = QWidget()
         transport_layout = QHBoxLayout(self._video_transport_widget)
         transport_layout.setContentsMargins(0, 0, 0, 0)
@@ -437,17 +472,27 @@ class SampleImagePanel(QWidget):
         self._video_play_button.clicked.connect(self._on_video_play_pause_clicked)
         transport_layout.addWidget(self._video_play_button)
 
+        # Step/In/Out/Clear are all disabled for now (Tom, 2026-08-24:
+        # the transport is exclusive to the Timeline) -- see
+        # _on_video_step_back_clicked's own docstring on why these can't
+        # just be left pointed at the single-clip controller anymore
+        # (they'd silently hijack the Viewer away from whatever the
+        # Timeline is showing). Left in place, greyed out, rather than
+        # removed outright -- a real Timeline-aware version of each is a
+        # scoped fast-follow, not a dead feature.
         self._video_step_back_button = QToolButton()
         self._video_step_back_button.setObjectName("videoTransportButton")
         self._video_step_back_button.setText("◀│")
-        self._video_step_back_button.setToolTip("Step back one frame (Left)")
+        self._video_step_back_button.setToolTip("Not yet supported for Timeline playback")
+        self._video_step_back_button.setEnabled(False)
         self._video_step_back_button.clicked.connect(self._on_video_step_back_clicked)
         transport_layout.addWidget(self._video_step_back_button)
 
         self._video_step_forward_button = QToolButton()
         self._video_step_forward_button.setObjectName("videoTransportButton")
         self._video_step_forward_button.setText("│▶")
-        self._video_step_forward_button.setToolTip("Step forward one frame (Right)")
+        self._video_step_forward_button.setToolTip("Not yet supported for Timeline playback")
+        self._video_step_forward_button.setEnabled(False)
         self._video_step_forward_button.clicked.connect(self._on_video_step_forward_clicked)
         transport_layout.addWidget(self._video_step_forward_button)
 
@@ -457,28 +502,31 @@ class SampleImagePanel(QWidget):
         self._video_set_in_button = QToolButton()
         self._video_set_in_button.setObjectName("videoTransportButton")
         self._video_set_in_button.setText("[")
-        self._video_set_in_button.setToolTip("Set In Point to the current frame (I)")
+        self._video_set_in_button.setToolTip("Not yet supported for Timeline playback")
+        self._video_set_in_button.setEnabled(False)
         self._video_set_in_button.clicked.connect(self._on_video_set_in_clicked)
         transport_layout.addWidget(self._video_set_in_button)
 
         self._video_set_out_button = QToolButton()
         self._video_set_out_button.setObjectName("videoTransportButton")
         self._video_set_out_button.setText("]")
-        self._video_set_out_button.setToolTip("Set Out Point to the current frame (O)")
+        self._video_set_out_button.setToolTip("Not yet supported for Timeline playback")
+        self._video_set_out_button.setEnabled(False)
         self._video_set_out_button.clicked.connect(self._on_video_set_out_clicked)
         transport_layout.addWidget(self._video_set_out_button)
 
         self._video_clear_in_out_button = QToolButton()
         self._video_clear_in_out_button.setObjectName("videoTransportButton")
         self._video_clear_in_out_button.setText("⊘")
-        self._video_clear_in_out_button.setToolTip("Clear In/Out Points (back to the full clip)")
+        self._video_clear_in_out_button.setToolTip("Not yet supported for Timeline playback")
+        self._video_clear_in_out_button.setEnabled(False)
         self._video_clear_in_out_button.clicked.connect(self._on_video_clear_in_out_clicked)
         transport_layout.addWidget(self._video_clear_in_out_button)
 
         self._video_loop_button = QToolButton()
         self._video_loop_button.setObjectName("videoTransportButton")
         self._video_loop_button.setText("⟲")
-        self._video_loop_button.setToolTip("Loop between In and Out")
+        self._video_loop_button.setToolTip("Loop the Timeline back to its first clip")
         self._video_loop_button.setCheckable(True)
         self._video_loop_button.toggled.connect(self._on_video_loop_toggled)
         transport_layout.addWidget(self._video_loop_button)
@@ -508,7 +556,28 @@ class SampleImagePanel(QWidget):
         transport_layout.addSpacing(4)
         transport_layout.addWidget(self._video_timecode_label)
 
-        self._video_transport_widget.setVisible(False)  # shown only once a video is actually loaded
+        # Timeline's own Source/Record timecode (Tom, after trying the
+        # skeleton build: "it would be good to get more detail (in and
+        # out source/record tc)") -- Source = position within the
+        # CURRENT clip's own source media (its in_frame plus how far
+        # into it playback has gotten); Record = position within the
+        # WHOLE timeline (every earlier clip's frame_count summed, plus
+        # the same offset). Both expressed at the Timeline's own
+        # frame_rate (see timeline_playback_controller.py's
+        # current_source_frame/current_record_frame docstrings on why
+        # mixed-fps-aware timecode isn't attempted here -- explicitly
+        # out of scope for this pass). Updated by _on_timeline_frame_
+        # changed, wired to TimelineController.frame_changed in
+        # __init__; blank whenever nothing's been entered yet.
+        self._timeline_timecode_label = QLabel("")
+        self._timeline_timecode_label.setObjectName("videoTimecodeLabel")
+        self._timeline_timecode_label.setToolTip(
+            "Source: position within the current clip's own source media\n"
+            "Record: position within the whole Timeline")
+        transport_layout.addSpacing(8)
+        transport_layout.addWidget(self._timeline_timecode_label)
+
+        self._video_transport_widget.setVisible(False)  # shown once a video is loaded OR the Timeline has clips
         layout.addWidget(self._video_transport_widget)
 
     @staticmethod
@@ -758,7 +827,7 @@ class SampleImagePanel(QWidget):
             self._video_source.close()
             self._video_source = None
             self._video_frame_index = 0
-        self._video_transport_widget.setVisible(False)
+        self.refresh_video_transport_visibility()
 
     def load_video(self, path):
         """Opens `path` as a video source and loads its FIRST frame into
@@ -788,7 +857,7 @@ class SampleImagePanel(QWidget):
             self._video_scrub_slider.setValue(0)
             self._suppress_video_scrub_signal = False
             self._sync_video_in_out_markers()  # after setMaximum -- marker positions depend on the slider's own range
-            self._video_transport_widget.setVisible(True)
+            self.refresh_video_transport_visibility()
             self.video_loaded.emit(source.frame_count, source.frame_rate)
         return ok
 
@@ -853,21 +922,45 @@ class SampleImagePanel(QWidget):
         self._video_timecode_label.setToolTip(
             f"Frame {frame_index + 1} / {self._video_source.frame_count}")
 
+    def _on_timeline_frame_changed(self):
+        """TimelineController.frame_changed fired -- pulls the current
+        Source/Record frame back out (see that controller's own
+        current_source_frame/current_record_frame docstrings) and
+        formats both as timecode at the Timeline's own frame_rate (see
+        _build_video_transport_bar's own docstring on this label for why
+        mixed-fps-aware timecode isn't attempted here)."""
+        timeline_obj = self._timeline_getter() if self._timeline_getter else None
+        source_frame = self._timeline_controller.current_source_frame()
+        record_frame = self._timeline_controller.current_record_frame()
+        if timeline_obj is None or source_frame is None or record_frame is None:
+            self._timeline_timecode_label.setText("")
+            return
+        source_tc = timecode.frames_to_timecode(source_frame, timeline_obj.frame_rate)
+        record_tc = timecode.frames_to_timecode(record_frame, timeline_obj.frame_rate)
+        self._timeline_timecode_label.setText(f"Src {source_tc}  Rec {record_tc}")
+
     def _on_video_play_pause_clicked(self):
-        self._playback_controller.toggle()
+        self._timeline_controller.toggle()
         self._update_video_play_button_text()
 
     def _update_video_play_button_text(self):
-        self._video_play_button.setText("⏸" if self._playback_controller.is_playing else "▶")
+        self._video_play_button.setText("⏸" if self._timeline_controller.is_playing else "▶")
 
     def _on_video_step_back_clicked(self):
-        self._playback_controller.pause()
-        self.seek_video_frame(max(0, self._video_frame_index - 1))
+        """Disabled for now (button greyed out, see _build_video_transport
+        _bar) -- frame-stepping is scoped to the single directly-loaded
+        clip's OWN seek_video_frame, which would silently hijack the
+        Viewer away from whatever the Timeline is currently showing (see
+        module docstring on the transport/scrub split). A real Timeline-
+        aware step (including backward across a clip boundary) is a
+        fast-follow, not built in this pass -- see the approved Timeline
+        plan's own scope note."""
+        return
 
     def _on_video_step_forward_clicked(self):
-        self._playback_controller.pause()
-        if self._video_source is not None:
-            self.seek_video_frame(min(self._video_source.frame_count - 1, self._video_frame_index + 1))
+        """Disabled for now -- see _on_video_step_back_clicked's own
+        docstring."""
+        return
 
     def _on_video_scrub_slider_changed(self, value):
         if self._suppress_video_scrub_signal:
@@ -892,47 +985,51 @@ class SampleImagePanel(QWidget):
         """Pushes the controller's own in_point/out_point onto the scrub
         slider's visual markers (Phase 4 follow-up, per Tom: "hard to
         tell where the marks are") -- called after every action that can
-        change either bound, so the slider never shows stale marks."""
+        change either bound, so the slider never shows stale marks.
+        Still reads _playback_controller (the single-clip controller,
+        untouched -- see module docstring) since the SCRUB bar stays
+        exclusive to the directly-loaded clip, unlike the transport
+        buttons below."""
         self._video_scrub_slider.set_in_out(
             self._playback_controller.in_point, self._playback_controller.out_point)
 
     def _on_video_set_in_clicked(self):
-        self._playback_controller.set_in_point()
-        self._sync_video_in_out_markers()
+        """Disabled for now -- see _on_video_step_back_clicked's own
+        docstring. Timeline-level in/out (a partial-range sub-selection
+        of the WHOLE timeline, not one clip's own in_frame/out_frame,
+        which are already set when the clip is added/via Set Duration)
+        is out of scope for this pass -- see timeline_playback_
+        controller.py's own module docstring."""
+        return
 
     def _on_video_set_out_clicked(self):
-        self._playback_controller.set_out_point()
-        self._sync_video_in_out_markers()
+        """Disabled for now -- see _on_video_set_in_clicked's own
+        docstring."""
+        return
 
     def _on_video_clear_in_out_clicked(self):
-        self._playback_controller.clear_in_out()
-        self._sync_video_in_out_markers()
+        """Disabled for now -- see _on_video_set_in_clicked's own
+        docstring."""
+        return
 
     def _on_video_loop_toggled(self, checked):
-        self._playback_controller.set_loop_enabled(checked)
+        self._timeline_controller.set_loop_enabled(checked)
 
     def _on_video_speed_changed(self, index):
         speed = self._video_speed_combo.itemData(index)
         if speed is not None:
-            self._playback_controller.set_speed(speed)
+            self._timeline_controller.set_speed(speed)
 
     def _on_video_jump_to_in_clicked(self):
-        """Home shortcut -- jumps straight to in_point (0 if never set),
-        pausing playback first (same "stop, then seek" pattern every
-        other parked-frame navigation in this panel already follows)."""
-        self._playback_controller.pause()
-        self.seek_video_frame(self._playback_controller.in_point)
+        """Disabled for now -- see _on_video_set_in_clicked's own
+        docstring (Home jumps to the SAME in_point Set In/Out would
+        control)."""
+        return
 
     def _on_video_jump_to_out_clicked(self):
-        """End shortcut -- jumps straight to out_point (the clip's last
-        frame if never set)."""
-        self._playback_controller.pause()
-        if self._video_source is None:
-            return
-        out_point = self._playback_controller.out_point
-        if out_point is None:
-            out_point = self._video_source.frame_count - 1
-        self.seek_video_frame(out_point)
+        """Disabled for now -- see _on_video_jump_to_in_clicked's own
+        docstring."""
+        return
 
     def _load_reference_image_core(self, path):
         """Mirrors _load_image_core, but for the Reference slot -- see this
@@ -1015,6 +1112,43 @@ class SampleImagePanel(QWidget):
         enabled state, everything) exactly as it stands right now."""
         self._stack_getter = getter
 
+    def set_timeline_getter(self, getter):
+        """getter: a zero-arg callable returning the current timeline.
+        Timeline -- wired from MainWindow to TimelinePanel.get_timeline.
+        Read by self._timeline_controller once per tick, and by
+        refresh_video_transport_visibility to decide whether the
+        transport bar should be showing at all."""
+        self._timeline_getter = getter
+        self.refresh_video_transport_visibility()
+
+    def set_sequence_stack_getter(self, getter):
+        """getter: a zero-arg callable returning the Sequence Stack
+        (StackPanel.get_sequence_stack) -- what self._timeline_controller
+        composes every clip's own Stack against each tick (stack.
+        compose_stacks). Deliberately separate from set_stack_getter
+        above, which returns whichever Stack StackPanel's editor
+        currently shows (Sequence OR a clip's own, see stack_panel.py's
+        docstring) -- Timeline playback must always use Sequence
+        regardless of that toggle's current position."""
+        self._sequence_stack_getter = getter
+
+    def refresh_video_transport_visibility(self):
+        """Shows the transport bar whenever there's ANYTHING for it to
+        play: a directly-loaded video (self._video_source, the scrub
+        bar's own exclusive domain -- see module docstring on the
+        Sequence/Shot-style "transport is exclusive to the timeline,
+        scrub is exclusive to the clip" split, Tom 2026-08-24) OR the
+        Timeline has at least one clip (this controller's own domain).
+        Called from load_video/_close_video_source (single-clip load/
+        unload) and wired in main_window.py to TimelinePanel.
+        timeline_changed (Timeline add/remove/clear/load) -- either
+        source of change needs to re-evaluate this independently, since
+        a Timeline built without ever loading a single video directly
+        must still make the transport visible."""
+        timeline_obj = self._timeline_getter() if self._timeline_getter else None
+        has_timeline_clips = bool(timeline_obj and timeline_obj.clips)
+        self._video_transport_widget.setVisible(self._video_source is not None or has_timeline_clips)
+
     def set_highlight_getter(self, getter):
         """getter: a zero-arg callable returning the Stage.id currently
         Highlight-toggled in StackPanel's own Keyer (or other matte-
@@ -1026,16 +1160,52 @@ class SampleImagePanel(QWidget):
         for where this is actually read."""
         self._highlight_getter = getter
 
-    def pick_pixel_color(self, callback):
-        """Eyedropper entry point (per Tom) -- thin pass-through to
-        self.compare.arm_eyedropper (see that method's own docstring for
-        the actual one-shot click-to-sample mechanism). StackPanel
-        doesn't hold a WipeCompareWidget reference of its own -- panels
-        only ever talk via getters/signals through main_window.py, same
-        as set_stack_getter/set_highlight_getter above -- so it reaches
-        the Viewer through THIS panel instead, via
-        StackPanel.set_eyedropper_requester."""
-        self.compare.arm_eyedropper(callback)
+    def pick_pixel_color_for_stage(self, stage_id, callback):
+        """Eyedropper entry point (per Tom) -- arms self.compare.
+        arm_eyedropper (see that method's own docstring) for a click
+        ANYWHERE on the Viewer, then resolves the click's own fractional
+        position against `stage_id`'s ACTUAL INPUT, not whatever's on
+        screen (per Tom: "the color picker for the key still seems to
+        rely on actually pulling a pixel from the preview image, it
+        should be pulling up the pixel address of the input of the key
+        entry" -- the on-screen pixel reflects the FULL composited stack,
+        including every stage AFTER stage_id, any active wipe-compare
+        source selection, and any Highlight overlay, none of which is
+        what stage_id itself actually reads). Reads self._image_array
+        (the raw, full-resolution, pre-stack source -- see this module's
+        own docstring) at the picked pixel, folds only the stages
+        strictly BEFORE stage_id over that ONE pixel (see stack.
+        running_array_before_stage's own docstring for why a single
+        pixel is exactly as correct, and far cheaper, than re-grading
+        the whole image), and hands the result to `callback(rgb)` as a
+        plain (r, g, b) float tuple -- still in whatever encoding the
+        working pipeline is in at that point (e.g. ACEScct), same as
+        keyer.py's own OKLCh decode already expects. `callback` is
+        simply never invoked if anything along the way doesn't resolve
+        (no source image loaded, no live stack, the click landed outside
+        the image, or stage_id can't be resolved -- see running_array_
+        before_stage's own docstring for that last case) -- same silent-
+        no-op convention every other matte/stage reference in this app
+        already uses. StackPanel doesn't hold a WipeCompareWidget
+        reference of its own -- panels only ever talk via getters/
+        signals through main_window.py, same as set_stack_getter/
+        set_highlight_getter above -- so it reaches the Viewer through
+        THIS panel instead, via StackPanel.set_eyedropper_requester."""
+        def _on_click_fraction(x_frac, y_frac):
+            if self._image_array is None:
+                return
+            stack = self._stack_getter() if self._stack_getter else None
+            if stack is None:
+                return
+            h, w = self._image_array.shape[:2]
+            x = min(w - 1, max(0, int(x_frac * w)))
+            y = min(h - 1, max(0, int(y_frac * h)))
+            pixel = self._image_array[y:y + 1, x:x + 1, :]
+            result = running_array_before_stage(stack, pixel, stage_id)
+            if result is None:
+                return
+            callback(tuple(float(v) for v in result[0, 0]))
+        self.compare.arm_eyedropper(_on_click_fraction)
 
     def refresh_preview(self):
         """Public trigger for 'something this panel doesn't own directly

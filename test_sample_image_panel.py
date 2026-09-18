@@ -42,8 +42,10 @@ from PySide6.QtWidgets import QApplication
 
 import app_logic
 import sample_image_panel as sample_image_panel_module
+import timeline as tl
 from sample_image_panel import SampleImagePanel, WIPE_SOURCE_SAMPLE_BEFORE, WIPE_SOURCE_SAMPLE_AFTER
-from stack import Stack, make_cdl_stage, make_lut_stage, make_keyer_stage
+from stack import (Stack, apply_stack_to_image_array, make_cdl_stage, make_lut_stage,
+                    make_keyer_stage, running_array_before_stage)
 
 
 def _app():
@@ -422,6 +424,67 @@ def test_highlight_getter_for_a_stage_not_in_the_stack_falls_back_to_plain():
           "no error -- OK")
 
 
+def test_pick_pixel_color_for_stage_reflects_this_stages_input_not_final_output():
+    """Direct regression coverage for the fix (per Tom: "the color picker
+    for the key still seems to rely on actually pulling a pixel from the
+    preview image, it should be pulling up the pixel address of the
+    input of the key entry"): a keyer that ISN'T the last stage in the
+    stack must pick its own actual input, not the fully-graded on-screen
+    output every stage AFTER it would also have touched."""
+    _app()
+    panel = _panel_with_image_and_stack(size=(200, 120))  # one CDL stage already
+    stack = panel._stack_getter()
+    keyer_stage = make_keyer_stage()
+    stack.add_stage(keyer_stage)
+    stack.add_stage(make_cdl_stage(slope=(1.5, 1.5, 1.5)))  # a SECOND grade, AFTER the keyer
+
+    x_frac, y_frac = 0.3, 0.4
+    picked = []
+    panel.pick_pixel_color_for_stage(keyer_stage.id, lambda rgb: picked.append(rgb))
+    assert panel.compare._eyedropper_armed
+    panel.compare._eyedropper_callback(x_frac, y_frac)
+    assert len(picked) == 1
+
+    h, w = panel._image_array.shape[:2]
+    y, x = int(y_frac * h), int(x_frac * w)
+    source_pixel = panel._image_array[y:y + 1, x:x + 1, :]
+    expected_input = running_array_before_stage(stack, source_pixel, keyer_stage.id)[0, 0]
+    final_output = apply_stack_to_image_array(stack, panel._image_array)[y, x]
+
+    assert np.allclose(picked[0], expected_input, atol=1e-5)
+    assert not np.allclose(picked[0], final_output, atol=1e-3), \
+        "picking must reflect the keyer's own input, not the fully-graded on-screen output"
+    print("SampleImagePanel.pick_pixel_color_for_stage: resolves the "
+          "picked stage's own actual input, NOT the final composited "
+          "output -- OK")
+
+
+def test_pick_pixel_color_for_stage_is_a_noop_without_a_loaded_image():
+    _app()
+    panel = SampleImagePanel()
+    stack = Stack()
+    keyer_stage = make_keyer_stage()
+    stack.add_stage(keyer_stage)
+    panel.set_stack_getter(lambda: stack)
+    picked = []
+    panel.pick_pixel_color_for_stage(keyer_stage.id, lambda rgb: picked.append(rgb))
+    panel.compare._eyedropper_callback(0.5, 0.5)
+    assert picked == []
+    print("SampleImagePanel.pick_pixel_color_for_stage: a no-op (never "
+          "calls back) with no image loaded -- OK")
+
+
+def test_pick_pixel_color_for_stage_is_a_noop_for_an_unresolved_stage_id():
+    _app()
+    panel = _panel_with_image_and_stack()
+    picked = []
+    panel.pick_pixel_color_for_stage("not-a-real-stage-id", lambda rgb: picked.append(rgb))
+    panel.compare._eyedropper_callback(0.5, 0.5)
+    assert picked == []
+    print("SampleImagePanel.pick_pixel_color_for_stage: a no-op when "
+          "stage_id can't be resolved in the current stack -- OK")
+
+
 def _make_test_video(frame_count=8, frame_rate=24, size=(64, 48)):
     """A short real clip, distinct solid color per frame -- same
     "unambiguous per-frame marker" convention test_video_source.py's own
@@ -588,24 +651,28 @@ def test_video_transport_timecode_label_updates_on_seek():
           "and updates on seek, frame count moved to the tooltip -- OK")
 
 
-def test_video_transport_step_buttons_move_one_frame_and_clamp():
+def test_video_transport_step_buttons_are_disabled_and_are_noops():
+    """Step/Set In/Set Out/Clear are all disabled now (Tom, 2026-08-24:
+    "the transport can be exclusive to the timeline" -- see sample_
+    image_panel.py's _on_video_step_back_clicked docstring). Left wired
+    (not removed), but must be a true no-op -- if they still seeked the
+    single loaded clip, pressing Left/Right (still-active keyboard
+    shortcuts) while the Viewer shows Timeline content would silently
+    hijack it back to this clip."""
     _app()
     panel = SampleImagePanel()
     path = _make_test_video(frame_count=5, size=(64, 48))
     assert panel.load_video(path)
+    assert not panel._video_step_back_button.isEnabled()
+    assert not panel._video_step_forward_button.isEnabled()
 
     panel._on_video_step_forward_clicked()
-    assert panel._video_frame_index == 1
+    assert panel._video_frame_index == 0, "step forward must be a no-op"
+    panel.seek_video_frame(2)
     panel._on_video_step_back_clicked()
-    assert panel._video_frame_index == 0
-    panel._on_video_step_back_clicked()  # already at 0 -- must clamp, not go negative
-    assert panel._video_frame_index == 0
-
-    for _ in range(10):
-        panel._on_video_step_forward_clicked()
-    assert panel._video_frame_index == 4, "must clamp at frame_count-1, not overshoot"
-    print("SampleImagePanel: step-back/step-forward move one frame and "
-          "clamp at both ends -- OK")
+    assert panel._video_frame_index == 2, "step back must be a no-op"
+    print("SampleImagePanel: step-back/step-forward are disabled and are "
+          "true no-ops -- OK")
 
 
 def test_video_transport_scrub_slider_drag_seeks_the_video():
@@ -626,98 +693,97 @@ def test_video_transport_scrub_slider_drag_seeks_the_video():
           "and re-grades the video -- OK")
 
 
-def test_video_play_pause_button_toggles_playback_and_its_own_label():
+def _panel_with_timeline_clip(frame_count=10, frame_rate=24, size=(64, 48)):
+    """Wires a one-clip Timeline directly into a bare SampleImagePanel,
+    same getters main_window.py wires from TimelinePanel/StackPanel --
+    Play/Pause/Loop/Speed now drive self._timeline_controller (Tom,
+    2026-08-24), not the single-clip self._playback_controller, so these
+    tests need a Timeline, not just panel.load_video."""
     _app()
     panel = SampleImagePanel()
-    path = _make_test_video(frame_count=10, size=(64, 48))
-    assert panel.load_video(path)
+    path = _make_test_video(frame_count=frame_count, frame_rate=frame_rate, size=size)
+    clip = tl.TimelineClip("clip", path, "video", 0, frame_count - 1)
+    timeline_obj = tl.Timeline(clips=[clip])
+    panel.set_timeline_getter(lambda: timeline_obj)
+    panel.set_sequence_stack_getter(lambda: Stack())
+    return panel
+
+
+def test_video_play_pause_button_toggles_timeline_playback_and_its_own_label():
+    panel = _panel_with_timeline_clip()
     assert panel._video_play_button.text() == "▶"
 
     panel._on_video_play_pause_clicked()
-    assert panel._playback_controller.is_playing
+    assert panel._timeline_controller.is_playing
     assert panel._video_play_button.text() == "⏸"
 
     panel._on_video_play_pause_clicked()
-    assert not panel._playback_controller.is_playing
+    assert not panel._timeline_controller.is_playing
     assert panel._video_play_button.text() == "▶"
-    print("SampleImagePanel: Play/Pause button toggles playback and its "
-          "own label -- OK")
+    print("SampleImagePanel: Play/Pause button toggles Timeline playback "
+          "and its own label -- OK")
 
 
-def test_video_set_in_out_and_clear_buttons_drive_the_controller():
+def test_video_set_in_out_and_clear_buttons_are_disabled_and_are_noops():
+    """Timeline-level in/out is out of scope for this pass (see
+    timeline_playback_controller.py's own module docstring) -- these
+    three buttons must be disabled and inert, not silently acting on the
+    single-clip controller anymore."""
     _app()
     panel = SampleImagePanel()
     path = _make_test_video(frame_count=10, size=(64, 48))
     assert panel.load_video(path)
+    assert not panel._video_set_in_button.isEnabled()
+    assert not panel._video_set_out_button.isEnabled()
+    assert not panel._video_clear_in_out_button.isEnabled()
+
     panel.seek_video_frame(3)
     panel._on_video_set_in_clicked()
-    assert panel._playback_controller.in_point == 3
-    panel.seek_video_frame(7)
     panel._on_video_set_out_clicked()
-    assert panel._playback_controller.out_point == 7
     panel._on_video_clear_in_out_clicked()
     assert panel._playback_controller.in_point == 0
     assert panel._playback_controller.out_point is None
-    print("SampleImagePanel: Set In/Set Out/Clear buttons drive the "
-          "playback controller's in/out points -- OK")
+    print("SampleImagePanel: Set In/Set Out/Clear buttons are disabled "
+          "and are true no-ops -- OK")
 
 
-def test_video_loop_button_toggles_controller_loop_state():
-    _app()
-    panel = SampleImagePanel()
-    path = _make_test_video(frame_count=10, size=(64, 48))
-    assert panel.load_video(path)
-    assert not panel._playback_controller.loop_enabled
+def test_video_loop_button_toggles_timeline_controller_loop_state():
+    panel = _panel_with_timeline_clip()
+    assert not panel._timeline_controller.loop_enabled
     panel._video_loop_button.setChecked(True)
-    assert panel._playback_controller.loop_enabled
+    assert panel._timeline_controller.loop_enabled
     panel._video_loop_button.setChecked(False)
-    assert not panel._playback_controller.loop_enabled
-    print("SampleImagePanel: the Loop toolbutton drives the playback "
+    assert not panel._timeline_controller.loop_enabled
+    print("SampleImagePanel: the Loop toolbutton drives the Timeline "
           "controller's loop_enabled -- OK")
 
 
-def test_video_speed_combo_drives_the_controller_speed():
-    _app()
-    panel = SampleImagePanel()
-    path = _make_test_video(frame_count=10, frame_rate=24, size=(64, 48))
-    assert panel.load_video(path)
-    assert panel._playback_controller.speed == 1.0
+def test_video_speed_combo_drives_the_timeline_controller_speed():
+    panel = _panel_with_timeline_clip()
+    assert panel._timeline_controller.speed == 1.0
 
     index_of_2x = panel._video_speed_combo.findText("2x")
     assert index_of_2x >= 0
     panel._video_speed_combo.setCurrentIndex(index_of_2x)
-    assert panel._playback_controller.speed == 2.0
-    print("SampleImagePanel: the speed combo drives the playback "
+    assert panel._timeline_controller.speed == 2.0
+    print("SampleImagePanel: the speed combo drives the Timeline "
           "controller's speed -- OK")
 
 
-def test_video_home_end_shortcuts_jump_to_in_out_points():
+def test_video_home_end_shortcuts_are_disabled_and_are_noops():
     _app()
     panel = SampleImagePanel()
     path = _make_test_video(frame_count=10, size=(64, 48))
     assert panel.load_video(path)
-    panel._playback_controller.in_point = 2
-    panel._playback_controller.out_point = 6
     panel.seek_video_frame(4)
 
     panel._on_video_jump_to_in_clicked()
-    assert panel._video_frame_index == 2
+    assert panel._video_frame_index == 4, "Home must be a no-op"
 
     panel._on_video_jump_to_out_clicked()
-    assert panel._video_frame_index == 6
-    print("SampleImagePanel: Home/End shortcut handlers jump to in_point/"
-          "out_point -- OK")
-
-
-def test_video_jump_to_out_uses_last_frame_when_out_point_unset():
-    _app()
-    panel = SampleImagePanel()
-    path = _make_test_video(frame_count=10, size=(64, 48))
-    assert panel.load_video(path)
-    panel._on_video_jump_to_out_clicked()
-    assert panel._video_frame_index == 9
-    print("SampleImagePanel: End jumps to the clip's last frame when no "
-          "explicit out_point is set -- OK")
+    assert panel._video_frame_index == 4, "End must be a no-op"
+    print("SampleImagePanel: Home/End shortcut handlers are disabled and "
+          "are true no-ops -- OK")
 
 
 def test_load_reference_from_array_loads_directly_into_reference_slot():
@@ -857,6 +923,9 @@ if __name__ == "__main__":
     test_no_highlight_getter_leaves_the_after_source_unchanged()
     test_highlight_getter_composites_the_toggled_stages_matte()
     test_highlight_getter_for_a_stage_not_in_the_stack_falls_back_to_plain()
+    test_pick_pixel_color_for_stage_reflects_this_stages_input_not_final_output()
+    test_pick_pixel_color_for_stage_is_a_noop_without_a_loaded_image()
+    test_pick_pixel_color_for_stage_is_a_noop_for_an_unresolved_stage_id()
     test_load_video_parks_on_the_first_frame_through_the_still_pipeline()
     test_seek_video_frame_updates_the_working_array()
     test_video_loaded_signal_reports_frame_count_and_rate()

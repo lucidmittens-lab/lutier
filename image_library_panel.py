@@ -82,6 +82,7 @@ def _format_duration(seconds):
 class ImageLibraryPanel(QWidget):
     load_as_sample_requested = Signal(object)      # an image_library.ImageLibraryEntry
     load_as_reference_requested = Signal(object)   # an image_library.ImageLibraryEntry
+    add_to_timeline_requested = Signal(object)     # an image_library.ImageLibraryEntry
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -156,6 +157,7 @@ class ImageLibraryPanel(QWidget):
         menu = QMenu(self.list_widget)
         menu.addAction("Load as Source", self._on_load_as_sample_clicked)
         menu.addAction("Load as Reference", self._on_load_as_reference_clicked)
+        menu.addAction("Add to Timeline", self._on_add_to_timeline_clicked)
         menu.addSeparator()
         menu.addAction("Rename...", self._on_rename_clicked)
         menu.addAction("Delete", self._on_delete_clicked)
@@ -298,6 +300,12 @@ class ImageLibraryPanel(QWidget):
                 "Source\" instead.")
             return
         self.load_as_reference_requested.emit(entry)
+
+    def _on_add_to_timeline_clicked(self):
+        entry = self._selected_entry()
+        if entry is None:
+            return
+        self.add_to_timeline_requested.emit(entry)
 
     def _on_rename_clicked(self):
         entry = self._selected_entry()

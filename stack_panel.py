@@ -1451,6 +1451,18 @@ class StackPanel(QObject):
     # type for safety across PySide6 versions -- Qt's signal machinery
     # handles a plain Python dict fine as an "object" payload either way.
     cdl_save_requested = Signal(str, object)
+    # Sequence/Shot toggle requests (see _build_mode_toggle_row) -- REQUESTS,
+    # not the swap itself: MainWindow is what actually calls
+    # activate_sequence_mode()/activate_shot_mode(clip) in response,
+    # wrapped in its own _restoring_stack_history flag (same convention as
+    # every other wholesale stack-replace path -- session open/new, undo/
+    # redo) so switching modes never itself creates a spurious undo entry.
+    # StackPanel can't set that flag itself -- it has no reference to
+    # MainWindow -- hence routing the actual activation back out through
+    # MainWindow rather than just calling activate_*_mode directly from
+    # the button's own click handler.
+    sequence_mode_requested = Signal()
+    shot_mode_requested = Signal(object)  # the TimelineClip to activate
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1506,6 +1518,29 @@ class StackPanel(QObject):
         # own docstring, "SNAPPIER/MORE INTERACTIVE PASS."
         self._stage_row_widgets = {}
         self.stack = st.Stack()
+        # Continuity Grading Timeline's Sequence/Shot toggle (per Tom: "one
+        # panel...a toggle...between sequence and shot stack") -- self.stack
+        # is always whichever Stack is CURRENTLY loaded into this editor
+        # (Sequence's own, or a Timeline clip's, per _shot_mode_active),
+        # unchanged in meaning for every existing get_stack()/get_baked_lut()/
+        # preview consumer -- toggling to Shot mode is exactly "load a
+        # different Stack into the same editor," so those all keep working
+        # unmodified and now naturally reflect whichever stack is being
+        # edited. self._sequence_stack is this panel's OWN separate memory
+        # of "the Sequence stack," kept current by set_stack() below
+        # regardless of which stack is currently on screen -- MainWindow's
+        # session save uses get_sequence_stack() (never get_stack(), which
+        # would return a clip's stack while Shot mode is active) so a save
+        # made mid-Shot-edit still persists the Sequence grade, not
+        # whatever clip happened to be on screen (a clip's own grade is
+        # separately embedded via timeline_to_session_dict already).
+        self._sequence_stack = self.stack
+        self._shot_mode_active = False
+        # Zero-arg callable -> the Timeline's own currently-selected clip
+        # (duck-typed: only .stack/.name read below, see
+        # set_selected_clip_getter's own docstring) or None -- wired from
+        # MainWindow, same pull-based convention as set_eyedropper_requester.
+        self._selected_clip_getter = None
         # Reused across repeated get_baked_lut() calls (MainWindow's
         # _on_stack_changed calls it on every single edit) so nudging one
         # stage's opacity/params doesn't re-bake every OTHER stage from
@@ -1528,6 +1563,8 @@ class StackPanel(QObject):
     def _build_list_ui(self):
         layout = QVBoxLayout(self.list_widget_area)
         layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
+
+        self._build_mode_toggle_row(layout)
 
         # _StackListWidget (not plain QListWidget) -- adds card-style rows
         # with a clickable enable toggle per stage, drag-to-reorder, and
@@ -1588,6 +1625,34 @@ class StackPanel(QObject):
         layout.addWidget(self.bake_error_label)
 
         self._build_list_menu_button()
+
+    def _build_mode_toggle_row(self, layout):
+        """Sequence/Shot toggle (per Tom: "share one panel and make it a
+        toggle...between sequence and shot stack") -- Shot starts disabled
+        since nothing's selected in the Timeline yet at construction time
+        (see notify_selected_clip_changed, wired from MainWindow to
+        TimelinePanel.clip_selected, for how it gets enabled/re-labeled).
+        Exclusive QPushButtons (not a QComboBox) so the current mode is
+        always visible at a glance without opening anything, same
+        "state you need to see, not just set" reasoning as this panel's
+        own per-row enabled dot."""
+        row = QHBoxLayout()
+        self.sequence_mode_button = QPushButton("Sequence")
+        self.sequence_mode_button.setCheckable(True)
+        self.sequence_mode_button.setChecked(True)
+        self.sequence_mode_button.clicked.connect(lambda: self.sequence_mode_requested.emit())
+        self.shot_mode_button = QPushButton("Shot")
+        self.shot_mode_button.setCheckable(True)
+        self.shot_mode_button.setEnabled(False)
+        self.shot_mode_button.clicked.connect(self._on_shot_mode_button_clicked)
+        self._mode_button_group = QButtonGroup(self)
+        self._mode_button_group.setExclusive(True)
+        self._mode_button_group.addButton(self.sequence_mode_button)
+        self._mode_button_group.addButton(self.shot_mode_button)
+        row.addWidget(self.sequence_mode_button)
+        row.addWidget(self.shot_mode_button)
+        row.addStretch(1)
+        layout.addLayout(row)
 
     def _build_list_menu_button(self):
         """The Stack panel's "..." header menu (see corner_widget on
@@ -2472,8 +2537,12 @@ class StackPanel(QObject):
         if stage is None:
             return
         self._delete_stage_linked(stage.id)
+        # _refresh_list's own tail already calls _on_selection_changed
+        # (directly, not via signal -- its own rebuild runs with the list
+        # widget's signals blocked), which itself calls _refresh_inspector
+        # -- a separate call here was a redundant second inspector
+        # rebuild on every single stage deletion (found in code review).
         self._refresh_list()
-        self._refresh_inspector()
         self._emit_changed()
 
     def _on_row_delete_clicked(self, stage_id):
@@ -2486,8 +2555,9 @@ class StackPanel(QObject):
             self._delete_stage_linked(stage_id)
         except KeyError:
             return
+        # See _on_remove_clicked's own comment just above -- _refresh_list
+        # already refreshes the inspector via _on_selection_changed.
         self._refresh_list()
-        self._refresh_inspector()
         self._emit_changed()
 
     # ---- add stage ----------------------------------------------------
@@ -3015,11 +3085,17 @@ class StackPanel(QObject):
         self._apply_printer_lights_live()
 
     def _on_pl_reset_clicked(self):
-        # Each setValue below fires _on_pl_spin_changed (unless already
-        # 0), which applies live the same as dragging would -- no separate
-        # apply call needed here.
+        # Each spin's own valueChanged (_on_pl_spin_changed) applies live
+        # AND handles gang-mode cascading -- signals are blocked here so
+        # resetting all three doesn't fire up to 3 separate live-applies
+        # (each a full re-render) for what's conceptually ONE reset, same
+        # ordering-hazard/redundant-apply fix as _reset_one_gpr_field's
+        # own docstring explains for Grading Primary.
         for spin in self._pl_spins.values():
+            spin.blockSignals(True)
             spin.setValue(0)
+            spin.blockSignals(False)
+        self._apply_printer_lights_live()
 
     def _apply_printer_lights_live(self):
         stage = self._selected_stage()
@@ -3376,15 +3452,29 @@ class StackPanel(QObject):
         self._apply_custom_drt_live()
 
     def _on_cdr_reset_clicked(self):
-        # Each setValue below fires _on_cdr_field_changed (unless already
-        # at that value), which applies live the same as typing would --
-        # same convention as _on_gtn_reset_clicked/_on_pl_reset_clicked.
+        # Every spin's own valueChanged (_on_cdr_field_changed) and the
+        # mastering-display combo's own currentTextChanged
+        # (_on_cdr_mastering_display_changed) each apply live
+        # independently -- signals are blocked here so resetting ~11
+        # fields plus the display combo doesn't fire ~11+ separate
+        # live-applies (each a full re-render) for what's conceptually
+        # ONE reset, same ordering-hazard/redundant-apply fix as
+        # _reset_one_gpr_field's own docstring explains for Grading
+        # Primary. _populate_cdr_final_target_combo/_populate_cdr_
+        # mastering_brightness_combo already block their own signals
+        # internally (see their own docstrings), so only the spins and
+        # the mastering-display combo itself need it here.
         for fields in (self._CDR_TONESCALE_FIELDS, self._CDR_DESAT_FIELDS, self._CDR_GAMUT_FIELDS):
             for key, _label, _lo, _hi, _step, _decimals, default in fields:
-                self._cdr_spins[key].setValue(default)
+                spin = self._cdr_spins[key]
+                spin.blockSignals(True)
+                spin.setValue(default)
+                spin.blockSignals(False)
         idx = self.cdr_mastering_display_combo.findText(custom_drt.DEFAULT_MASTERING_DISPLAY)
         if idx >= 0:
+            self.cdr_mastering_display_combo.blockSignals(True)
             self.cdr_mastering_display_combo.setCurrentIndex(idx)
+            self.cdr_mastering_display_combo.blockSignals(False)
         self._populate_cdr_final_target_combo(custom_drt.DEFAULT_MASTERING_DISPLAY)
         self._populate_cdr_mastering_brightness_combo(custom_drt.DEFAULT_MASTERING_DISPLAY)
         self.cdr_mastering_brightness_combo.setEnabled(custom_drt.DEFAULT_MASTERING_DISPLAY == "HDR")
@@ -3647,19 +3737,42 @@ class StackPanel(QObject):
 
     def _on_cdl_reset_sop_clicked(self):
         for field_key in CDL_SOP_FIELD_DEFAULTS:
-            self._reset_one_cdl_field(field_key)
+            self._reset_one_cdl_field(field_key, apply=False)
+        self._apply_cdl_live()
 
-    def _reset_one_cdl_field(self, field_key):
-        """Resets just ONE SOP field's fine R/G/B spins to identity --
-        _on_cdl_channel_spin_changed (already wired on each spin) then
-        recomputes that field's own master/wheel position from the new
-        R/G/B, so a single-field reset stays fully in sync the same way
-        any other fine-spin edit does. Shared by Reset SOP to Identity
-        (all three fields) and each field's own "{label} (Master):"
-        label double-click (per Tom, see _ParamLabel)."""
+    def _reset_one_cdl_field(self, field_key, apply=True):
+        """Resets just ONE SOP field's fine R/G/B spins, master spin, and
+        wheel to identity -- directly, rather than relying on
+        _on_cdl_channel_spin_changed's own cascade (an earlier version of
+        this method did, one spin's valueChanged at a time). Same
+        ordering-hazard/redundant-apply reasoning as _reset_one_gpr_field's
+        own docstring: with the cascade still live, resetting R/G/B one
+        spin at a time fired _apply_cdl_live (a full live re-render) up
+        to 3 times per field for what's conceptually ONE reset -- 9 times
+        total for "Reset SOP to Identity" across all three fields. Since
+        every channel resets to the SAME default value, the resulting
+        wheel position is always dead-center (no tint, x=y=0) and the
+        master is always that same default -- no need to round-trip
+        through color_balance.rgb_to_master_and_wheel at all, unlike a
+        real fine-spin edit that can land anywhere. `apply=False` lets
+        _on_cdl_reset_sop_clicked call this once per field (all three)
+        and apply/re-render exactly once at the end, instead of once per
+        field; shared with each field's own "{label} (Master):" label
+        double-click (per Tom, see _ParamLabel), which resets just that
+        one field and still wants its own immediate apply (the
+        default)."""
         default = CDL_SOP_FIELD_DEFAULTS[field_key]
         for spin in self._cdl_sop_spins[field_key].values():
+            spin.blockSignals(True)
             spin.setValue(default)
+            spin.blockSignals(False)
+        master_spin = self._cdl_master_spins[field_key]
+        master_spin.blockSignals(True)
+        master_spin.setValue(default)
+        master_spin.blockSignals(False)
+        self._cdl_wheels[field_key].set_balance(0.0, 0.0, emit=False)
+        if apply:
+            self._apply_cdl_live()
 
     def _on_cdl_reset_sat_clicked(self):
         self.cdl_sat_spin.setValue(1.0)
@@ -4139,12 +4252,19 @@ class StackPanel(QObject):
         self._apply_ec_live()
 
     def _on_ec_reset_clicked(self):
-        # Each setValue below fires _on_ec_field_changed (unless already
-        # at that value), which applies live the same as typing would --
-        # same convention as _on_cdl_reset_sop_clicked/_on_gpr_reset_clicked.
-        self._ec_field_spins["exposure"].setValue(ec.IDENTITY_EXPOSURE)
-        self._ec_field_spins["contrast"].setValue(ec.IDENTITY_CONTRAST)
-        self._ec_field_spins["gamma"].setValue(ec.IDENTITY_GAMMA)
+        # Each spin's own valueChanged (_on_ec_field_changed) applies
+        # live independently -- signals are blocked here so resetting
+        # all three doesn't fire 3 separate live-applies (each a full
+        # re-render) for what's conceptually ONE reset, same ordering-
+        # hazard/redundant-apply fix as _reset_one_gpr_field's own
+        # docstring explains for Grading Primary.
+        for key, default in (("exposure", ec.IDENTITY_EXPOSURE), ("contrast", ec.IDENTITY_CONTRAST),
+                              ("gamma", ec.IDENTITY_GAMMA)):
+            spin = self._ec_field_spins[key]
+            spin.blockSignals(True)
+            spin.setValue(default)
+            spin.blockSignals(False)
+        self._apply_ec_live()
 
     def _apply_ec_live(self):
         """Guarded by _refreshing_inspector, same convention as
@@ -4629,11 +4749,31 @@ class StackPanel(QObject):
         self._apply_color_warper_live()
 
     def _on_cw_reset_clicked(self):
-        self.cw_wheel.reset()  # emits points_changed -> _apply_color_warper_live
-        self.cw_wake_spin.setValue(cw.DEFAULT_WAKE)
-        self.cw_dropoff_spin.setValue(cw.DEFAULT_DROPOFF)
-        self.cw_chroma_wake_spin.setValue(cw.DEFAULT_CHROMA_WAKE)
-        self.cw_chroma_dropoff_spin.setValue(cw.DEFAULT_CHROMA_DROPOFF)
+        # The wheel's own points_changed and each spin's own valueChanged
+        # (_on_cw_wake_changed/_on_cw_dropoff_changed/_on_cw_chroma_wake_
+        # changed/_on_cw_chroma_dropoff_changed) each apply live
+        # independently -- suppressed here so resetting all five doesn't
+        # fire 5 separate live-applies (each a full re-render, including
+        # a color_warper stage's own relatively expensive OKLCh warp) for
+        # what's conceptually ONE reset, same ordering-hazard/redundant-
+        # apply fix as _reset_one_gpr_field's own docstring explains for
+        # Grading Primary.
+        self.cw_wheel.reset(emit=False)
+        # blockSignals stops each spin's own valueChanged handler from
+        # firing (which would otherwise apply live AND update the
+        # wheel's own wake/dropoff state) -- so the wheel's copy of that
+        # state has to be set directly here instead, mirroring exactly
+        # what each blocked handler would have done.
+        for spin, default, wheel_setter in (
+                (self.cw_wake_spin, cw.DEFAULT_WAKE, self.cw_wheel.set_wake),
+                (self.cw_dropoff_spin, cw.DEFAULT_DROPOFF, self.cw_wheel.set_dropoff),
+                (self.cw_chroma_wake_spin, cw.DEFAULT_CHROMA_WAKE, self.cw_wheel.set_chroma_wake),
+                (self.cw_chroma_dropoff_spin, cw.DEFAULT_CHROMA_DROPOFF, self.cw_wheel.set_chroma_dropoff)):
+            spin.blockSignals(True)
+            spin.setValue(default)
+            spin.blockSignals(False)
+            wheel_setter(default)
+        self._apply_color_warper_live()
 
     def _apply_color_warper_live(self):
         """Guarded by _refreshing_inspector, same convention as
@@ -4715,10 +4855,11 @@ class StackPanel(QObject):
         # Eyedropper (per Tom) -- arms WipeCompareWidget's own one-shot
         # click-to-sample (see set_eyedropper_requester's own docstring
         # for the getter-based cross-panel wiring), seeds a TIGHT starting
-        # qualifier box (Hue/Chroma/Lightness) around whatever's actually
-        # on screen at the clicked pixel (see _on_ky_pixel_picked and its
-        # own PICK_*_HALF_WIDTH constants) -- widen from there with the
-        # sliders/Softness as needed.
+        # qualifier box (Hue/Chroma/Lightness) around THIS STAGE'S OWN
+        # ACTUAL INPUT at the clicked pixel -- not whatever's on screen
+        # (see _on_ky_pixel_picked's own docstring for why those can
+        # differ, and its PICK_*_HALF_WIDTH constants) -- widen from
+        # there with the sliders/Softness as needed.
         self.ky_pick_button = QPushButton("Pick")
         self.ky_pick_button.setToolTip(
             "Click, then click a pixel in the Viewer to set a tight "
@@ -4788,6 +4929,55 @@ class StackPanel(QObject):
         softness_row.addWidget(self.ky_invert_checkbox)
         outer.addLayout(softness_row)
 
+        # Pre-filter + matte blur + cleanup (per Tom: "pre filtering/blur
+        # for keys as well as typical cleanup features (clean white/
+        # black)", then clarified he meant Prefilter and Blur as TWO
+        # separate controls -- the same split DaVinci Resolve's own
+        # Qualifier makes) -- see keyer.py's own module docstring for
+        # the math and blend order. Prefilter Blur blurs the SOURCE
+        # IMAGE before qualifying (Nuke-style noise reduction so grain
+        # doesn't speckle the key); Matte Blur softens the ALREADY-
+        # COMPUTED matte's own edges (Resolve's Matte Finesse "Blur
+        # Radius"); Clip Black/White remap the matte afterward (the
+        # standard "clean black/clean white" cleanup).
+        prefilter_row = QHBoxLayout()
+        self.ky_prefilter_blur_spin = QDoubleSpinBox()
+        self.ky_matte_blur_spin = QDoubleSpinBox()
+        for spin, default in ((self.ky_prefilter_blur_spin, ky.DEFAULT_PREFILTER_BLUR),
+                               (self.ky_matte_blur_spin, ky.DEFAULT_MATTE_BLUR)):
+            spin.setRange(0.0, 25.0)
+            spin.setDecimals(2)
+            spin.setSingleStep(0.25)
+            spin.setValue(default)
+            enable_drag_to_scrub(spin)
+            spin.valueChanged.connect(self._apply_keyer_live)
+        prefilter_row.addWidget(_ParamLabel(
+            "Prefilter Blur:", lambda: self.ky_prefilter_blur_spin.setValue(ky.DEFAULT_PREFILTER_BLUR)))
+        prefilter_row.addWidget(self.ky_prefilter_blur_spin, stretch=1)
+        prefilter_row.addWidget(_ParamLabel(
+            "Matte Blur:", lambda: self.ky_matte_blur_spin.setValue(ky.DEFAULT_MATTE_BLUR)))
+        prefilter_row.addWidget(self.ky_matte_blur_spin, stretch=1)
+        outer.addLayout(prefilter_row)
+
+        clip_row = QHBoxLayout()
+        self.ky_clip_black_spin = QDoubleSpinBox()
+        self.ky_clip_white_spin = QDoubleSpinBox()
+        for spin, default in ((self.ky_clip_black_spin, ky.DEFAULT_CLIP_BLACK),
+                               (self.ky_clip_white_spin, ky.DEFAULT_CLIP_WHITE)):
+            spin.setRange(0.0, 1.0)
+            spin.setDecimals(3)
+            spin.setSingleStep(0.01)
+            spin.setValue(default)
+            enable_drag_to_scrub(spin)
+            spin.valueChanged.connect(self._apply_keyer_live)
+        clip_row.addWidget(_ParamLabel(
+            "Clip Black:", lambda: self.ky_clip_black_spin.setValue(ky.DEFAULT_CLIP_BLACK)))
+        clip_row.addWidget(self.ky_clip_black_spin, stretch=1)
+        clip_row.addWidget(_ParamLabel(
+            "Clip White:", lambda: self.ky_clip_white_spin.setValue(ky.DEFAULT_CLIP_WHITE)))
+        clip_row.addWidget(self.ky_clip_white_spin, stretch=1)
+        outer.addLayout(clip_row)
+
         # Highlight (per Tom: "a way to preview the mask similar to
         # resolve's highlight mode") -- toggles a live Viewer overlay
         # showing this stage's own matte (full color where selected,
@@ -4833,6 +5023,10 @@ class StackPanel(QObject):
         stage.params["lightness_max"] = self.ky_lightness_max_spin.value()
         stage.params["softness"] = self.ky_softness_spin.value()
         stage.params["invert"] = self.ky_invert_checkbox.isChecked()
+        stage.params["prefilter_blur"] = self.ky_prefilter_blur_spin.value()
+        stage.params["matte_blur"] = self.ky_matte_blur_spin.value()
+        stage.params["clip_black"] = self.ky_clip_black_spin.value()
+        stage.params["clip_white"] = self.ky_clip_white_spin.value()
         self._update_row_content(stage.id)
         self._emit_changed()
 
@@ -4867,7 +5061,7 @@ class StackPanel(QObject):
         if stage is None or stage.kind != "keyer":
             return
         stage_id = stage.id
-        self._eyedropper_requester(lambda rgb: self._on_ky_pixel_picked(stage_id, rgb))
+        self._eyedropper_requester(stage_id, lambda rgb: self._on_ky_pixel_picked(stage_id, rgb))
 
     # A pick seeds a TIGHT starting box around the picked pixel's own
     # OKLCh position on all three axes, not just hue -- see
@@ -4888,19 +5082,28 @@ class StackPanel(QObject):
 
     def _on_ky_pixel_picked(self, stage_id, rgb):
         """Callback from WipeCompareWidget.arm_eyedropper, via Sample
-        ImagePanel.pick_pixel_color -- `rgb` is a plain (r, g, b) float
-        tuple sampled off the ACTUAL on-screen pixel (see read_back_
-        after_frame's own docstring). Decoded here through THIS stage's
-        OWN working_colourspace -- NOT a fixed display space (an earlier
-        version of this method assumed the on-screen pixel was always
-        display-encoded sRGB, which is simply wrong: this app's Viewer
-        applies no unconditional display transform of its own --
-        gpu_stack_renderer.render_chain runs only the stages actually IN
-        the user's stack, so read_back_after_frame hands back whatever
-        encoding the working pipeline is already in, e.g. ACEScct,
-        exactly matching what compute_matte's own decode_working_
-        colourspace_to_oklch call already assumes for THIS SAME stage's
-        params.
+        ImagePanel.pick_pixel_color_for_stage -- `rgb` is a plain
+        (r, g, b) float tuple, this stage's own ACTUAL INPUT at the
+        clicked pixel (see stack.running_array_before_stage's own
+        docstring), NOT whatever's on screen. Two distinct bugs, fixed
+        at two different points in this session, both came from
+        conflating "what's on screen" with "what this stage reads":
+        an EARLIER version assumed the on-screen pixel was always
+        display-encoded sRGB, which was simply wrong (this app's Viewer
+        applies no unconditional display transform of its own). That was
+        fixed by decoding through THIS stage's own working_colourspace
+        instead of a fixed display space -- still correct and unchanged
+        here. But per Tom ("the color picker for the key still seems to
+        rely on actually pulling a pixel from the preview image, it
+        should be pulling up the pixel address of the input of the key
+        entry"), the on-screen pixel ALSO reflects every stage AFTER
+        this one, plus wipe-compare source selection and any active
+        Highlight overlay -- all irrelevant to what THIS stage itself
+        actually reads, unless it happens to be the very last stage in
+        the stack. `rgb` is now resolved against this stage's own real
+        input instead, exactly matching what compute_matte's own decode_
+        working_colourspace_to_oklch call already assumes for THIS SAME
+        stage's params.
 
         Sets Hue Center/Width AND Chroma/Lightness min/max -- a TIGHT box
         centered on the picked pixel's own OKLCh position (see the
@@ -5594,6 +5797,10 @@ class StackPanel(QObject):
             self.ky_invert_checkbox.blockSignals(True)
             self.ky_invert_checkbox.setChecked(p.get("invert", ky.DEFAULT_INVERT))
             self.ky_invert_checkbox.blockSignals(False)
+            self.ky_prefilter_blur_spin.setValue(p.get("prefilter_blur", ky.DEFAULT_PREFILTER_BLUR))
+            self.ky_matte_blur_spin.setValue(p.get("matte_blur", ky.DEFAULT_MATTE_BLUR))
+            self.ky_clip_black_spin.setValue(p.get("clip_black", ky.DEFAULT_CLIP_BLACK))
+            self.ky_clip_white_spin.setValue(p.get("clip_white", ky.DEFAULT_CLIP_WHITE))
             self.ky_highlight_checkbox.blockSignals(True)
             self.ky_highlight_checkbox.setChecked(self._highlight_stage_id == stage.id)
             self.ky_highlight_checkbox.blockSignals(False)
@@ -5683,6 +5890,137 @@ class StackPanel(QObject):
         StackPanel is what mutates it and emits stack_changed."""
         return self.stack
 
+    def set_locked_for_playback(self, locked):
+        """Locks/unlocks BOTH of this panel's actual on-screen widgets
+        (list_widget_area, params_widget_area -- see this class's own
+        docstring on why there are two) for the duration of realtime
+        playback (video or Timeline, see main_window.py's own wiring of
+        VideoPlaybackController/TimelineController's playback_started/
+        playback_stopped to this method).
+
+        StackPanel itself is a QObject, not a QWidget (see this class's
+        own docstring) -- it has no setEnabled of its own. A previous
+        version of this lock called self.stack_panel.setEnabled(...)
+        directly from MainWindow, which raised AttributeError every time
+        playback started (silently swallowed by Qt's slot dispatch, so
+        the app never crashed -- it just never actually locked anything,
+        undetected until Timeline playback's own end-to-end test caught
+        it). Locking both real widgets here, once, is what actually
+        works, and keeps MainWindow from needing to know StackPanel's
+        internal two-widget split at all."""
+        self.list_widget_area.setEnabled(not locked)
+        self.params_widget_area.setEnabled(not locked)
+
+    def get_sequence_stack(self):
+        """The Sequence stack specifically, regardless of which one is
+        currently loaded into the editor (see set_stack's own docstring on
+        why self.stack and self._sequence_stack can diverge while Shot
+        mode is active) -- MainWindow's session save uses this (never
+        get_stack()) so a save made mid-Shot-edit still persists the
+        Sequence grade, not whatever Timeline clip happened to be on
+        screen at the time (that clip's own grade is separately embedded
+        via timeline_to_session_dict already)."""
+        return self._sequence_stack
+
+    def is_shot_mode_active(self):
+        """True while a Timeline clip's own Stack (not Sequence's) is
+        loaded into this editor -- MainWindow uses this to disable Undo/
+        Redo while it's active (see activate_shot_mode's own docstring on
+        why per-clip edits are deliberately NOT undo-tracked at all yet)."""
+        return self._shot_mode_active
+
+    def set_selected_clip_getter(self, getter):
+        """Zero-arg callable returning the Timeline's own currently
+        selected clip (duck-typed: only .stack/.name are read here, via
+        activate_shot_mode/_update_shot_button_label -- this module never
+        imports timeline.py) or None -- wired from MainWindow to
+        TimelinePanel's own selection state, same pull-based convention as
+        set_eyedropper_requester. Used by _on_shot_mode_button_clicked to
+        find out which clip's Stack to request when the user clicks
+        "Shot.\""""
+        self._selected_clip_getter = getter
+
+    def notify_selected_clip_changed(self, clip):
+        """Called by MainWindow whenever TimelinePanel.clip_selected fires
+        -- `clip` is the newly selected TimelineClip, or None. PUSH rather
+        than pull (unlike set_selected_clip_getter above) because a
+        selection change must actively re-point Shot mode's own target
+        the instant it happens, not just be readable on demand next time
+        someone asks. MainWindow wraps this call in _restoring_stack_
+        history (same as it wraps activate_sequence_mode/activate_shot_
+        mode below), so re-pointing to a different clip -- or falling
+        back to Sequence if the selection was cleared -- never itself
+        creates a spurious undo entry.
+
+        Always re-labels/enables the Shot button for the new selection.
+        If Shot mode is already active, per Tom ("selecting a different
+        clip while already in shot mode re-points the toggle"), also
+        re-points the editor at the newly selected clip's own Stack --
+        or, if the selection was cleared entirely (nothing left to point
+        Shot mode at), falls back to Sequence automatically."""
+        self._update_shot_button_label(clip)
+        if not self._shot_mode_active:
+            return
+        if clip is None:
+            self.activate_sequence_mode()
+        else:
+            self.activate_shot_mode(clip)
+
+    def _update_shot_button_label(self, clip):
+        self.shot_mode_button.setEnabled(clip is not None)
+        self.shot_mode_button.setText(f"Shot: {clip.name}" if clip is not None else "Shot")
+
+    def _on_shot_mode_button_clicked(self):
+        """Only ever REQUESTS the switch (shot_mode_requested) -- the
+        actual activate_shot_mode call happens in MainWindow, wrapped in
+        _restoring_stack_history, same reasoning as sequence_mode_
+        requested above (see that signal's own docstring)."""
+        clip = self._selected_clip_getter() if self._selected_clip_getter else None
+        if clip is None:
+            # Shouldn't happen -- the button is disabled with no selection
+            # (_update_shot_button_label) -- but leaves Sequence checked
+            # rather than landing on a checked-but-inert Shot button.
+            self.sequence_mode_button.setChecked(True)
+            return
+        self.shot_mode_requested.emit(clip)
+
+    def activate_sequence_mode(self):
+        """Points this editor back at the Sequence stack -- called by
+        MainWindow in response to sequence_mode_requested (the user
+        clicked "Sequence") or notify_selected_clip_changed (the Timeline
+        selection was cleared while Shot mode was active). A no-op if
+        Sequence is already active (a redundant click, or a redundant
+        clip-deselect notification) -- reloading the exact same stack
+        object that's already on screen would needlessly clear whatever
+        stage row is currently selected in the inspector for nothing."""
+        if not self._shot_mode_active:
+            return
+        self._shot_mode_active = False
+        self.sequence_mode_button.setChecked(True)
+        self._load_stack_into_editor(self._sequence_stack)
+
+    def activate_shot_mode(self, clip):
+        """Points this editor directly at `clip`'s own live Stack object
+        (per Tom: no separate save-back step -- edits mutate it in place,
+        same as timeline.py's own docstring on why a TimelineClip's Stack
+        is live rather than a StackMemory-style snapshot). Called by
+        MainWindow in response to shot_mode_requested (the user clicked
+        "Shot") or notify_selected_clip_changed (a different clip got
+        selected while already in Shot mode) -- a no-op if `clip` is
+        already the one on screen, same "don't needlessly clear the
+        inspector selection" reasoning as activate_sequence_mode above.
+
+        Undo tracking for ONGOING edits made while Shot mode is active is
+        separately, deliberately skipped entirely (see MainWindow's
+        _on_stack_changed_for_history, gated on is_shot_mode_active) --
+        per-clip undo is an explicit fast-follow, not built yet (see the
+        approved Timeline plan's own scope note)."""
+        if self._shot_mode_active and self.stack is clip.stack:
+            return
+        self._shot_mode_active = True
+        self.shot_mode_button.setChecked(True)
+        self._load_stack_into_editor(clip.stack)
+
     def get_highlight_stage_id(self):
         """The Stage.id currently Highlight-toggled (see this class's
         own docstring on self._highlight_stage_id), or None --
@@ -5695,16 +6033,17 @@ class StackPanel(QObject):
         return self._highlight_stage_id
 
     def set_eyedropper_requester(self, requester):
-        """requester: a callable taking one arg (a callback) that arms
-        the Viewer's own eyedropper -- SampleImagePanel.pick_pixel_color,
-        wired in from main_window.py alongside set_stack_getter/set_
-        highlight_getter. Unlike those two, this one is PUSH rather than
-        PULL: StackPanel can't reach the Viewer's WipeCompareWidget
-        directly (panels only ever talk through main_window.py), so this
-        stores a way to ASK it to arm itself instead of a value to read.
-        None (never wired, or in a standalone/test StackPanel) makes
-        _on_ky_pick_clicked a no-op -- same defensive convention every
-        other cross-panel getter/callback in this class already uses."""
+        """requester: a callable taking (stage_id, callback) that arms
+        the Viewer's own eyedropper for THAT stage's own actual input --
+        SampleImagePanel.pick_pixel_color_for_stage, wired in from
+        main_window.py alongside set_stack_getter/set_highlight_getter.
+        Unlike those two, this one is PUSH rather than PULL: StackPanel
+        can't reach the Viewer's WipeCompareWidget directly (panels only
+        ever talk through main_window.py), so this stores a way to ASK
+        it to arm itself instead of a value to read. None (never wired,
+        or in a standalone/test StackPanel) makes _on_ky_pick_clicked a
+        no-op -- same defensive convention every other cross-panel
+        getter/callback in this class already uses."""
         self._eyedropper_requester = requester
 
     def get_baked_lut(self, name=None):
@@ -5736,15 +6075,24 @@ class StackPanel(QObject):
             self.bake_error_label.hide()
 
     def set_stack(self, new_stack):
-        """Replace the live Stack wholesale -- used by MainWindow for
-        session load (see session_io.py). Clears the current selection
-        (nothing in the new stack corresponds to whatever row was selected
-        before), rebuilds the stage list and Grid Size/Domain readout from
-        the new stack, and emits stack_changed exactly once, same as any
-        other mutation path here -- pushes the new bake to the 3D
-        viewer/scopes/sample image preview in one go rather than
-        per-stage."""
-        self.stack = new_stack
+        """Replace the SEQUENCE Stack wholesale -- used by MainWindow for
+        session load, undo/redo, Stack Memory recall, CDL/LUT apply, etc.
+        (see session_io.py and this class's various apply_*/insert_*
+        methods). Always updates self._sequence_stack (get_sequence_stack's
+        own source of truth) -- but only actually loads it into the editor
+        (rebuild list, Grid Size/Domain readout, emit stack_changed) when
+        Shot mode ISN'T active: while a Timeline clip's own Stack is on
+        screen (see activate_shot_mode), an incoming Sequence replacement
+        is remembered for whenever the user next toggles back to Sequence,
+        rather than yanking the clip they're actively editing off screen.
+        Clears the current selection either way it does load (nothing in
+        the new stack corresponds to whatever row was selected before)."""
+        self._sequence_stack = new_stack
+        if not self._shot_mode_active:
+            self._load_stack_into_editor(new_stack)
+
+    def _load_stack_into_editor(self, stack_to_show):
+        self.stack = stack_to_show
         # The incoming Stack's stages are fresh Stage objects with their
         # own ids -- nothing in the old cache would fingerprint-match them
         # anyway, so this is purely about releasing that memory right now

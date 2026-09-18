@@ -224,6 +224,7 @@ from browser_panel import BrowserPanel
 from stack_memories_panel import StackMemoriesPanel
 from lut_library_panel import LUTLibraryPanel
 from image_library_panel import ImageLibraryPanel
+from timeline_panel import TimelinePanel
 from sample_image_panel import SampleImagePanel
 from stack_panel import StackPanel
 from scopes_panel import ScopesPanel
@@ -238,6 +239,7 @@ import workspace_io
 import media_cache
 import stack as st
 import canvas as cv
+import timeline as tl
 import image_io
 import video_export
 import video_source
@@ -306,7 +308,15 @@ PANEL_TOGGLES_RIGHT = [
     ("scopes_toggle", "Scopes", "scopes_frame", True),
     ("viewer_3d_toggle", "Graph", "viewer_3d_frame", True),
 ]
-PANEL_TOGGLES = PANEL_TOGGLES_LEFT + PANEL_TOGGLES_CENTER + PANEL_TOGGLES_RIGHT
+# Timeline is the newest panel (Continuity Grading Timeline) -- appended
+# here rather than folded into PANEL_TOGGLES_LEFT's own library column so
+# it lands on the already-documented Shift+0 fallback (position 10) above
+# instead of bumping every existing Shift+1..9 assignment down by one.
+PANEL_TOGGLES_TIMELINE = [
+    ("timeline_toggle", "Timeline", "timeline_frame", True),
+]
+PANEL_TOGGLES = (
+    PANEL_TOGGLES_LEFT + PANEL_TOGGLES_CENTER + PANEL_TOGGLES_RIGHT + PANEL_TOGGLES_TIMELINE)
 
 # How long a stream of Stack edits (e.g. dragging a slider) has to go
 # quiet before _on_stack_changed_for_history actually commits an undo
@@ -907,10 +917,11 @@ class MainWindow(QMainWindow):
         self.splitDockWidget(self.sample_image_frame, self.stack_params_frame, Qt.Orientation.Horizontal)
 
         # left column: Browser / Media Libraries / LUT Library /
-        # Galleries, top to bottom.
+        # Galleries / Timeline, top to bottom.
         self.splitDockWidget(self.browser_frame, self.image_library_frame, Qt.Orientation.Vertical)
         self.splitDockWidget(self.image_library_frame, self.lut_library_frame, Qt.Orientation.Vertical)
         self.splitDockWidget(self.lut_library_frame, self.stack_memories_frame, Qt.Orientation.Vertical)
+        self.splitDockWidget(self.stack_memories_frame, self.timeline_frame, Qt.Orientation.Vertical)
 
         # center column: Viewer / Stack, top to bottom.
         self.splitDockWidget(self.sample_image_frame, self.stack_frame, Qt.Orientation.Vertical)
@@ -927,8 +938,8 @@ class MainWindow(QMainWindow):
             [260, 700, 340], Qt.Orientation.Horizontal)
         self.resizeDocks(
             [self.browser_frame, self.image_library_frame, self.lut_library_frame,
-             self.stack_memories_frame],
-            [300, 180, 180, 180], Qt.Orientation.Vertical)
+             self.stack_memories_frame, self.timeline_frame],
+            [260, 160, 160, 160, 160], Qt.Orientation.Vertical)
         self.resizeDocks(
             [self.sample_image_frame, self.stack_frame],
             [260, 540], Qt.Orientation.Vertical)
@@ -1040,6 +1051,16 @@ class MainWindow(QMainWindow):
             "stack_memories_frame", "Galleries", self.stack_memories_panel,
             corner_widget=self.stack_memories_panel.menu_button)
 
+        # Continuity Grading Timeline (see timeline.py's own docstring) --
+        # sources clips from Image Library only, wired further below once
+        # self.image_library_panel's add_to_timeline_requested signal is
+        # ready to connect (deferred, same reasoning as
+        # load_as_sample_requested below).
+        self.timeline_panel = TimelinePanel()
+        self._make_dock(
+            "timeline_frame", "Timeline", self.timeline_panel,
+            corner_widget=self.timeline_panel.menu_button)
+
         # ---- center column: Viewer (top) / Stack (main area) -----------
         self.sample_image = SampleImagePanel()
         # Canvas Settings (per Tom, 2026-08-13) -- must be set up and
@@ -1061,8 +1082,12 @@ class MainWindow(QMainWindow):
         # SampleImagePanel previews the live stack directly (no baking --
         # exact per-pixel apply, see stack.apply_stack_to_image_array),
         # re-rendering on every stack_changed the same way it used to for
-        # ConcatenatePanel's chain_changed.
-        self.sample_image.set_stack_getter(self.stack_panel.get_stack)
+        # ConcatenatePanel's chain_changed. _composed_preview_stack, not
+        # a plain stack_panel.get_stack passthrough -- see that method's
+        # own docstring on why (Tom: the Viewer must always show clip +
+        # Sequence together, not whichever ONE of them the Sequence/Shot
+        # toggle currently has loaded for editing).
+        self.sample_image.set_stack_getter(self._composed_preview_stack)
         # Matte Highlight mode (per Tom: "a way to preview the mask
         # similar to resolve's highlight mode") -- same pull-based
         # convention as set_stack_getter just above; toggling Highlight
@@ -1073,18 +1098,40 @@ class MainWindow(QMainWindow):
         # rather than pull (see set_eyedropper_requester's own docstring):
         # a Keyer inspector's own Pick button calls this to arm the
         # Viewer's one-shot click-to-sample.
-        self.stack_panel.set_eyedropper_requester(self.sample_image.pick_pixel_color)
+        self.stack_panel.set_eyedropper_requester(self.sample_image.pick_pixel_color_for_stage)
         self.stack_panel.stack_changed.connect(self.sample_image.refresh_preview)
         # Locks the Stack panel for the duration of realtime video
         # playback (Tom, 2026-08-13: playback shows the grade, but the
         # grade itself must not be editable WHILE it's playing) -- the
         # panel re-enables the instant playback stops for any reason
         # (explicit pause, end of stream, or the video source going
-        # away), see video_playback_controller.py's own docstring.
+        # away), see video_playback_controller.py's own docstring and
+        # StackPanel.set_locked_for_playback's own docstring on why THAT
+        # method (not a plain setEnabled call MainWindow used to make
+        # directly) is what actually does the locking.
         self.sample_image._playback_controller.playback_started.connect(
-            lambda: self.stack_panel.setEnabled(False))
+            lambda: self.stack_panel.set_locked_for_playback(True))
         self.sample_image._playback_controller.playback_stopped.connect(
-            lambda: self.stack_panel.setEnabled(True))
+            lambda: self.stack_panel.set_locked_for_playback(False))
+        # Same lock, for the same reason, during Timeline playback (see
+        # timeline_playback_controller.py's own docstring) -- Play there
+        # is reachable via the SAME transport bar as above now (Tom,
+        # 2026-08-24: "the transport can be exclusive to the timeline"),
+        # so both controllers need this exact lock independently.
+        self.sample_image._timeline_controller.playback_started.connect(
+            lambda: self.stack_panel.set_locked_for_playback(True))
+        self.sample_image._timeline_controller.playback_stopped.connect(
+            lambda: self.stack_panel.set_locked_for_playback(False))
+        # Also locks the Timeline panel itself during Timeline playback --
+        # TimelinePanel IS a plain QWidget (unlike StackPanel), so a
+        # direct setEnabled works here. Without this, selecting a
+        # different clip WHILE the Timeline is actively ticking would
+        # call load_video/load_image (see _on_timeline_clip_selected)
+        # and fight the running controller for control of the Viewer.
+        self.sample_image._timeline_controller.playback_started.connect(
+            lambda: self.timeline_panel.setEnabled(False))
+        self.sample_image._timeline_controller.playback_stopped.connect(
+            lambda: self.timeline_panel.setEnabled(True))
         # Bundled default reference still, loaded Unmanaged (per Tom, same
         # default every image gets) but with its declared source color
         # space pre-filled in the Adapt dialog -- see
@@ -1105,6 +1152,32 @@ class MainWindow(QMainWindow):
             self.sample_image.load_sample_from_library_entry)
         self.image_library_panel.load_as_reference_requested.connect(
             self.sample_image.load_reference_from_library_entry)
+        self.image_library_panel.add_to_timeline_requested.connect(
+            self.timeline_panel.add_clip_from_library_entry)
+
+        # Sequence/Shot toggle (see stack_panel.py's own docstring on
+        # activate_shot_mode/notify_selected_clip_changed) -- this panel
+        # has no idea TimelinePanel exists either, same arrangement as
+        # every other cross-panel wire in this method. All three routes
+        # into the actual mode switch go through MainWindow (below) rather
+        # than straight into StackPanel, so each can be wrapped in
+        # _restoring_stack_history -- see _on_sequence_mode_requested's
+        # own docstring on why that's required here specifically.
+        self.stack_panel.set_selected_clip_getter(self.timeline_panel.get_selected_clip)
+        self.stack_panel.sequence_mode_requested.connect(self._on_sequence_mode_requested)
+        self.stack_panel.shot_mode_requested.connect(self._on_shot_mode_requested)
+        self.timeline_panel.clip_selected.connect(self._on_timeline_clip_selected)
+
+        # Timeline playback (see timeline_playback_controller.py) -- pull-
+        # based getters, same convention as every other cross-panel state
+        # read in this method. timeline_changed re-evaluates the
+        # transport bar's own visibility on every Timeline add/remove/
+        # clear/load, not just on a single video's own load/unload (see
+        # SampleImagePanel.refresh_video_transport_visibility's own
+        # docstring on why both triggers are needed).
+        self.sample_image.set_timeline_getter(self.timeline_panel.get_timeline)
+        self.sample_image.set_sequence_stack_getter(self.stack_panel.get_sequence_stack)
+        self.timeline_panel.timeline_changed.connect(self.sample_image.refresh_video_transport_visibility)
 
         # Stills Gallery (Phase 3, Stack Memories panel) -- same "deferred
         # wiring, this panel has no idea SampleImagePanel exists" reasoning
@@ -1419,6 +1492,9 @@ class MainWindow(QMainWindow):
         stack_memories_menu = menu_bar.addMenu("Galleries")
         self.stack_memories_panel.populate_menu(stack_memories_menu)
 
+        timeline_menu = menu_bar.addMenu("Timeline")
+        self.timeline_panel.populate_menu(timeline_menu)
+
         viewer_menu = menu_bar.addMenu("Viewer")
         self.sample_image.populate_menu(viewer_menu)
 
@@ -1488,17 +1564,18 @@ class MainWindow(QMainWindow):
         self.sample_image.set_canvas_aspect_ratio((c.width * c.pixel_aspect_ratio) / c.height)
 
     def _new_session(self):
-        if (self.stack_panel.get_stack().stages
+        if (self.stack_panel.get_sequence_stack().stages
                 or self.stack_memories_panel.get_library().memories
                 or self.stack_memories_panel.get_gallery_library().stills
                 or self.stack_memories_panel.get_cdl_library().entries
                 or self.lut_library_panel.get_library().entries
-                or self.image_library_panel.get_library().entries):
+                or self.image_library_panel.get_library().entries
+                or self.timeline_panel.get_timeline().clips):
             reply = QMessageBox.question(
                 self, "New Session",
                 "Discard the current stack, Galleries, "
-                "LUT Library, and Media Libraries and start a new session? "
-                "Unsaved changes will be lost.",
+                "LUT Library, Media Libraries, and Timeline and start a "
+                "new session? Unsaved changes will be lost.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Cancel,
             )
@@ -1512,6 +1589,16 @@ class MainWindow(QMainWindow):
         new_stack = st.Stack()
         self._restoring_stack_history = True
         try:
+            # Force back to Sequence mode BEFORE resetting the Timeline
+            # below -- if Shot mode were still pointed at a clip's Stack
+            # here, set_stack() just below would silently update the
+            # (about-to-be-discarded) sequence stack in the background
+            # rather than visibly resetting the editor, leaving the Stack
+            # panel showing a clip Stack object that's no longer part of
+            # any Timeline. Wrapped in the same _restoring_stack_history
+            # block as set_stack() just below -- both are wholesale
+            # replaces, neither should create a spurious undo entry.
+            self.stack_panel.notify_selected_clip_changed(None)
             self.stack_panel.set_stack(new_stack)
         finally:
             self._restoring_stack_history = False
@@ -1538,6 +1625,13 @@ class MainWindow(QMainWindow):
         # to the default aspect ratio even if the default asset is
         # missing and restore_default_image bails out early.
         self._canvas = cv.DEFAULT_CANVAS
+        # stop(), not pause() -- same "about to be replaced wholesale,
+        # don't bother re-parking" reasoning as _close_video_source's own
+        # use of _playback_controller.stop() -- also resets position back
+        # to clip 0 so a later Play doesn't try to resume into a clip
+        # index that belonged to the just-discarded Timeline.
+        self.sample_image._timeline_controller.stop()
+        self.timeline_panel.load_timeline(tl.Timeline())
         self._apply_canvas_to_viewer()
         self.sample_image.restore_default_image()
         self._session_path = None
@@ -1552,13 +1646,18 @@ class MainWindow(QMainWindow):
         try:
             (new_stack, sample_image_state, memory_library, gallery_still_library,
              cdl_library, lut_library, image_library, undo_history_state,
-             loaded_canvas, warnings) = session_io.load_session(path)
+             loaded_canvas, loaded_timeline, warnings) = session_io.load_session(path)
         except Exception as e:  # noqa: BLE001 -- surface any read/parse failure to the user
             QMessageBox.critical(self, "Failed to open session", str(e))
             return
 
         self._restoring_stack_history = True
         try:
+            # Same "force back to Sequence before the swap, wrapped
+            # together" reasoning as _new_session -- the OLD session's
+            # Timeline (and whatever clip Shot mode might be pointed at)
+            # is about to be replaced wholesale by set_stack() just below.
+            self.stack_panel.notify_selected_clip_changed(None)
             self.stack_panel.set_stack(new_stack)
         finally:
             self._restoring_stack_history = False
@@ -1592,6 +1691,10 @@ class MainWindow(QMainWindow):
         # incidental reseed-from-image-dimensions side effect of that
         # reload (see _on_sample_image_loaded).
         self._canvas = loaded_canvas
+        # Same "stop, don't re-park, reset position" reasoning as
+        # _new_session's own use of this call, just above.
+        self.sample_image._timeline_controller.stop()
+        self.timeline_panel.load_timeline(loaded_timeline)
         self._apply_canvas_to_viewer()
         # No workspace-layout step here anymore (see session_io.py's
         # VERSION 7 note) -- opening a session no longer touches panel
@@ -1628,18 +1731,28 @@ class MainWindow(QMainWindow):
         # _flush_pending_undo_push's own docstring).
         self._flush_pending_undo_push()
         try:
-            session_io.save_session(
-                path, self.stack_panel.get_stack(), self.sample_image.get_session_state(),
+            warnings = session_io.save_session(
+                path, self.stack_panel.get_sequence_stack(), self.sample_image.get_session_state(),
                 stack_memory_library=self.stack_memories_panel.get_library(),
                 gallery_still_library=self.stack_memories_panel.get_gallery_library(),
                 cdl_library=self.stack_memories_panel.get_cdl_library(),
                 lut_library=self.lut_library_panel.get_library(),
                 image_library=self.image_library_panel.get_library(),
-                undo_history=self._undo_history, canvas=self._canvas)
+                undo_history=self._undo_history, canvas=self._canvas,
+                timeline=self.timeline_panel.get_timeline())
         except Exception as e:  # noqa: BLE001 -- surface any write failure to the user
             QMessageBox.critical(self, "Failed to save session", str(e))
             return
         self._session_path = path
+        if warnings:
+            # save_session's own docstring: only stack_memories/undo_history
+            # entries can be dropped this way -- the current working stack
+            # already saved fine, or this except block above would have
+            # fired instead. Same "warn, don't silently lose it" convention
+            # as the load path's own dialog just above.
+            QMessageBox.warning(
+                self, "Session saved with warnings",
+                "Saved, but some old data couldn't be included:\n\n" + "\n".join(warnings))
 
     def _make_float_action(self, menu, action_attr, label, frame_attr, shortcut=None):
         """One checkable Workspace menu entry per panel that pops it out
@@ -2311,7 +2424,14 @@ class MainWindow(QMainWindow):
         otherwise restoring/replacing the stack would immediately record
         itself as a new edit, corrupting the redo tail (or, for New/Open
         Session, pointlessly recording one entry into a history object
-        about to be replaced anyway).
+        about to be replaced anyway). Also skipped entirely while Shot
+        mode is active (see stack_panel.py's is_shot_mode_active/
+        _activate_shot_mode) -- this history only ever tracks the
+        Sequence stack, and per-clip undo is an explicit, not-yet-built
+        fast-follow (see the approved Timeline plan's own scope note), so
+        a clip edit while Shot mode is on simply isn't undo-tracked at
+        all, rather than corrupting the Sequence history with an entry
+        that isn't even the Sequence stack.
 
         DEBOUNCED, not pushed immediately: stack_changed fires on every
         SINGLE TICK of a live drag (a Printer Lights/CDL slider, the
@@ -2326,7 +2446,7 @@ class MainWindow(QMainWindow):
         gesture into exactly one undo step -- the same idea a text
         editor uses to group a burst of keystrokes into one undo, not
         one per character."""
-        if self._restoring_stack_history:
+        if self._restoring_stack_history or self.stack_panel.is_shot_mode_active():
             return
         self._undo_debounce_timer.start(_UNDO_DEBOUNCE_MS)
 
@@ -2383,9 +2503,120 @@ class MainWindow(QMainWindow):
             self._restoring_stack_history = False
         self._update_undo_redo_actions()
 
+    # ---- Sequence/Shot toggle (see stack_panel.py's own docstring) -------
+
+    def _composed_preview_stack(self):
+        """The Viewer's own live-preview stack -- ALWAYS the currently
+        selected Timeline clip's own grade composed with the Sequence
+        grade together (stack.compose_stacks), regardless of which ONE
+        of them the Sequence/Shot toggle currently has loaded for
+        editing (Tom, after trying the build: "the result i see in the
+        viewer should always be the result of the clip level grade and
+        then the timeline level grade... right now when i switch back
+        and forth it only shows one or the other"). Deliberately NOT
+        stack_panel.get_stack() (which answers a different question --
+        "what is StackPanel's editor currently showing," Sequence OR
+        Shot, never both -- see that method's own docstring) and NOT
+        get_sequence_stack() alone either.
+
+        Falls back to the Sequence stack alone when no Timeline clip is
+        selected -- ordinary non-Timeline Source/Reference grading,
+        unchanged from before this feature existed. Wired as sample_
+        image's own stack_getter (see _build_layout), so this same
+        composition automatically covers the Viewer AND Scopes (both
+        read through that one getter already -- see sample_image_panel.
+        py's refresh_preview) without needing a second wire for each."""
+        clip = self.timeline_panel.get_selected_clip()
+        sequence_stack = self.stack_panel.get_sequence_stack()
+        if clip is None:
+            return sequence_stack
+        return st.compose_stacks(clip.stack, sequence_stack)
+
+    def _on_sequence_mode_requested(self):
+        """The user clicked "Sequence" -- wrapped in _restoring_stack_
+        history, same reasoning as _undo/_redo/_new_session/_open_session's
+        own set_stack() calls: switching which Stack is loaded into the
+        editor is a wholesale replace, not a genuine edit, and must never
+        itself create a spurious undo entry (stack_panel.py's
+        activate_sequence_mode/activate_shot_mode both fire stack_changed,
+        same as any other stack swap). StackPanel can't set this flag
+        itself -- it has no reference to MainWindow -- hence routing the
+        actual activation back out through here instead of letting the
+        button call activate_sequence_mode() directly."""
+        self._restoring_stack_history = True
+        try:
+            self.stack_panel.activate_sequence_mode()
+        finally:
+            self._restoring_stack_history = False
+        self._update_undo_redo_actions()
+
+    def _on_shot_mode_requested(self, clip):
+        """The user clicked "Shot" -- same wrapping reasoning as
+        _on_sequence_mode_requested above."""
+        self._restoring_stack_history = True
+        try:
+            self.stack_panel.activate_shot_mode(clip)
+        finally:
+            self._restoring_stack_history = False
+        self._update_undo_redo_actions()
+
+    def _on_timeline_clip_selected(self, clip):
+        """TimelinePanel.clip_selected fired -- same wrapping reasoning as
+        _on_sequence_mode_requested above: notify_selected_clip_changed
+        can itself call activate_sequence_mode/activate_shot_mode (re-
+        pointing Shot mode at a newly selected clip, or falling back to
+        Sequence if the selection was cleared), which must not create a
+        spurious undo entry either.
+
+        Also loads the newly selected clip's own footage into the
+        Viewer's Source slot (Tom, after trying the skeleton build:
+        "theres no way to use the timeline panel to select which clip
+        you want to work on" / "it defaults to the sample test image" --
+        selecting a clip previously only swapped which Stack Shot mode
+        would edit, with nothing to show it against; a Shot-mode grade
+        with no visible connection to the footage it's grading is not
+        usable). Reuses load_video/load_image exactly as if the user had
+        picked "Load as Source" on that same file -- this is what makes
+        the EXISTING scrub bar (see sample_image_panel.py's own
+        "transport exclusive to timeline, scrub exclusive to clip" split)
+        actually have something to scrub once a clip is selected. Does
+        nothing on deselection (clip is None) -- leaves whatever was
+        already loaded as Source alone rather than clearing it.
+
+        Also re-points TimelineController at this clip (seek_to_clip) so
+        the NEXT Play starts here, not wherever an earlier play/pause
+        session left off -- see that method's own docstring."""
+        self._restoring_stack_history = True
+        try:
+            self.stack_panel.notify_selected_clip_changed(clip)
+        finally:
+            self._restoring_stack_history = False
+        self._update_undo_redo_actions()
+        if clip is not None:
+            if clip.media_kind == "video":
+                self.sample_image.load_video(clip.source_path)
+            else:
+                self.sample_image.load_image(clip.source_path)
+            # Also points a SUBSEQUENT Play at this clip -- see
+            # TimelineController.seek_to_clip's own docstring.
+            clip_index = self.timeline_panel.get_selected_clip_index()
+            if clip_index is not None:
+                self.sample_image._timeline_controller.seek_to_clip(clip_index)
+
     def _update_undo_redo_actions(self):
-        self.undo_action.setEnabled(self._undo_history.can_undo)
-        self.redo_action.setEnabled(self._undo_history.can_redo)
+        # Force both off while Shot mode is active (see stack_panel.py's
+        # is_shot_mode_active/_activate_shot_mode and
+        # _on_stack_changed_for_history's own docstring) -- the history
+        # underneath never changes during Shot mode (clip edits aren't
+        # tracked at all), so Undo/Redo would otherwise silently act on
+        # the SEQUENCE stack while the clip's own grade is what's on
+        # screen -- same "must not be editable during an incompatible
+        # mode" precedent as locking the Stack panel during video
+        # playback (see the playback_started/playback_stopped wiring in
+        # _build_layout).
+        shot_mode = self.stack_panel.is_shot_mode_active()
+        self.undo_action.setEnabled(not shot_mode and self._undo_history.can_undo)
+        self.redo_action.setEnabled(not shot_mode and self._undo_history.can_redo)
 
     def _show_export_dialog(self):
         """File > Export... (⌘E, per Tom) -- replaces the old always-
