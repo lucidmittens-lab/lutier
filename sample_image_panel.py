@@ -478,11 +478,12 @@ class SampleImagePanel(QWidget):
         self._timeline_controller.frame_changed.connect(self._on_timeline_frame_changed)
         self._build_video_keyboard_shortcuts()
         # Deferred from the plain self._viewer_mode = "source" assignment
-        # above -- everything _refresh_scrub_slider_for_mode touches
-        # (the scrub slider, both playback controllers) exists now.
-        # Harmless 0..0 range at this point (no video/Timeline loaded
-        # yet); real ranges get set the first time either one is.
+        # above -- everything these two touch (the scrub slider, the
+        # timecode labels, both playback controllers) exists now.
+        # Harmless empty state at this point (no video/Timeline loaded
+        # yet); real values get set the first time either one is.
         self._refresh_scrub_slider_for_mode()
+        self._refresh_source_timecode_for_mode()
 
     def _active_transport_controller(self):
         """Whichever controller the transport bar's Play/Pause/Loop/
@@ -629,31 +630,47 @@ class SampleImagePanel(QWidget):
         self._video_speed_combo.currentIndexChanged.connect(self._on_video_speed_changed)
         transport_layout.addWidget(self._video_speed_combo)
 
-        self._video_timecode_label = QLabel("")
-        self._video_timecode_label.setObjectName("videoTimecodeLabel")
+        # Two timecode fields (per direct feedback: "there are 3
+        # timecode fields ... you can make it 2 only" -- collapses the
+        # single-clip Source readout and the Timeline's own combined
+        # "Src ... Rec ..." readout into one unified Source field plus a
+        # standing Record field):
+        #
+        #   - _source_timecode_label: whichever "source" is actually
+        #     ACTIVE right now -- the single directly-loaded/selected
+        #     clip's own position in SOURCE mode (self._video_source),
+        #     or the Timeline's CURRENT clip's own source position in
+        #     RECORD mode (TimelineController.current_source_frame --
+        #     "the clip under the playhead"), never both at once. See
+        #     _update_source_timecode_label, the single place that
+        #     decides which.
+        #   - _record_timecode_label: the Timeline's own position
+        #     (TimelineController.current_record_frame) -- unlike the
+        #     Source field, this ALWAYS reflects the whole Timeline
+        #     regardless of which mode the toggle is on, since "Record"
+        #     is unambiguous (there's only ever one Timeline). Blank
+        #     whenever the Timeline has no clips at all.
+        #
+        # Both expressed at the Timeline's own frame_rate when showing a
+        # Timeline-sourced position (see timeline_playback_controller
+        # .py's current_source_frame/current_record_frame docstrings on
+        # why mixed-fps-aware timecode isn't attempted here -- explicitly
+        # out of scope for this pass); the single-clip Source case uses
+        # that clip's own frame_rate, same as before this merge.
+        self._source_timecode_label = QLabel("")
+        self._source_timecode_label.setObjectName("videoTimecodeLabel")
+        self._source_timecode_label.setToolTip(
+            "Position within whichever source is currently active: the "
+            "single loaded/selected clip (SOURCE mode) or the Timeline's "
+            "current clip under the playhead (RECORD mode)")
         transport_layout.addSpacing(4)
-        transport_layout.addWidget(self._video_timecode_label)
+        transport_layout.addWidget(self._source_timecode_label)
 
-        # Timeline's own Source/Record timecode (Tom, after trying the
-        # skeleton build: "it would be good to get more detail (in and
-        # out source/record tc)") -- Source = position within the
-        # CURRENT clip's own source media (its in_frame plus how far
-        # into it playback has gotten); Record = position within the
-        # WHOLE timeline (every earlier clip's frame_count summed, plus
-        # the same offset). Both expressed at the Timeline's own
-        # frame_rate (see timeline_playback_controller.py's
-        # current_source_frame/current_record_frame docstrings on why
-        # mixed-fps-aware timecode isn't attempted here -- explicitly
-        # out of scope for this pass). Updated by _on_timeline_frame_
-        # changed, wired to TimelineController.frame_changed in
-        # __init__; blank whenever nothing's been entered yet.
-        self._timeline_timecode_label = QLabel("")
-        self._timeline_timecode_label.setObjectName("videoTimecodeLabel")
-        self._timeline_timecode_label.setToolTip(
-            "Source: position within the current clip's own source media\n"
-            "Record: position within the whole Timeline")
+        self._record_timecode_label = QLabel("")
+        self._record_timecode_label.setObjectName("videoTimecodeLabel")
+        self._record_timecode_label.setToolTip("Position within the whole Timeline")
         transport_layout.addSpacing(8)
-        transport_layout.addWidget(self._timeline_timecode_label)
+        transport_layout.addWidget(self._record_timecode_label)
 
         self._video_transport_widget.setVisible(False)  # shown once a video is loaded OR the Timeline has clips
         layout.addWidget(self._video_transport_widget)
@@ -990,42 +1007,70 @@ class SampleImagePanel(QWidget):
             self._suppress_video_scrub_signal = False
         self._update_video_timecode_label(frame_index)
 
+    _SOURCE_TIMECODE_TOOLTIP = (
+        "Position within whichever source is currently active: the "
+        "single loaded/selected clip (SOURCE mode) or the Timeline's "
+        "current clip under the playhead (RECORD mode)")
+
     def _update_video_timecode_label(self, frame_index):
-        """Real SMPTE timecode (Phase 4, replacing the old "N / total"
-        label -- see timecode.py) -- frame count is kept as a secondary
-        detail in the tooltip, not the primary display, per the plan's
-        own scope note."""
+        """Real SMPTE timecode for the single directly-loaded/selected
+        clip (Phase 4, replacing the old "N / total" label -- see
+        timecode.py) -- frame count is kept as a secondary detail in the
+        tooltip, not the primary display, per the plan's own scope note.
+
+        Only actually writes to the shared _source_timecode_label while
+        SOURCE mode is active (see that label's own construction-time
+        docstring) -- RECORD mode's Source field comes from _on_
+        timeline_frame_changed instead, and a background tick from the
+        single-clip controller while it's the INACTIVE one must not
+        overwrite that."""
+        if self._viewer_mode != "source":
+            return
         if self._video_source is None:
-            self._video_timecode_label.setText("")
-            self._video_timecode_label.setToolTip("")
+            self._source_timecode_label.setText("")
+            self._source_timecode_label.setToolTip(self._SOURCE_TIMECODE_TOOLTIP)
             return
         tc = timecode.frames_to_timecode(frame_index, self._video_source.frame_rate)
-        self._video_timecode_label.setText(tc)
-        self._video_timecode_label.setToolTip(
+        self._source_timecode_label.setText(tc)
+        self._source_timecode_label.setToolTip(
             f"Frame {frame_index + 1} / {self._video_source.frame_count}")
 
     def _on_timeline_frame_changed(self):
-        """TimelineController.frame_changed fired -- pulls the current
-        Source/Record frame back out (see that controller's own
-        current_source_frame/current_record_frame docstrings) and
-        formats both as timecode at the Timeline's own frame_rate (see
-        _build_video_transport_bar's own docstring on this label for why
-        mixed-fps-aware timecode isn't attempted here). Also keeps the
-        scrub bar's VALUE live during RECORD-mode playback/seeking (its
-        RANGE is set separately, see _refresh_scrub_slider_for_mode) --
-        gated to RECORD only, so a stray tick while SOURCE mode is
-        active can't overwrite the scrub bar's current SOURCE-range
-        value with a position from the wrong numbering."""
+        """TimelineController.frame_changed fired. Updates the RECORD
+        field unconditionally -- the Timeline's own position is
+        unambiguous regardless of which mode the toggle is on, per
+        direct feedback: "one source [field] ... and the record
+        timecode" (a standing field, not mode-gated the way Source is).
+        Updates the shared _source_timecode_label too, but ONLY while
+        RECORD mode is active -- the Timeline's CURRENT clip's own
+        source position ("the clip under the playhead"); SOURCE mode's
+        writes to that same field come from _update_video_timecode_label
+        instead, gated the identical way in reverse, so exactly one of
+        the two ever writes to it at a time.
+
+        Also keeps the scrub bar's VALUE live during RECORD-mode
+        playback/seeking (its RANGE is set separately, see
+        _refresh_scrub_slider_for_mode) -- gated to RECORD only, so a
+        stray tick while SOURCE mode is active can't overwrite the
+        scrub bar's current SOURCE-range value with a position from the
+        wrong numbering."""
         timeline_obj = self._timeline_getter() if self._timeline_getter else None
         source_frame = self._timeline_controller.current_source_frame()
         record_frame = self._timeline_controller.current_record_frame()
-        if timeline_obj is None or source_frame is None or record_frame is None:
-            self._timeline_timecode_label.setText("")
+        if timeline_obj is None or record_frame is None:
+            self._record_timecode_label.setText("")
+            if self._viewer_mode == "record":
+                self._source_timecode_label.setText("")
             return
-        source_tc = timecode.frames_to_timecode(source_frame, timeline_obj.frame_rate)
-        record_tc = timecode.frames_to_timecode(record_frame, timeline_obj.frame_rate)
-        self._timeline_timecode_label.setText(f"Src {source_tc}  Rec {record_tc}")
+        self._record_timecode_label.setText(
+            timecode.frames_to_timecode(record_frame, timeline_obj.frame_rate))
         if self._viewer_mode == "record":
+            if source_frame is not None:
+                self._source_timecode_label.setText(
+                    timecode.frames_to_timecode(source_frame, timeline_obj.frame_rate))
+                self._source_timecode_label.setToolTip(self._SOURCE_TIMECODE_TOOLTIP)
+            else:
+                self._source_timecode_label.setText("")
             self._suppress_video_scrub_signal = True
             self._video_scrub_slider.setValue(record_frame)
             self._suppress_video_scrub_signal = False
@@ -1079,6 +1124,28 @@ class SampleImagePanel(QWidget):
         self._viewer_mode_frame.style().unpolish(self._viewer_mode_frame)
         self._viewer_mode_frame.style().polish(self._viewer_mode_frame)
         self._refresh_scrub_slider_for_mode()
+        self._refresh_source_timecode_for_mode()
+
+    def _refresh_source_timecode_for_mode(self):
+        """Immediately recomputes the shared Source timecode field to
+        match self._viewer_mode -- called on every mode switch, same
+        "don't wait for the next tick" reasoning as _refresh_scrub_
+        slider_for_mode. Without this, switching modes while PAUSED
+        would leave the field showing whatever the PREVIOUSLY active
+        mode's own last tick wrote, not the mode just switched to (the
+        Record field needs no equivalent -- it's mode-independent and
+        already kept live by every _on_timeline_frame_changed call)."""
+        if self._viewer_mode == "source":
+            self._update_video_timecode_label(self._video_frame_index)
+        else:
+            timeline_obj = self._timeline_getter() if self._timeline_getter else None
+            source_frame = self._timeline_controller.current_source_frame()
+            if timeline_obj is not None and source_frame is not None:
+                self._source_timecode_label.setText(
+                    timecode.frames_to_timecode(source_frame, timeline_obj.frame_rate))
+            else:
+                self._source_timecode_label.setText("")
+            self._source_timecode_label.setToolTip(self._SOURCE_TIMECODE_TOOLTIP)
 
     def _refresh_scrub_slider_for_mode(self):
         """Recomputes the scrub bar's range AND position to match
@@ -1319,17 +1386,20 @@ class SampleImagePanel(QWidget):
         ever loading a single video directly must still make the
         transport visible.
 
-        Also the hook point for keeping RECORD mode's scrub-bar RANGE in
-        sync with the Timeline's own clip list (per direct feedback:
-        "the scrub bar seems to only represent a single clip in the
-        timeline. it should represent the whole timeline") -- a clip
-        added/removed/reordered changes total_frame_count, and this is
-        already called on every such change via the timeline_changed
-        wiring above, so there's no need for a second, separate hook."""
+        Also the hook point for keeping RECORD mode's scrub-bar RANGE
+        (per direct feedback: "the scrub bar seems to only represent a
+        single clip in the timeline. it should represent the whole
+        timeline") and the Source timecode field both in sync with the
+        Timeline's own clip list -- a clip added/removed/reordered
+        changes total_frame_count and possibly what's under the
+        playhead, and this is already called on every such change via
+        the timeline_changed wiring above, so there's no need for a
+        second, separate hook."""
         timeline_obj = self._timeline_getter() if self._timeline_getter else None
         has_timeline_clips = bool(timeline_obj and timeline_obj.clips)
         self._video_transport_widget.setVisible(self._video_source is not None or has_timeline_clips)
         self._refresh_scrub_slider_for_mode()
+        self._refresh_source_timecode_for_mode()
 
     def set_highlight_getter(self, getter):
         """getter: a zero-arg callable returning the Stage.id currently

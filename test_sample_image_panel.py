@@ -42,6 +42,7 @@ from PySide6.QtWidgets import QApplication
 
 import app_logic
 import sample_image_panel as sample_image_panel_module
+import timecode
 import timeline as tl
 from sample_image_panel import SampleImagePanel, WIPE_SOURCE_SAMPLE_BEFORE, WIPE_SOURCE_SAMPLE_AFTER
 from stack import (Stack, apply_stack_to_image_array, make_cdl_stage, make_lut_stage,
@@ -637,16 +638,19 @@ def test_video_transport_slider_range_matches_frame_count():
 def test_video_transport_timecode_label_updates_on_seek():
     """Phase 4: the transport bar shows real SMPTE timecode (see
     timecode.py), not a plain "N / total" count -- frame count moved to
-    the label's tooltip instead (see _update_video_timecode_label)."""
+    the label's tooltip instead (see _update_video_timecode_label).
+    SOURCE mode (the default) writes to the shared _source_timecode_
+    label -- see the two-field merge's own tests further down for the
+    RECORD-mode half of this same field."""
     _app()
     panel = SampleImagePanel()
     path = _make_test_video(frame_count=10, frame_rate=24, size=(64, 48))
     assert panel.load_video(path)
-    assert panel._video_timecode_label.text() == "00:00:00:00"
-    assert panel._video_timecode_label.toolTip() == "Frame 1 / 10"
+    assert panel._source_timecode_label.text() == "00:00:00:00"
+    assert panel._source_timecode_label.toolTip() == "Frame 1 / 10"
     panel.seek_video_frame(4)
-    assert panel._video_timecode_label.text() == "00:00:00:04"
-    assert panel._video_timecode_label.toolTip() == "Frame 5 / 10"
+    assert panel._source_timecode_label.text() == "00:00:00:04"
+    assert panel._source_timecode_label.toolTip() == "Frame 5 / 10"
     print("SampleImagePanel: timecode label shows real SMPTE timecode "
           "and updates on seek, frame count moved to the tooltip -- OK")
 
@@ -934,6 +938,67 @@ def test_switching_to_record_mode_positions_scrub_bar_at_current_record_frame():
     assert panel._video_scrub_slider.value() == 4
     print("SampleImagePanel: switching to RECORD mode positions the "
           "scrub bar at the Timeline controller's current position -- OK")
+
+
+def test_record_timecode_field_reflects_timeline_regardless_of_mode():
+    """Per direct feedback: "there are 3 timecode fields ... you can
+    make it 2 only ... the record timecode" -- the Record field is a
+    STANDING field, unlike Source (which is mode-gated): it must show
+    the Timeline's own position whether the toggle is on SOURCE or
+    RECORD, since there's only ever one Timeline to be ambiguous
+    about."""
+    panel, timeline_obj = _panel_with_two_clip_timeline(frame_counts=(10, 6))
+    panel._timeline_controller.seek_to_record_frame(7)  # clip 1 (10 frames), offset 7 -> record frame 7
+    expected = timecode.frames_to_timecode(7, timeline_obj.frame_rate)
+    assert panel._record_timecode_label.text() == expected
+
+    panel._viewer_mode_badge.setChecked(True)  # RECORD
+    assert panel._record_timecode_label.text() == expected, "must not change just from toggling mode"
+    print("SampleImagePanel: the Record timecode field reflects the "
+          "Timeline's own position in both SOURCE and RECORD mode -- OK")
+
+
+def test_source_timecode_field_shows_current_timeline_clip_in_record_mode():
+    """The other half of the merge: in RECORD mode, the shared Source
+    field shows the Timeline's CURRENT clip's own source position ("the
+    clip under the playhead"), not the single directly-loaded clip."""
+    panel, timeline_obj = _panel_with_two_clip_timeline(frame_counts=(10, 6))
+    panel._timeline_controller.seek_to_record_frame(12)  # clip 1 (index 1), its own offset 2
+    assert panel._timeline_controller._clip_index == 1
+
+    panel._viewer_mode_badge.setChecked(True)  # RECORD
+    expected = timecode.frames_to_timecode(
+        panel._timeline_controller.current_source_frame(), timeline_obj.frame_rate)
+    assert panel._source_timecode_label.text() == expected
+    print("SampleImagePanel: RECORD mode's Source field shows the "
+          "Timeline's current clip under the playhead -- OK")
+
+
+def test_source_timecode_field_switches_content_with_mode_not_leftovers():
+    """A single directly-loaded Source clip AND an active Timeline
+    position exist at once -- toggling the mode must swap the Source
+    field's content immediately (not wait for the next tick, not leak
+    the other mode's last-written value)."""
+    panel, timeline_obj = _panel_with_two_clip_timeline(frame_counts=(10, 6))
+    panel.load_video(_make_test_video(frame_count=8, frame_rate=24, size=(64, 48)))
+    panel.seek_video_frame(3)
+    panel._timeline_controller.seek_to_record_frame(12)  # clip 1, own offset 2
+
+    assert panel._viewer_mode == "source"
+    source_expected = timecode.frames_to_timecode(3, panel._video_source.frame_rate)
+    assert panel._source_timecode_label.text() == source_expected
+
+    panel._viewer_mode_badge.setChecked(True)  # RECORD
+    timeline_clip_expected = timecode.frames_to_timecode(
+        panel._timeline_controller.current_source_frame(), timeline_obj.frame_rate)
+    assert panel._source_timecode_label.text() == timeline_clip_expected
+    assert panel._source_timecode_label.text() != source_expected
+
+    panel._viewer_mode_badge.setChecked(False)  # back to SOURCE
+    assert panel._source_timecode_label.text() == source_expected
+    print("SampleImagePanel: the shared Source field swaps content "
+          "immediately on mode switch, no leftovers from the other "
+          "mode -- OK")
 
 
 def test_video_set_in_out_and_clear_buttons_are_disabled_and_are_noops():
