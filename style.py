@@ -401,13 +401,6 @@ _ACCENT_BLUE_TEXT = "#ffffff"  # DEFAULT contrast text for the default
 _ACCENT_AMBER = "#e0a542"      # Stack Forking Branch B -- must differ from
                                # the blue accent (Branch A) or the two
                                # branches stop being visually distinguishable
-_RECORD_RED = "#d9534f"        # Viewer's RECORD mode badge/border (per Tom:
-                               # "easily tell if we are looking at the
-                               # timeline or not") -- deliberately red, the
-                               # universal "actively recording/on-air"
-                               # broadcast convention, independent of the
-                               # user's own chosen accent color (which
-                               # SOURCE mode's neutral styling still uses).
 _HINT_TEXT = "#BDBDBD"         # muted/secondary INFORMATIONAL text (hint
                                # labels, disabled stage/button/menu TEXT) --
                                # FIFTEENTH PASS -- was #617191, now a plain
@@ -1398,36 +1391,39 @@ QMainWindow::separator {{
     border-radius: 3px;
 }}
 
-/* Viewer SOURCE/RECORD mode indicator (sample_image_panel.py's
-   _set_viewer_mode, per direct feedback: "we need to ... easily tell
-   if we are looking at the timeline or not" -- the Viewer's single
-   display shows either a directly-loaded Source/parked clip preview or
-   the Timeline's own composited, multi-clip Record playback, with
-   nothing before this distinguishing the two). RECORD is deliberately
-   the more visually insistent of the two (red border + red badge, the
-   broadcast "on-air" convention) -- SOURCE is the default, quiet state,
-   not something that needs calling out the same way. */
+/* Viewer SOURCE/RECORD mode TOGGLE (sample_image_panel.py's
+   _set_viewer_mode/_on_viewer_mode_toggled, per direct feedback: "we
+   need to ... easily tell if we are looking at the timeline or not",
+   then a follow-up round: "you dont need that red for record. it's not
+   like arming a recording in a DAW" -- RECORD reuses this app's
+   existing palette(highlight) "this one's active/selected" language
+   (same convention QToolButton#videoTransportButton:checked and
+   QFrame#stackStageRow[stageSelected="true"] already use), not a
+   special alarm color. SOURCE is the quiet, unchecked default. */
 QFrame#viewerModeFrame[viewerMode="record"] {{
-    border: 2px solid {_RECORD_RED};
+    border: 2px solid palette(highlight);
     border-radius: 4px;
 }}
 QFrame#viewerModeFrame[viewerMode="source"] {{
     border: 2px solid transparent;
     border-radius: 4px;
 }}
-QLabel#viewerModeBadge {{
+/* #viewerModeBadge is a checkable QToolButton, not a QLabel -- its own
+   RECORD/SOURCE look comes from the native :checked pseudo-state
+   (toggled by _set_viewer_mode's setChecked call), not a dynamic
+   property, same reasoning videoTransportButton:checked above already
+   follows for the Loop button. */
+QToolButton#viewerModeBadge {{
     font-size: 10px;
     font-weight: 700;
     border-radius: 3px;
     padding: 1px 6px;
     max-width: 60px;
-}}
-QLabel#viewerModeBadge[viewerMode="record"] {{
-    color: #ffffff;
-    background-color: {_RECORD_RED};
-}}
-QLabel#viewerModeBadge[viewerMode="source"] {{
     color: palette(mid);
     background-color: palette(alternate-base);
+}}
+QToolButton#viewerModeBadge:checked {{
+    color: palette(highlighted-text);
+    background-color: palette(highlight);
 }}
 """

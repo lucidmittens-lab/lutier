@@ -406,16 +406,23 @@ class SampleImagePanel(QWidget):
         # set_color_readout_text), but was removed outright per direct
         # feedback while iterating on the Viewer. The "drag the handle..."
         # hint line is just gone too, not moved.
-        # SOURCE/RECORD mode indicator (per direct feedback: "we need to
-        # ... easily tell if we are looking at the timeline or not") --
-        # a bordered frame + small badge around self.compare, switched
-        # by _set_viewer_mode (wired to TimelineController.playback_
-        # started/playback_stopped below). See style.py's
-        # QFrame#viewerModeFrame/QLabel#viewerModeBadge rules for the
-        # actual SOURCE (quiet/neutral) vs RECORD (red, "on-air")
-        # styling. Deliberately a wrapping frame + a plain label row,
-        # not an overlay painted onto self.compare's own GL surface --
-        # no per-frame render-pipeline changes, no manual overlay
+        # SOURCE/RECORD mode TOGGLE (per direct feedback: "we need to
+        # ... easily tell if we are looking at the timeline or not",
+        # then a follow-up round: "it should be a toggle you can control
+        # all the time and play should work for either" -- NOT an
+        # automatic indicator driven by play/pause, a manual switch the
+        # user owns, which also decides which controller the transport
+        # bar drives -- see _active_transport_controller/_on_video_play_
+        # pause_clicked/_on_video_loop_toggled/_on_video_speed_changed
+        # below). A bordered frame + a checkable toggle button around
+        # self.compare -- see style.py's QFrame#viewerModeFrame/
+        # #viewerModeBadge rules for the actual SOURCE (quiet/neutral)
+        # vs RECORD (accent-colored, same "this one's active" language
+        # already used for a selected Stack row -- deliberately NOT red;
+        # per Tom, "it's not like arming a recording in a DAW") styling.
+        # Deliberately a wrapping frame + a plain button row, not an
+        # overlay painted onto self.compare's own GL surface -- no
+        # per-frame render-pipeline changes, no manual overlay
         # positioning/resize-event math to get wrong.
         self._viewer_mode_frame = QFrame()
         self._viewer_mode_frame.setObjectName("viewerModeFrame")
@@ -423,8 +430,16 @@ class SampleImagePanel(QWidget):
         viewer_mode_layout.setContentsMargins(2, 2, 2, 2)
         viewer_mode_layout.setSpacing(2)
 
-        self._viewer_mode_badge = QLabel("SOURCE")
+        self._viewer_mode_badge = QToolButton()
         self._viewer_mode_badge.setObjectName("viewerModeBadge")
+        self._viewer_mode_badge.setCheckable(True)
+        self._viewer_mode_badge.setText("SOURCE")
+        self._viewer_mode_badge.setToolTip(
+            "Switch between SOURCE (the single loaded/selected clip) and "
+            "RECORD (the Timeline's own composited, multi-clip playback) "
+            "-- Play/Pause/Loop/Speed below always act on whichever one "
+            "this is currently set to.")
+        self._viewer_mode_badge.toggled.connect(self._on_viewer_mode_toggled)
         viewer_mode_layout.addWidget(self._viewer_mode_badge, alignment=Qt.AlignmentFlag.AlignLeft)
 
         self.compare = WipeCompareWidget()
@@ -438,14 +453,13 @@ class SampleImagePanel(QWidget):
         self._playback_controller = video_playback_controller.VideoPlaybackController(self, parent=self)
         self._playback_controller.frame_changed.connect(self._on_video_frame_changed)
         self._playback_controller.playback_stopped.connect(self._on_video_playback_stopped)
-        # Transport is exclusive to the Timeline (Tom, 2026-08-24) --
-        # _playback_controller above still exists and still owns the
-        # single directly-loaded clip's OWN state (scrub bar seeks
-        # through it via seek_video_frame, see _on_video_scrub_slider_
-        # changed), but nothing in the transport bar's Play/Pause/Loop/
-        # Speed buttons drives it anymore -- see _on_video_play_pause_
-        # clicked/_on_video_loop_toggled/_on_video_speed_changed below,
-        # all retargeted to this controller instead. The getters are
+        # Transport (Play/Pause/Loop/Speed) drives WHICHEVER controller
+        # matches the SOURCE/RECORD toggle above (see
+        # _active_transport_controller) -- _playback_controller (this
+        # one) is SOURCE, the single directly-loaded/selected clip; the
+        # scrub bar always seeks through it too regardless of the
+        # current toggle state (see _on_video_scrub_slider_changed),
+        # same as before this toggle existed. The getters below are
         # indirection lambdas (not bound directly) because set_timeline_
         # getter/set_sequence_stack_getter are called later, from
         # MainWindow, well after this constructor returns.
@@ -454,11 +468,22 @@ class SampleImagePanel(QWidget):
             timeline_getter=lambda: self._timeline_getter() if self._timeline_getter else None,
             sequence_stack_getter=lambda: self._sequence_stack_getter() if self._sequence_stack_getter else None,
             parent=self)
-        self._timeline_controller.playback_started.connect(lambda: self._set_viewer_mode("record"))
         self._timeline_controller.playback_stopped.connect(self._update_video_play_button_text)
-        self._timeline_controller.playback_stopped.connect(lambda: self._set_viewer_mode("source"))
         self._timeline_controller.frame_changed.connect(self._on_timeline_frame_changed)
         self._build_video_keyboard_shortcuts()
+
+    def _active_transport_controller(self):
+        """Whichever controller the transport bar's Play/Pause/Loop/
+        Speed act on right now -- self._playback_controller (SOURCE, the
+        single directly-loaded/selected clip) or self._timeline_
+        controller (RECORD, the Timeline's own composited playback),
+        picked by the SOURCE/RECORD toggle button, not anything
+        automatic. Both expose the identical is_playing/play/pause/
+        toggle/set_loop_enabled/set_speed/playback_started/
+        playback_stopped surface on purpose, so every transport handler
+        below can stay a single call through this method rather than an
+        if/else per action."""
+        return self._playback_controller if self._viewer_mode == "source" else self._timeline_controller
 
     def _build_video_transport_bar(self, layout):
         """Play/Pause, step-back/step-forward, in/out points + loop,
@@ -471,15 +496,19 @@ class SampleImagePanel(QWidget):
         that changes it" shape every other control in this panel already
         follows.
 
-        TRANSPORT / SCRUB SPLIT (Tom, 2026-08-24): "the transport can be
-        exclusive to the timeline BUT there should be a scrub bar only
-        that's exclusive to the clip." Play/Pause/Loop/Speed all drive
-        self._timeline_controller now (see timeline_playback_controller
-        .py) -- Step/Set In/Set Out/Clear In-Out are disabled outright
+        TRANSPORT / SCRUB SPLIT -- originally (Tom, 2026-08-24) "the
+        transport can be exclusive to the timeline BUT there should be a
+        scrub bar only that's exclusive to the clip," later widened by
+        the SOURCE/RECORD toggle (see _active_transport_controller):
+        Play/Pause/Loop/Speed now drive WHICHEVER of self._playback_
+        controller (SOURCE)/self._timeline_controller (RECORD) the
+        toggle button is currently set to, not always the Timeline.
+        Step/Set In/Set Out/Clear In-Out are still disabled outright
         (see _on_video_step_back_clicked's own docstring on why, and
-        what's deferred). Only the scrub slider below still drives
-        self._playback_controller / self._video_source -- the single
-        directly-loaded clip, untouched by any of this.
+        what's deferred -- that part of the original split is
+        unchanged). The scrub slider below always drives self.
+        _playback_controller/self._video_source regardless of the
+        current toggle state, same as before the toggle existed.
 
         Keyboard shortcuts (Space/Left/Right/I/O/Home/End) are wired
         separately in _build_video_keyboard_shortcuts, called once from
@@ -572,7 +601,7 @@ class SampleImagePanel(QWidget):
         self._video_loop_button = QToolButton()
         self._video_loop_button.setObjectName("videoTransportButton")
         self._video_loop_button.setText("⟲")
-        self._video_loop_button.setToolTip("Loop the Timeline back to its first clip")
+        self._video_loop_button.setToolTip("Loop playback -- the clip in SOURCE mode, the Timeline in RECORD mode")
         self._video_loop_button.setCheckable(True)
         self._video_loop_button.toggled.connect(self._on_video_loop_toggled)
         transport_layout.addWidget(self._video_loop_button)
@@ -977,35 +1006,53 @@ class SampleImagePanel(QWidget):
         self._timeline_timecode_label.setText(f"Src {source_tc}  Rec {record_tc}")
 
     def _on_video_play_pause_clicked(self):
-        self._timeline_controller.toggle()
+        self._active_transport_controller().toggle()
         self._update_video_play_button_text()
 
     def _update_video_play_button_text(self):
-        self._video_play_button.setText("⏸" if self._timeline_controller.is_playing else "▶")
+        self._video_play_button.setText("⏸" if self._active_transport_controller().is_playing else "▶")
+
+    def _on_viewer_mode_toggled(self, checked):
+        """The SOURCE/RECORD toggle button itself (per Tom's follow-up:
+        "it should be a toggle you can control all the time" -- not
+        something play/pause flips automatically anymore, see this
+        panel's own docstring on the toggle button). Pauses BOTH
+        transport controllers before switching -- there's only one
+        Viewer display (self.compare), so if the one you're leaving was
+        mid-playback it must stop before the other can safely start;
+        without this, switching mid-playback would leave two playback
+        loops both trying to push frames to the same surface."""
+        self._playback_controller.pause()
+        self._timeline_controller.pause()
+        self._set_viewer_mode("record" if checked else "source")
+        self._update_video_play_button_text()
 
     def _set_viewer_mode(self, mode):
-        """"source" or "record" -- see this method's callers and
-        style.py's QFrame#viewerModeFrame/QLabel#viewerModeBadge rules.
-        RECORD only while self._timeline_controller is actually
-        mid-playback (advancing across the Timeline's own clip
-        boundaries, see TimelineController.play/pause's own docstrings)
-        -- everything else (a plain loaded Source, or the parked preview
-        of a selected Timeline clip composed with the Sequence grade,
-        see notify_selected_clip_changed's own docstring) reads as
-        SOURCE. What's actually ambiguous without this indicator is
-        whether the Viewer is currently being driven by the Timeline's
-        own playback loop, not which stack(s) composed what's on
-        screen -- a parked clip preview is still "looking at one clip,"
-        even though its grade happens to include the Sequence stack
-        too."""
+        """"source" or "record" -- see _active_transport_controller/
+        _on_viewer_mode_toggled and style.py's QFrame#viewerModeFrame/
+        #viewerModeBadge rules. Purely a manual switch (this panel's own
+        toggle button, see _on_viewer_mode_toggled) -- NOT driven by
+        play/pause state; SOURCE and RECORD are equally valid states to
+        be sitting in while paused OR while playing.
+
+        The badge button's own RECORD/SOURCE look comes from Qt's
+        native :checked pseudo-state (style.py, same convention the
+        Loop transport button already uses) -- setChecked() below
+        repaints it with no unpolish/polish dance needed. The wrapping
+        frame isn't a button (no native checked state to hook), so it
+        still goes through the plain custom-property + repolish
+        convention every other dynamic-property QSS rule in this app
+        uses (see stack_panel.py's StackStageRow.set_selected)."""
         if mode == self._viewer_mode:
             return
         self._viewer_mode = mode
         self._viewer_mode_badge.setText("RECORD" if mode == "record" else "SOURCE")
-        for widget in (self._viewer_mode_frame, self._viewer_mode_badge):
-            widget.setProperty("viewerMode", mode)
-            widget.style().unpolish(widget)
-            widget.style().polish(widget)
+        self._viewer_mode_badge.blockSignals(True)
+        self._viewer_mode_badge.setChecked(mode == "record")
+        self._viewer_mode_badge.blockSignals(False)
+        self._viewer_mode_frame.setProperty("viewerMode", mode)
+        self._viewer_mode_frame.style().unpolish(self._viewer_mode_frame)
+        self._viewer_mode_frame.style().polish(self._viewer_mode_frame)
 
     def _on_video_step_back_clicked(self):
         """Disabled for now (button greyed out, see _build_video_transport
@@ -1074,12 +1121,12 @@ class SampleImagePanel(QWidget):
         return
 
     def _on_video_loop_toggled(self, checked):
-        self._timeline_controller.set_loop_enabled(checked)
+        self._active_transport_controller().set_loop_enabled(checked)
 
     def _on_video_speed_changed(self, index):
         speed = self._video_speed_combo.itemData(index)
         if speed is not None:
-            self._timeline_controller.set_speed(speed)
+            self._active_transport_controller().set_speed(speed)
 
     def _on_video_jump_to_in_clicked(self):
         """Disabled for now -- see _on_video_set_in_clicked's own

@@ -710,7 +710,11 @@ def _panel_with_timeline_clip(frame_count=10, frame_rate=24, size=(64, 48)):
 
 
 def test_video_play_pause_button_toggles_timeline_playback_and_its_own_label():
+    """RECORD mode explicitly -- the toggle button decides which
+    controller Play targets (see _active_transport_controller), and the
+    default is SOURCE (see test_viewer_defaults_to_source_mode)."""
     panel = _panel_with_timeline_clip()
+    panel._viewer_mode_badge.setChecked(True)
     assert panel._video_play_button.text() == "▶"
 
     panel._on_video_play_pause_clicked()
@@ -733,26 +737,90 @@ def test_viewer_defaults_to_source_mode():
     print("SampleImagePanel: the Viewer defaults to SOURCE mode -- OK")
 
 
-def test_viewer_switches_to_record_mode_during_timeline_playback():
-    """Per direct feedback: "we need to ... easily tell if we are
-    looking at the timeline or not" -- RECORD only while the Timeline's
-    own playback loop (spanning clip boundaries) is actually running,
-    back to SOURCE the moment it stops."""
+def test_viewer_mode_toggle_button_is_a_manual_switch_not_play_driven():
+    """Per the follow-up round of direct feedback: "it should be a
+    toggle you can control all the time and play should work for
+    either" -- NOT something play/pause flips automatically anymore.
+    The toggle button itself must move the mode regardless of playback
+    state, and playing/pausing must NOT move it back."""
     panel = _panel_with_timeline_clip()
     assert panel._viewer_mode == "source"
+    assert not panel._viewer_mode_badge.isChecked()
 
-    panel._on_video_play_pause_clicked()
-    assert panel._timeline_controller.is_playing
+    panel._viewer_mode_badge.setChecked(True)
     assert panel._viewer_mode == "record"
     assert panel._viewer_mode_badge.text() == "RECORD"
     assert panel._viewer_mode_frame.property("viewerMode") == "record"
 
+    # Playing and pausing must not touch the toggle -- this is the
+    # actual regression this test guards: the OLD behavior auto-flipped
+    # mode on playback_started/playback_stopped.
     panel._on_video_play_pause_clicked()
-    assert not panel._timeline_controller.is_playing
+    assert panel._viewer_mode == "record"
+    panel._on_video_play_pause_clicked()
+    assert panel._viewer_mode == "record"
+
+    panel._viewer_mode_badge.setChecked(False)
     assert panel._viewer_mode == "source"
     assert panel._viewer_mode_badge.text() == "SOURCE"
-    print("SampleImagePanel: the Viewer switches to RECORD mode only "
-          "while Timeline playback is actually running -- OK")
+    print("SampleImagePanel: the SOURCE/RECORD toggle is a manual "
+          "switch, unaffected by play/pause -- OK")
+
+
+def test_play_in_source_mode_drives_the_single_clip_controller():
+    """"play should work for either" -- while the toggle is on SOURCE,
+    Play/Pause must drive self._playback_controller (the single
+    directly-loaded/selected clip), not self._timeline_controller."""
+    panel = _panel_with_timeline_clip()
+    assert panel._viewer_mode == "source"
+    panel.load_video(_make_test_video(frame_count=10, size=(64, 48)))
+
+    panel._on_video_play_pause_clicked()
+    assert panel._playback_controller.is_playing
+    assert not panel._timeline_controller.is_playing
+    assert panel._video_play_button.text() == "⏸"
+
+    panel._on_video_play_pause_clicked()
+    assert not panel._playback_controller.is_playing
+    print("SampleImagePanel: Play in SOURCE mode drives the single-clip "
+          "controller, not the Timeline -- OK")
+
+
+def test_play_in_record_mode_drives_the_timeline_controller():
+    """Same as test_play_in_source_mode_drives_the_single_clip_controller,
+    flipped -- RECORD mode's Play must drive self._timeline_controller,
+    matching the pre-toggle default behavior exactly."""
+    panel = _panel_with_timeline_clip()
+    panel._viewer_mode_badge.setChecked(True)
+    assert panel._viewer_mode == "record"
+
+    panel._on_video_play_pause_clicked()
+    assert panel._timeline_controller.is_playing
+    assert not panel._playback_controller.is_playing
+    assert panel._video_play_button.text() == "⏸"
+
+    panel._on_video_play_pause_clicked()
+    assert not panel._timeline_controller.is_playing
+    print("SampleImagePanel: Play in RECORD mode drives the Timeline "
+          "controller -- OK")
+
+
+def test_switching_viewer_mode_mid_playback_pauses_both_controllers():
+    """Only one Viewer display exists (self.compare) -- switching the
+    toggle while the OLD mode is mid-playback must stop it, or two
+    playback loops would both be trying to push frames to the same
+    surface (see _on_viewer_mode_toggled's own docstring)."""
+    panel = _panel_with_timeline_clip()
+    panel.load_video(_make_test_video(frame_count=10, size=(64, 48)))
+    panel._on_video_play_pause_clicked()  # SOURCE mode's Play
+    assert panel._playback_controller.is_playing
+
+    panel._viewer_mode_badge.setChecked(True)  # switch to RECORD mid-playback
+    assert not panel._playback_controller.is_playing
+    assert not panel._timeline_controller.is_playing
+    assert panel._video_play_button.text() == "▶"
+    print("SampleImagePanel: switching SOURCE/RECORD mid-playback pauses "
+          "both controllers -- OK")
 
 
 def test_viewer_stays_in_source_mode_for_a_plain_loaded_video():
@@ -793,7 +861,10 @@ def test_video_set_in_out_and_clear_buttons_are_disabled_and_are_noops():
 
 
 def test_video_loop_button_toggles_timeline_controller_loop_state():
+    """RECORD mode explicitly -- see test_video_play_pause_button_
+    toggles_timeline_playback_and_its_own_label's own note."""
     panel = _panel_with_timeline_clip()
+    panel._viewer_mode_badge.setChecked(True)
     assert not panel._timeline_controller.loop_enabled
     panel._video_loop_button.setChecked(True)
     assert panel._timeline_controller.loop_enabled
@@ -804,7 +875,10 @@ def test_video_loop_button_toggles_timeline_controller_loop_state():
 
 
 def test_video_speed_combo_drives_the_timeline_controller_speed():
+    """RECORD mode explicitly -- see test_video_play_pause_button_
+    toggles_timeline_playback_and_its_own_label's own note."""
     panel = _panel_with_timeline_clip()
+    panel._viewer_mode_badge.setChecked(True)
     assert panel._timeline_controller.speed == 1.0
 
     index_of_2x = panel._video_speed_combo.findText("2x")
