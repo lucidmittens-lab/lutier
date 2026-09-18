@@ -724,6 +724,51 @@ def test_video_play_pause_button_toggles_timeline_playback_and_its_own_label():
           "and its own label -- OK")
 
 
+def test_viewer_defaults_to_source_mode():
+    _app()
+    panel = SampleImagePanel()
+    assert panel._viewer_mode == "source"
+    assert panel._viewer_mode_badge.text() == "SOURCE"
+    assert panel._viewer_mode_frame.property("viewerMode") == "source"
+    print("SampleImagePanel: the Viewer defaults to SOURCE mode -- OK")
+
+
+def test_viewer_switches_to_record_mode_during_timeline_playback():
+    """Per direct feedback: "we need to ... easily tell if we are
+    looking at the timeline or not" -- RECORD only while the Timeline's
+    own playback loop (spanning clip boundaries) is actually running,
+    back to SOURCE the moment it stops."""
+    panel = _panel_with_timeline_clip()
+    assert panel._viewer_mode == "source"
+
+    panel._on_video_play_pause_clicked()
+    assert panel._timeline_controller.is_playing
+    assert panel._viewer_mode == "record"
+    assert panel._viewer_mode_badge.text() == "RECORD"
+    assert panel._viewer_mode_frame.property("viewerMode") == "record"
+
+    panel._on_video_play_pause_clicked()
+    assert not panel._timeline_controller.is_playing
+    assert panel._viewer_mode == "source"
+    assert panel._viewer_mode_badge.text() == "SOURCE"
+    print("SampleImagePanel: the Viewer switches to RECORD mode only "
+          "while Timeline playback is actually running -- OK")
+
+
+def test_viewer_stays_in_source_mode_for_a_plain_loaded_video():
+    """Loading a video directly (not via the Timeline) never touches
+    self._timeline_controller at all -- the Viewer must stay in SOURCE
+    mode, not get stuck on whatever mode an earlier Timeline session
+    left behind."""
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=10, size=(64, 48))
+    assert panel.load_video(path)
+    assert panel._viewer_mode == "source"
+    print("SampleImagePanel: a plain loaded video stays in SOURCE mode "
+          "-- OK")
+
+
 def test_video_set_in_out_and_clear_buttons_are_disabled_and_are_noops():
     """Timeline-level in/out is out of scope for this pass (see
     timeline_playback_controller.py's own module docstring) -- these

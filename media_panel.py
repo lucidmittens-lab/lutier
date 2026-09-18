@@ -148,12 +148,23 @@ class MediaPanel(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
-        self.table.horizontalHeader().setSectionResizeMode(
-            COLUMN_NAME, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(
-            COLUMN_PATH, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(
-            COLUMN_THUMBNAIL, QHeaderView.ResizeMode.ResizeToContents)
+        # Interactive (the default, but set explicitly here) on every
+        # column -- Stretch/ResizeToContents (the previous setup for
+        # Name/Path/Thumbnail) both make a column's width fixed against
+        # manual drag-resize, which is exactly what made columns "not
+        # easy to adjust." setStretchLastSection instead gives any
+        # LEFTOVER space (beyond the sum of the columns' own widths) to
+        # the last column (Path) without taking away its own
+        # interactive resize handle.
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
+        self.table.setColumnWidth(COLUMN_THUMBNAIL, 56)
+        self.table.setColumnWidth(COLUMN_NAME, 160)
+        self.table.setColumnWidth(COLUMN_KIND, 56)
+        self.table.setColumnWidth(COLUMN_RESOLUTION, 90)
+        self.table.setColumnWidth(COLUMN_DURATION, 70)
+        self.table.setColumnWidth(COLUMN_COLORSPACE, 100)
         # Double-click defaults to "Load as Source" -- the more common of
         # the two roles (every existing Import/Export Still workflow
         # already assumes a Source image), same "double-click is the fast

@@ -20,6 +20,7 @@ groove, invisible handle) -- this class draws its OWN thin white
 playhead line at the current value instead, replacing the knob rather
 than just recoloring it. objectName is set here (not by callers) so the
 QSS selector always matches regardless of who constructs this widget."""
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QSlider, QStyle, QStyleOptionSlider
 
@@ -46,6 +47,41 @@ class VideoScrubSlider(QSlider):
         self.setObjectName("videoScrubSlider")
         self._in_point = None
         self._out_point = None
+
+    def _value_from_x(self, x):
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        groove_rect = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderGroove, self)
+        span = max(1, groove_rect.width() - 1)
+        pos = x - groove_rect.x()
+        return QStyle.sliderValueFromPosition(
+            self.minimum(), self.maximum(), pos, span, opt.upsideDown)
+
+    def mousePressEvent(self, event):
+        """Jump straight to the clicked position (per direct feedback:
+        "the scrub bar still only moves slightly when you click far from
+        the playhead") -- default QSlider behavior on a groove click
+        (not the handle) is a single page-step nudge TOWARD the click,
+        not a jump TO it, which reads as "barely moves" for anything but
+        a click right next to the current playhead. There's no real
+        handle to preserve drag-from-the-handle behavior for anyway (see
+        module docstring -- the playhead is hand-painted, not the actual
+        QSlider handle, which stays invisible via style.py's own QSS),
+        so every left-click here jumps directly, and mouseMoveEvent below
+        keeps tracking the cursor the same way for a click-and-drag."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setValue(self._value_from_x(event.position().x()))
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self.setValue(self._value_from_x(event.position().x()))
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
 
     def set_in_out(self, in_point, out_point):
         """`in_point`/`out_point` are frame indices (matching this

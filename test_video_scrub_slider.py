@@ -8,7 +8,9 @@ bookkeeping.
 """
 import sys
 
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QPixmap
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from video_scrub_slider import VideoScrubSlider
@@ -23,7 +25,13 @@ def _app():
 
 def _slider(maximum=99):
     _app()
-    slider = VideoScrubSlider()
+    # Horizontal explicitly -- QSlider defaults to Vertical, but every
+    # real construction site (sample_image_panel.py) passes Horizontal;
+    # matching that here matters once a test cares about groove geometry
+    # (see the click/drag tests below), not just "paintEvent doesn't
+    # crash" -- a vertical slider's groove is a few px wide, not the
+    # widget's full resized width.
+    slider = VideoScrubSlider(Qt.Orientation.Horizontal)
     slider.setMinimum(0)
     slider.setMaximum(maximum)
     slider.resize(200, 24)
@@ -96,6 +104,46 @@ def test_set_in_out_clears_markers():
           "back to a plain slider -- OK")
 
 
+def test_clicking_far_from_the_playhead_jumps_there_directly():
+    """Regression guard for direct feedback ("the scrub bar still only
+    moves slightly when you click far from the playhead") -- default
+    QSlider behavior on a groove click is a single page-step nudge
+    TOWARD the click, not a jump TO it. A click near the RIGHT edge of
+    the groove, starting from value 0, must land close to maximum(),
+    not somewhere barely past 0."""
+    slider = _slider(maximum=99)
+    slider.setValue(0)
+    click_x = int(slider.width() * 0.9)
+    QTest.mouseClick(slider, Qt.MouseButton.LeftButton, pos=QPoint(click_x, slider.height() // 2))
+    assert slider.value() > 70, (
+        f"a click 90% across the groove should jump near maximum(), landed at {slider.value()}")
+    print("VideoScrubSlider: a click far from the playhead jumps "
+          "straight to the clicked position, not a small step -- OK")
+
+
+def test_clicking_the_left_edge_jumps_to_minimum():
+    slider = _slider(maximum=99)
+    slider.setValue(80)
+    QTest.mouseClick(slider, Qt.MouseButton.LeftButton, pos=QPoint(1, slider.height() // 2))
+    assert slider.value() < 10, (
+        f"a click at the groove's left edge should land near minimum(), got {slider.value()}")
+    print("VideoScrubSlider: a click at the groove's left edge jumps "
+          "straight to (near) minimum() -- OK")
+
+
+def test_dragging_after_a_click_keeps_tracking_the_cursor():
+    slider = _slider(maximum=99)
+    slider.setValue(0)
+    mid_x = slider.width() // 2
+    QTest.mousePress(slider, Qt.MouseButton.LeftButton, pos=QPoint(1, slider.height() // 2))
+    QTest.mouseMove(slider, QPoint(mid_x, slider.height() // 2))
+    QTest.mouseRelease(slider, Qt.MouseButton.LeftButton, pos=QPoint(mid_x, slider.height() // 2))
+    assert 30 < slider.value() < 70, (
+        f"dragging to the groove's midpoint should land near its middle value, got {slider.value()}")
+    print("VideoScrubSlider: a click-and-drag keeps tracking the cursor "
+          "position, same as the initial jump -- OK")
+
+
 if __name__ == "__main__":
     test_set_in_out_stores_the_values()
     test_default_state_has_no_markers()
@@ -104,5 +152,8 @@ if __name__ == "__main__":
     test_paint_event_does_not_raise_with_out_point_none()
     test_paint_event_does_not_raise_with_degenerate_range()
     test_set_in_out_clears_markers()
+    test_clicking_far_from_the_playhead_jumps_there_directly()
+    test_clicking_the_left_edge_jumps_to_minimum()
+    test_dragging_after_a_click_keeps_tracking_the_cursor()
     print()
     print("All video_scrub_slider tests passed.")

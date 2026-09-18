@@ -406,8 +406,33 @@ class SampleImagePanel(QWidget):
         # set_color_readout_text), but was removed outright per direct
         # feedback while iterating on the Viewer. The "drag the handle..."
         # hint line is just gone too, not moved.
+        # SOURCE/RECORD mode indicator (per direct feedback: "we need to
+        # ... easily tell if we are looking at the timeline or not") --
+        # a bordered frame + small badge around self.compare, switched
+        # by _set_viewer_mode (wired to TimelineController.playback_
+        # started/playback_stopped below). See style.py's
+        # QFrame#viewerModeFrame/QLabel#viewerModeBadge rules for the
+        # actual SOURCE (quiet/neutral) vs RECORD (red, "on-air")
+        # styling. Deliberately a wrapping frame + a plain label row,
+        # not an overlay painted onto self.compare's own GL surface --
+        # no per-frame render-pipeline changes, no manual overlay
+        # positioning/resize-event math to get wrong.
+        self._viewer_mode_frame = QFrame()
+        self._viewer_mode_frame.setObjectName("viewerModeFrame")
+        viewer_mode_layout = QVBoxLayout(self._viewer_mode_frame)
+        viewer_mode_layout.setContentsMargins(2, 2, 2, 2)
+        viewer_mode_layout.setSpacing(2)
+
+        self._viewer_mode_badge = QLabel("SOURCE")
+        self._viewer_mode_badge.setObjectName("viewerModeBadge")
+        viewer_mode_layout.addWidget(self._viewer_mode_badge, alignment=Qt.AlignmentFlag.AlignLeft)
+
         self.compare = WipeCompareWidget()
-        layout.addWidget(self.compare, stretch=1)
+        viewer_mode_layout.addWidget(self.compare, stretch=1)
+
+        layout.addWidget(self._viewer_mode_frame, stretch=1)
+        self._viewer_mode = None
+        self._set_viewer_mode("source")
 
         self._build_video_transport_bar(layout)
         self._playback_controller = video_playback_controller.VideoPlaybackController(self, parent=self)
@@ -429,7 +454,9 @@ class SampleImagePanel(QWidget):
             timeline_getter=lambda: self._timeline_getter() if self._timeline_getter else None,
             sequence_stack_getter=lambda: self._sequence_stack_getter() if self._sequence_stack_getter else None,
             parent=self)
+        self._timeline_controller.playback_started.connect(lambda: self._set_viewer_mode("record"))
         self._timeline_controller.playback_stopped.connect(self._update_video_play_button_text)
+        self._timeline_controller.playback_stopped.connect(lambda: self._set_viewer_mode("source"))
         self._timeline_controller.frame_changed.connect(self._on_timeline_frame_changed)
         self._build_video_keyboard_shortcuts()
 
@@ -461,9 +488,28 @@ class SampleImagePanel(QWidget):
         are effectively inert now too, routed to the same disabled
         handlers as their matching buttons."""
         self._video_transport_widget = QWidget()
-        transport_layout = QHBoxLayout(self._video_transport_widget)
+        outer_layout = QVBoxLayout(self._video_transport_widget)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(2)
+
+        # Scrub bar gets its OWN row, full width (per direct feedback:
+        # squeezed inline next to a row of fixed-size buttons/combos, it
+        # was "vanishingly small next to the other controls" -- it was
+        # the only stretch=1 widget sharing space with everything else's
+        # fixed minimum width). Buttons/loop/speed/timecode all move to
+        # a second row below instead.
+        scrub_row_layout = QHBoxLayout()
+        scrub_row_layout.setContentsMargins(0, 0, 0, 0)
+        self._video_scrub_slider = VideoScrubSlider(Qt.Orientation.Horizontal)
+        self._video_scrub_slider.setMinimum(0)
+        self._video_scrub_slider.valueChanged.connect(self._on_video_scrub_slider_changed)
+        scrub_row_layout.addWidget(self._video_scrub_slider, stretch=1)
+        outer_layout.addLayout(scrub_row_layout)
+
+        transport_layout = QHBoxLayout()
         transport_layout.setContentsMargins(0, 0, 0, 0)
         transport_layout.setSpacing(2)  # within a group -- see addSpacing(8) BETWEEN groups below
+        outer_layout.addLayout(transport_layout)
 
         self._video_play_button = QToolButton()
         self._video_play_button.setObjectName("videoTransportButton")
@@ -531,15 +577,6 @@ class SampleImagePanel(QWidget):
         self._video_loop_button.toggled.connect(self._on_video_loop_toggled)
         transport_layout.addWidget(self._video_loop_button)
 
-        transport_layout.addWidget(self._build_video_transport_separator())
-        transport_layout.addSpacing(4)
-
-        self._video_scrub_slider = VideoScrubSlider(Qt.Orientation.Horizontal)
-        self._video_scrub_slider.setMinimum(0)
-        self._video_scrub_slider.valueChanged.connect(self._on_video_scrub_slider_changed)
-        transport_layout.addWidget(self._video_scrub_slider, stretch=1)
-
-        transport_layout.addSpacing(4)
         transport_layout.addWidget(self._build_video_transport_separator())
         transport_layout.addSpacing(4)
 
@@ -945,6 +982,30 @@ class SampleImagePanel(QWidget):
 
     def _update_video_play_button_text(self):
         self._video_play_button.setText("⏸" if self._timeline_controller.is_playing else "▶")
+
+    def _set_viewer_mode(self, mode):
+        """"source" or "record" -- see this method's callers and
+        style.py's QFrame#viewerModeFrame/QLabel#viewerModeBadge rules.
+        RECORD only while self._timeline_controller is actually
+        mid-playback (advancing across the Timeline's own clip
+        boundaries, see TimelineController.play/pause's own docstrings)
+        -- everything else (a plain loaded Source, or the parked preview
+        of a selected Timeline clip composed with the Sequence grade,
+        see notify_selected_clip_changed's own docstring) reads as
+        SOURCE. What's actually ambiguous without this indicator is
+        whether the Viewer is currently being driven by the Timeline's
+        own playback loop, not which stack(s) composed what's on
+        screen -- a parked clip preview is still "looking at one clip,"
+        even though its grade happens to include the Sequence stack
+        too."""
+        if mode == self._viewer_mode:
+            return
+        self._viewer_mode = mode
+        self._viewer_mode_badge.setText("RECORD" if mode == "record" else "SOURCE")
+        for widget in (self._viewer_mode_frame, self._viewer_mode_badge):
+            widget.setProperty("viewerMode", mode)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
 
     def _on_video_step_back_clicked(self):
         """Disabled for now (button greyed out, see _build_video_transport
