@@ -46,6 +46,36 @@ def test_is_color_warper_gpu_eligible_false_for_a_bogus_working_space():
           "a crash) for an unknown working colourspace name -- OK")
 
 
+def test_is_color_warper_gpu_eligible_true_at_exactly_max_points():
+    assert gcw.is_color_warper_gpu_eligible(
+        aces_drt.DEFAULT_CONFIG_NAME, "ACEScct", point_count=cw.MAX_POINTS) is True
+    print("gpu_color_warper_shader.is_color_warper_gpu_eligible: True at "
+          "exactly MAX_POINTS -- OK")
+
+
+def test_is_color_warper_gpu_eligible_false_over_max_points():
+    """Regression guard for a real, previously-shipped bug (found in code
+    review): set_color_warper_uniforms silently drops any point past
+    MAX_POINTS via a plain min(), but nothing in eligibility ever
+    checked point count -- a stage with more points than the shader's
+    own fixed-size uniform arrays hold still rendered on the GPU with
+    the extras missing, silently disagreeing with the CPU path (used for
+    export/bake), which honors every point. Must now fall back to CPU
+    entirely instead."""
+    assert gcw.is_color_warper_gpu_eligible(
+        aces_drt.DEFAULT_CONFIG_NAME, "ACEScct", point_count=cw.MAX_POINTS + 1) is False
+    print("gpu_color_warper_shader.is_color_warper_gpu_eligible: False for "
+          "a point count past MAX_POINTS, rather than silently truncating -- OK")
+
+
+def test_is_color_warper_gpu_eligible_defaults_point_count_to_zero():
+    """point_count's own default (0) must not change behavior for any
+    call site written before this param existed."""
+    assert gcw.is_color_warper_gpu_eligible(aces_drt.DEFAULT_CONFIG_NAME, "ACEScct") is True
+    print("gpu_color_warper_shader.is_color_warper_gpu_eligible: "
+          "point_count defaults to 0, a no-op for pre-existing callers -- OK")
+
+
 def test_gpu_render_matches_cpu_for_a_log_working_space():
     _app, context, surface = gsp._make_offscreen_gl_context()
     cache = gcw.ColorWarperGpuCache()
@@ -124,6 +154,35 @@ def test_gpu_render_matches_cpu_with_a_tightened_chroma_wake():
           f"tightened chroma_wake, max|delta|={delta.max():.6f} -- OK")
 
 
+def test_gpu_render_matches_cpu_for_a_near_zero_c0_chroma_scale():
+    """Regression guard, GPU side: color_warper.warp_hue_chroma's own
+    chroma_scale ceiling (CHROMA_SCALE_FLOOR/MAX_CHROMA_SCALE, see that
+    module's own comment) was hand-ported into this shader's cScale
+    line -- confirms the GPU shader applies the SAME cap the CPU does for
+    a point dragged from a near-zero c0, rather than reproducing the old
+    unbounded-blowout bug on the live-preview GPU path specifically."""
+    _app, context, surface = gsp._make_offscreen_gl_context()
+    cache = gcw.ColorWarperGpuCache()
+    entry = cache.get_entry(aces_drt.DEFAULT_CONFIG_NAME, "ACEScct")
+
+    rng = np.random.default_rng(5)
+    test_image = rng.uniform(0.05, 0.95, size=(6, 10, 3)).astype(np.float32)
+    points = [{"h0": 40.0, "c0": 0.0005, "h": 40.0, "c": 0.2}]  # ratio would be 400x uncapped
+    wake, dropoff = 25.0, 0.0
+
+    gpu_result = gsp.render_program_on_gpu(
+        entry.program, test_image, set_uniforms=_set_uniforms(points, wake, dropoff))
+    cpu_result = cw.apply_color_warper_in_working_space(
+        test_image.astype(np.float64), "ACEScct", points, wake=wake, dropoff=dropoff)
+
+    delta = np.abs(gpu_result.astype(np.float64) - cpu_result)
+    cache.clear()
+    context.doneCurrent()
+    assert delta.max() < 1e-2, delta.max()
+    print(f"gpu_color_warper_shader: GPU render matches CPU's capped "
+          f"chroma_scale for a near-zero-c0 point, max|delta|={delta.max():.6f} -- OK")
+
+
 def test_identity_points_is_an_exact_noop_on_the_gpu():
     _app, context, surface = gsp._make_offscreen_gl_context()
     cache = gcw.ColorWarperGpuCache()
@@ -198,9 +257,13 @@ def test_clear_deletes_compiled_programs():
 if __name__ == "__main__":
     test_is_color_warper_gpu_eligible_for_a_real_working_space()
     test_is_color_warper_gpu_eligible_false_for_a_bogus_working_space()
+    test_is_color_warper_gpu_eligible_true_at_exactly_max_points()
+    test_is_color_warper_gpu_eligible_false_over_max_points()
+    test_is_color_warper_gpu_eligible_defaults_point_count_to_zero()
     test_gpu_render_matches_cpu_for_a_log_working_space()
     test_gpu_render_matches_cpu_for_an_already_linear_working_space()
     test_gpu_render_matches_cpu_with_a_tightened_chroma_wake()
+    test_gpu_render_matches_cpu_for_a_near_zero_c0_chroma_scale()
     test_identity_points_is_an_exact_noop_on_the_gpu()
     test_no_points_is_an_exact_noop_on_the_gpu()
     test_cache_reuses_the_same_entry_for_the_same_fingerprint()

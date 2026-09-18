@@ -23,8 +23,8 @@ caller, never a crash -- style.get_accent_color() falls back to
 style.DEFAULT_ACCENT_HEX either way.
 """
 import json
-from pathlib import Path
 
+from atomic_write import atomic_open
 from workspace_io import DEFAULT_WORKSPACE_DIR
 
 THEME_PREFS_FORMAT = "lutier-theme-prefs"
@@ -38,13 +38,24 @@ def save_accent_color(hex_color):
     main_window._choose_accent_color); a write failure (permissions, a
     read-only filesystem, disk full) should never raise into the middle
     of an otherwise-successful color change the user already sees applied
-    on screen."""
+    on screen.
+
+    Writes via atomic_write.atomic_open rather than a plain Path.write_
+    text (a real, previously-shipped bug, found in code review): a plain
+    write truncates the file to zero bytes before writing a single new
+    byte, so a crash or power loss mid-write left a truncated,
+    unparseable file -- load_accent_color's own (OSError, ValueError)
+    guard means that never crashes the app, but it does mean the user's
+    saved accent color silently reverts to default on the next launch,
+    the exact class of bug atomic_write.py exists to prevent everywhere
+    else a user's own choice gets persisted."""
     try:
         THEME_PREFS_DIR = THEME_PREFS_PATH.parent
         THEME_PREFS_DIR.mkdir(parents=True, exist_ok=True)
         payload = {"format": THEME_PREFS_FORMAT, "version": THEME_PREFS_VERSION,
                    "accent_color": hex_color}
-        THEME_PREFS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        with atomic_open(THEME_PREFS_PATH, "w") as f:
+            f.write(json.dumps(payload, indent=2))
     except OSError:
         pass
 

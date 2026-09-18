@@ -48,6 +48,11 @@ def test_render_waveform_does_not_flip_image_data():
     possible regression check."""
     _app()
     panel = ScopesPanel()
+    # set_image_array skips its own render while the panel isn't visible
+    # (a real perf fix, see that method's own docstring) -- show() it for
+    # real so this test exercises the actual render path, not a skipped one.
+    panel.show()
+    _app().processEvents()
     panel._on_scope_changed(SCOPE_WAVEFORM)
     panel._waveform_style = WAVEFORM_LUMA  # simplest single-channel case
 
@@ -75,6 +80,8 @@ def test_render_waveform_matches_across_styles():
     at) -- confirms the fix isn't accidentally luma-only."""
     _app()
     panel = ScopesPanel()
+    panel.show()
+    _app().processEvents()
     panel._on_scope_changed(SCOPE_WAVEFORM)
     # WAVEFORM_PARADE is the default -- leave panel._waveform_style alone.
 

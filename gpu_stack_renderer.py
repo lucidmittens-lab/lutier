@@ -197,8 +197,9 @@ def is_stack_gpu_eligible(stack):
             # eligibility checks follow.
             working_colourspace = stage.params.get(
                 "working_colourspace", color_warper.DEFAULT_WORKING_COLOURSPACE)
+            point_count = len(stage.params.get("points") or [])
             if not gpu_color_warper_shader.is_color_warper_gpu_eligible(
-                    aces_drt.DEFAULT_CONFIG_NAME, working_colourspace):
+                    aces_drt.DEFAULT_CONFIG_NAME, working_colourspace, point_count=point_count):
                 return False
     if fork_state is not None:
         return False  # unmatched split at the end of the stack -- already invalid
@@ -649,17 +650,19 @@ class GpuStackRenderer:
         self._ping_pong_size = None
 
     def _ensure_fork_snapshots(self, w, h):
-        """A second pair of render targets, lazily created only once a
-        stack containing a fork actually needs them (most stacks never
-        do) -- see render_chain's own docstring for exactly what each
-        slot holds and why the shared ping-pong pair alone isn't enough
-        once a fork's two branches both need to render FROM the same
-        pre-split starting point."""
+        """THREE render targets, lazily created only once a stack
+        containing a fork actually needs them (most stacks never do) --
+        see render_chain's own docstring for exactly what each slot
+        holds (pre-split / Branch A result / Branch B result) and why
+        the shared ping-pong pair alone isn't enough once a fork's two
+        branches both need to render FROM the same pre-split starting
+        point, and neither branch's own final result can safely be
+        handed to the merge pass without a snapshot of its own."""
         if self._fork_snapshot_size == (w, h):
             return
         self._delete_fork_snapshots()
         textures, fbos = [], []
-        for _ in range(2):
+        for _ in range(3):
             tex, fbo = gsp.create_rgba32f_render_target(w, h)
             textures.append(tex)
             fbos.append(fbo)
@@ -751,14 +754,25 @@ class GpuStackRenderer:
         slots. Branch A renders first (from that stable snapshot), and
         its OWN final result is immediately snapshotted into
         _fork_snapshot_textures[1] for the same reason -- Branch B is
-        about to reuse the ping-pong pair too. Branch B's own final
-        result doesn't need a snapshot; it's the last thing rendered
-        before the merge pass consumes it. The merge pass itself (see
-        gpu_fork_merge_shader.py) blends the two branch snapshots via
-        fork_merge's own `blend`, then that combined result against the
-        pre-split snapshot via fork_merge's own `opacity` -- exactly
-        stack.py's own _run_stages fork_merge branch, just as one GLSL
-        pass instead of two Python-level array operations.
+        about to reuse the ping-pong pair too. Branch B's OWN final
+        result is likewise snapshotted into _fork_snapshot_textures[2]
+        before the merge pass runs -- an earlier version of this method
+        assumed that wasn't necessary ("it's the last thing rendered
+        before the merge pass consumes it"), which was a real bug: the
+        merge pass picks its own target FBO from THIS method's outer
+        `output_index`, a counter entirely unrelated to the fresh, local
+        `output_index` _render_stage_sequence resets to 0 on every one of
+        its own calls -- for plenty of ordinary stage-count combinations
+        (e.g. no stages before the split and exactly one enabled Branch B
+        stage) the two collide, and the merge pass would end up sampling
+        the very same texture it's simultaneously rendering into, an
+        OpenGL read/write feedback loop with undefined, visibly corrupted
+        output. The merge pass itself (see gpu_fork_merge_shader.py)
+        blends the two branch snapshots via fork_merge's own `blend`,
+        then that combined result against the pre-split snapshot via
+        fork_merge's own `opacity` -- exactly stack.py's own _run_stages
+        fork_merge branch, just as one GLSL pass instead of two
+        Python-level array operations.
 
         A DISABLED fork_merge is a special case worth its own path:
         _run_stages computes both branches fully but then discards them
@@ -834,13 +848,15 @@ class GpuStackRenderer:
                 branch_a_snapshot = self._fork_snapshot_textures[1]
 
                 branch_b_result = self._render_stage_sequence(branch_b, pre_split_snapshot, w, h)
+                self._copy_texture(branch_b_result, self._fork_snapshot_fbos[2], w, h)
+                branch_b_snapshot = self._fork_snapshot_textures[2]
 
                 if self._fork_merge_program is None:
                     self._fork_merge_program = gfm.compile_fork_merge_program()
                 blend = float(merge_stage.params.get("blend", 0.5))
                 target_fbo = self._ping_pong_fbos[output_index]
                 gfm.render_fork_merge_pass(
-                    self._fork_merge_program, pre_split_snapshot, branch_a_snapshot, branch_b_result,
+                    self._fork_merge_program, pre_split_snapshot, branch_a_snapshot, branch_b_snapshot,
                     blend, merge_stage.opacity, target_fbo, w, h, self._vbo)
                 current_texture = self._ping_pong_textures[output_index]
                 output_index = 1 - output_index

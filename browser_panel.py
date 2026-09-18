@@ -36,7 +36,7 @@ can't meaningfully exercise.
 import os
 from datetime import datetime
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QListWidget,
@@ -62,6 +62,15 @@ CDL_PATH_MIME = "application/x-lutier-cdl-path"
 _KIND_LUT = "lut"
 _KIND_CDL = "cdl"
 _ROLE_KIND = Qt.ItemDataRole.UserRole + 1
+
+# Debounces the search box's own textChanged -- a real, previously-
+# shipped performance bug (found in code review): every keystroke
+# triggered its own full recursive scan_lut_folder(..., recursive=True)
+# filesystem walk, with no debounce at all, so typing a multi-character
+# search term meant one full folder re-scan per character. Same "wait
+# for typing to actually pause" idea as sample_image_panel.py's own
+# EDIT_SETTLE_DEBOUNCE_MS, just for keystrokes instead of slider ticks.
+SEARCH_DEBOUNCE_MS = 200
 
 
 class _DraggableFileListWidget(QListWidget):
@@ -95,6 +104,9 @@ class BrowserPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._current_folder = None
+        self._search_debounce_timer = QTimer(self)
+        self._search_debounce_timer.setSingleShot(True)
+        self._search_debounce_timer.timeout.connect(self.refresh)
         self._build_layout()
 
     def _build_layout(self):
@@ -114,7 +126,7 @@ class BrowserPanel(QWidget):
 
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Search by name... (wildcards ok: *.cube, K_0??_*)")
-        self.search_box.textChanged.connect(self.refresh)
+        self.search_box.textChanged.connect(self._on_search_text_changed)
         layout.addWidget(self.search_box)
 
         self.list_widget = _DraggableFileListWidget()
@@ -137,7 +149,14 @@ class BrowserPanel(QWidget):
     def set_folder(self, folder):
         self._current_folder = folder
         self._update_folder_label_text()
+        # Immediate, not debounced -- picking a folder is a single
+        # deliberate action, not a per-keystroke event, and any pending
+        # search-box debounce for the OLD folder is now stale.
+        self._search_debounce_timer.stop()
         self.refresh()
+
+    def _on_search_text_changed(self, _text):
+        self._search_debounce_timer.start(SEARCH_DEBOUNCE_MS)
 
     def _update_folder_label_text(self):
         """Elide the folder path to fit the label's current width instead

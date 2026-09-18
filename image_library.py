@@ -60,19 +60,11 @@ formats already has.
 Qt-free, fully testable without a display -- same convention as
 lut_library.py/cdl_library.py/stack_memory.py.
 """
-import itertools
+import id_counter
 
 MEDIA_KINDS = ("still", "video")
 
-_id_counter = itertools.count(1)
-
-
-def next_entry_id():
-    """Monotonically increasing int, unique for the life of the process --
-    used as an entry's identity for GUI selection tracking, same reasoning
-    as stack.next_stage_id()/lut_library.next_entry_id()/
-    cdl_library.next_entry_id()."""
-    return next(_id_counter)
+next_entry_id = id_counter.make_next_entry_id()
 
 
 class ImageLibraryEntry:

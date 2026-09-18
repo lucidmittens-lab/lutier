@@ -1,27 +1,43 @@
 """
 gpu_shader_prototype.py -- GPU_ACCELERATION_PLAN_2026-08-08.md, STAGE 2.
 
-Standalone script, NOT wired into the app. Answers two real questions
-with numbers instead of assumptions, for the two OCIO-backed stage kinds
-this app actually uses interactively (CDL, ACES DRT):
+TWO ROLES NOW, not just the original one (stale claim fixed in code
+review: this docstring used to say "standalone script, NOT wired into
+the app," which stopped being true as the GPU pipeline grew past Stage
+2 -- every gpu_*_shader.py module in this app (aces_drt, cdl, color_
+warper, custom_drt, fork_merge, lanczos_compositor, lut, ocio_dynamic,
+printer_lights), gpu_stack_renderer.py itself, and wipe_compare_widget.py
+all import this module directly for its shared GL plumbing --
+_make_offscreen_gl_context/render_program_on_gpu/upload_rgba32f_texture/
+create_rgba32f_render_target/compile_ocio_program/make_fullscreen_quad_
+vbo and friends. This is a real, load-bearing dependency, not an
+incidental one):
 
-1. Does OCIO's GPU shader codegen (`getDefaultGPUProcessor()` ->
-   `GpuShaderDesc` -> real GLSL) produce output that numerically matches
-   this app's existing CPU path (`cdl.apply_cdl` /
-   `aces_drt.apply_aces_output_transform`) closely enough to trust for a
-   live preview?
-2. What SHAPE does each stage kind's generated shader actually take --
-   is it uniform-driven (cheap to re-parameterize without recompiling,
-   which is what continuous slider drags need) or does it bake its
-   parameter values as literal GLSL constants (which would mean
-   regenerating shader source on every single edit)?
+1. A SHARED GL UTILITY TOOLKIT -- offscreen GL context creation, OCIO
+   GLSL extraction, shader compile/link, fullscreen-quad rendering,
+   RGBA32F texture upload/readback -- every other GPU-path module in
+   this app builds on these rather than reimplementing them.
+2. STILL ALSO runnable standalone (`python3 gpu_shader_prototype.py`,
+   via `main()` below) as the original CDL/ACES-DRT numeric-parity
+   prototype script it started as, answering two real questions with
+   numbers instead of assumptions:
+   a. Does OCIO's GPU shader codegen (`getDefaultGPUProcessor()` ->
+      `GpuShaderDesc` -> real GLSL) produce output that numerically
+      matches this app's existing CPU path (`cdl.apply_cdl` /
+      `aces_drt.apply_aces_output_transform`) closely enough to trust
+      for a live preview?
+   b. What SHAPE does each stage kind's generated shader actually take
+      -- is it uniform-driven (cheap to re-parameterize without
+      recompiling, which is what continuous slider drags need) or does
+      it bake its parameter values as literal GLSL constants (which
+      would mean regenerating shader source on every single edit)?
 
 Renders through a real, current OpenGL context via Qt's
 QOffscreenSurface/QOpenGLContext (no on-screen window, no new
 dependency -- PySide6 and PyOpenGL are both already project
 requirements) -- an actual GPU render, not a CPU-side shader simulator.
 
-Run with: python3 gpu_shader_prototype.py
+Run the standalone prototype/benchmark with: python3 gpu_shader_prototype.py
 """
 import sys
 

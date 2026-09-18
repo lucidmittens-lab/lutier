@@ -103,7 +103,6 @@ def test_push_frame_at_a_different_size_rebuilds_cleanly():
         sink.push_frame(_test_frame(size=(120, 200)))
         sink.push_frame(_test_frame(size=(360, 640)))
         assert sink._display_layer.error() is None
-        assert sink._last_frame_size == (640, 360)
     finally:
         sink.stop()
     print("AirPlayOutputSink: pushing frames at a changed size still enqueues cleanly -- OK")

@@ -185,7 +185,6 @@ class AirPlayOutputSink(video_output_sink.VideoOutputSink):
     def __init__(self):
         self._window = None
         self._display_layer = None
-        self._last_frame_size = None  # (width, height) of the last pixel buffer built, to detect a resize
         self._last_push_time = None
         self._start_time = None
 
@@ -235,7 +234,6 @@ class AirPlayOutputSink(video_output_sink.VideoOutputSink):
 
         self._window = window
         self._display_layer = display_layer
-        self._last_frame_size = None
         self._start_time = time.monotonic()
         self._last_push_time = None
 
@@ -260,13 +258,11 @@ class AirPlayOutputSink(video_output_sink.VideoOutputSink):
 
         sample_buffer = _build_sample_buffer(pixel_buffer, presentation_seconds, duration_seconds)
         self._display_layer.enqueueSampleBuffer_(sample_buffer)
-        self._last_frame_size = (frame.width, frame.height)
 
     def stop(self):
         if self._window is not None:
             self._window.close()
         self._window = None
         self._display_layer = None
-        self._last_frame_size = None
         self._last_push_time = None
         self._start_time = None

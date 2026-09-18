@@ -127,6 +127,21 @@ DEFAULT_DESAT_START = 0.75
 DEFAULT_DESAT_END = 1.0
 DEFAULT_IDENTITY_ZONE = 0.83
 DEFAULT_TRANSITION_SOFTNESS = 0.17
+
+# Hard safety bounds enforced inside apply_custom_drt itself (see that
+# function's own clamping, near the top) -- a real, previously-shipped
+# bug (found in code review): only the live UI spinbox (stack_panel.py,
+# range [0.5, 0.999] for blend_percentile) ever constrained these values;
+# nothing in this module's own math did. A hand-edited or future-
+# imported session with blend_percentile <= 0 makes _hyperbolic_inverse_
+# stops evaluate a fractional power of a non-positive base (NaN), or
+# >= 1.0 divide by exactly zero (inf) -- either way silently render the
+# entire stage's output as garbage with no error surfaced anywhere.
+# _BLEND_PERCENTILE_EPSILON keeps the clamp strictly inside the open
+# interval (0, 1) that math needs, well below the UI's own already-more-
+# conservative [0.5, 0.999] floor, so this never visibly affects normal
+# UI usage -- it only catches a value the UI itself could never produce.
+_BLEND_PERCENTILE_EPSILON = 1e-3
 DEFAULT_FULLNESS_R = 0.10
 DEFAULT_FULLNESS_G = 0.0
 DEFAULT_FULLNESS_B = 0.04
@@ -474,6 +489,20 @@ def apply_custom_drt(image_array, working_colourspace,
         raise ValueError(
             f"Unknown final_target {final_target!r} for mastering_display "
             f"{mastering_display!r} (expected one of {tuple(final_target_options)})")
+
+    # Clamp every param the live UI spinboxes already constrain (see
+    # _BLEND_PERCENTILE_EPSILON's own comment) -- this is the ONLY
+    # enforcement point for a caller that skips the UI entirely (a
+    # hand-edited or future-imported session file, a script, a test).
+    # blend_percentile specifically MUST stay inside the open interval
+    # (0, 1) or _hyperbolic_inverse_stops produces NaN/inf; the rest just
+    # match the UI's own already-safe [0.0, 1.0] range for consistency.
+    blend_percentile = min(max(float(blend_percentile), _BLEND_PERCENTILE_EPSILON),
+                            1.0 - _BLEND_PERCENTILE_EPSILON)
+    desat_start = min(max(float(desat_start), 0.0), 1.0)
+    desat_end = min(max(float(desat_end), 0.0), 1.0)
+    identity_zone = min(max(float(identity_zone), 0.0), 1.0)
+    transition_softness = min(max(float(transition_softness), 0.0), 1.0)
 
     rgb2020 = colorspace_convert.apply_colorspace_conversion(
         np.asarray(image_array, dtype=np.float64), working_colourspace,

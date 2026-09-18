@@ -200,6 +200,45 @@ def test_apply_custom_drt_rejects_unknown_mastering_display_and_final_target():
           "mastering_display/final_target, rather than silently producing a wrong result -- OK")
 
 
+def test_apply_custom_drt_clamps_out_of_range_blend_percentile():
+    """Regression guard for a real, previously-shipped bug (found in
+    code review): only the live UI spinbox (stack_panel.py, range
+    [0.5, 0.999]) ever constrained blend_percentile -- nothing in this
+    module's own math did. A hand-edited or future-imported session file
+    with blend_percentile <= 0 makes _hyperbolic_inverse_stops evaluate
+    a fractional power of a non-positive base (NaN); >= 1.0 divides by
+    exactly zero (inf). Both must now be silently clamped into a safe
+    range rather than corrupting the whole stage's output."""
+    rng = np.random.default_rng(4)
+    img = rng.uniform(-0.2, 3.0, size=(16, 16, 3)).astype(np.float64)
+    for bad_value in (-5.0, -1e-9, 0.0, 1.0, 1.0 + 1e-9, 5.0):
+        out = cdr.apply_custom_drt(img, "ACEScct", blend_percentile=bad_value)
+        assert np.isfinite(out).all(), (
+            f"blend_percentile={bad_value} produced non-finite output")
+        assert out.min() >= 0.0 and out.max() <= 1.0
+    print("apply_custom_drt: clamps blend_percentile <= 0 or >= 1.0 into "
+          "a safe range instead of producing NaN/Inf -- OK")
+
+
+def test_apply_custom_drt_clamps_out_of_range_radial_compression_params():
+    """Same defensive clamp, for the params _radial_compress reads --
+    identity_zone/transition_softness/desat_start/desat_end are already
+    internally floored against exact division-by-zero (see
+    _radial_compress's own comments), but a wildly out-of-UI-range value
+    (negative, or well past 1.0) had nothing stopping it from reaching
+    that math at all before this fix."""
+    rng = np.random.default_rng(5)
+    img = rng.uniform(-0.2, 3.0, size=(16, 16, 3)).astype(np.float64)
+    out = cdr.apply_custom_drt(
+        img, "ACEScct", identity_zone=-3.0, transition_softness=7.0,
+        desat_start=-2.0, desat_end=4.0)
+    assert np.isfinite(out).all()
+    assert out.min() >= 0.0 and out.max() <= 1.0
+    print("apply_custom_drt: clamps wildly out-of-range identity_zone/"
+          "transition_softness/desat_start/desat_end rather than "
+          "passing them through unchecked -- OK")
+
+
 def test_pq_encode_matches_published_st2084_reference_points():
     """Verified independently against SMPTE ST 2084's own well-known
     reference points before this module ever shipped with these
@@ -274,6 +313,8 @@ if __name__ == "__main__":
         test_fullness_does_not_blow_up_for_a_ray_that_never_crosses()
         test_final_target_matrices_preserve_white()
         test_apply_custom_drt_rejects_unknown_mastering_display_and_final_target()
+        test_apply_custom_drt_clamps_out_of_range_blend_percentile()
+        test_apply_custom_drt_clamps_out_of_range_radial_compression_params()
         test_pq_encode_matches_published_st2084_reference_points()
         test_pq_output_bounded_and_higher_mastering_brightness_encodes_brighter()
         test_stack_integration_bake_agrees_with_direct_apply()

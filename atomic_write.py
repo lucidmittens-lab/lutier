@@ -2,13 +2,14 @@
 atomic_write.py -- one helper, `atomic_open`, for every place this app
 writes a file a user's work actually depends on (session_io.py's .ltr,
 stack_memory_file_io.py's .ltm export, workspace_io.py's remembered/preset
-workspace state). Plain `open(path, "w")` truncates the target to zero
-bytes the instant it's opened, before a single byte of new content is
-written -- if the app is killed, the machine loses power, or the disk
-fills up anywhere during the write that follows, the previous good file is
-already gone and the new one is left incomplete/corrupt. For a session
-file that can run to tens of MB (embedded LUT tables), that write is not
-instantaneous, so this isn't just a theoretical race.
+workspace state, theme_prefs.py's saved accent color). Plain
+`open(path, "w")` truncates the target to zero bytes the instant it's
+opened, before a single byte of new content is written -- if the app is
+killed, the machine loses power, or the disk fills up anywhere during
+the write that follows, the previous good file is already gone and the
+new one is left incomplete/corrupt. For a session file that can run to
+tens of MB (embedded LUT tables), that write is not instantaneous, so
+this isn't just a theoretical race.
 
 `atomic_open` writes to a temp file in the SAME directory as the target
 (so the final swap is a same-filesystem rename, not a cross-filesystem

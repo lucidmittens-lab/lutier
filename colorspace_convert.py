@@ -109,9 +109,21 @@ def apply_colorspace_conversion(image_array, src, dst, config_name=DEFAULT_CONFI
     src == dst is an exact no-op (OCIO short-circuits identical color
     spaces internally). No clipping -- same "don't silently discard
     legitimate range" rule as aces_drt.py/printer_lights.py/cdl.py.
+
+    Builds the processor via aces_drt._get_colourspace_conversion_
+    processor (an lru_cache-wrapped helper, keyed on (config_name, src,
+    dst)) rather than calling cfg.getProcessor(...).getDefaultCPU
+    Processor() directly -- a real, previously-shipped performance bug
+    (found in code review): building that processor graph from scratch
+    is real, measurable work, and this function is on the hot path for
+    every "colorspace" stage's own live-preview repaint AND every
+    custom_drt.apply_custom_drt call (its own rendering-space conversion
+    step) -- i.e. every frame while dragging any custom_drt slider. Every
+    OTHER OCIO-processor-building call site in this app already reuses
+    this exact cache (or ocio_processor_cache.py's own equivalent for
+    parametrized transforms); this one was simply missed when it was
+    introduced.
     """
     _require_ocio()
-    cfg = aces_drt._get_config(config_name)
-    processor = cfg.getProcessor(aces_drt.ocio.ColorSpaceTransform(src=src, dst=dst))
-    cpu = processor.getDefaultCPUProcessor()
+    cpu = aces_drt._get_colourspace_conversion_processor(config_name, src, dst)
     return aces_drt._apply_ocio_processor(cpu, image_array)

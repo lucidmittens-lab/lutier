@@ -308,6 +308,24 @@ def test_reset_clears_to_no_points():
     print("WarpierWheel.reset: clears back to an empty points list -- OK")
 
 
+def test_reset_emit_false_suppresses_points_changed():
+    """Regression coverage for the reset(emit=) passthrough added so
+    stack_panel.py's own Color Warper "Reset to Identity" button can
+    clear the wheel without firing a live-apply for every one of several
+    controls it resets together -- see StackPanel._on_cw_reset_clicked's
+    own docstring."""
+    _app()
+    wheel = WarpierWheel()
+    wheel.set_points([{"h0": 0.0, "c0": 0.0, "h": 0.0, "c": 0.0}], emit=False)
+    events = []
+    wheel.points_changed.connect(events.append)
+    wheel.reset(emit=False)
+    assert wheel.points() == []
+    assert events == [], "emit=False must suppress points_changed entirely"
+    print("WarpierWheel.reset: emit=False clears points without firing "
+          "points_changed -- OK")
+
+
 if __name__ == "__main__":
     test_hue_screen_angle_round_trip()
     test_green_points_down_magenta_points_up()
@@ -327,5 +345,6 @@ if __name__ == "__main__":
     test_right_click_removes_nearest_point()
     test_points_changed_signal_fires_on_add_drag_remove()
     test_reset_clears_to_no_points()
+    test_reset_emit_false_suppresses_points_changed()
     print()
     print("All color_warper_wheel tests passed.")

@@ -151,6 +151,33 @@ def test_is_stack_gpu_eligible():
           "enabled unsupported/unresolvable stage kinds, ignores disabled ones -- OK")
 
 
+def test_is_stack_gpu_eligible_false_for_a_color_warper_stage_over_max_points():
+    """Regression guard for a real, previously-shipped bug (found in code
+    review): a color_warper stage with more points than gpu_color_
+    warper_shader.MAX_POINTS used to still be judged GPU-eligible (only
+    working_colourspace was ever checked), so it rendered on the GPU with
+    the extras silently dropped -- disagreeing with the CPU path (used
+    for export/bake), which honors every point. Must fall back to CPU
+    entirely instead."""
+    import color_warper as cw
+    too_many_points = [{"h0": float(i), "c0": 0.1, "h": float(i), "c": 0.1}
+                        for i in range(cw.MAX_POINTS + 1)]
+    stack = Stack()
+    stack.add_stage(make_color_warper_stage("ACEScct", points=too_many_points))
+    assert gpu_stack_renderer.is_stack_gpu_eligible(stack) is False, (
+        "a color_warper stage with more points than MAX_POINTS must fall back to CPU")
+
+    at_the_limit = Stack()
+    at_the_limit.add_stage(make_color_warper_stage(
+        "ACEScct", points=too_many_points[:cw.MAX_POINTS]))
+    assert gpu_stack_renderer.is_stack_gpu_eligible(at_the_limit) is True, (
+        "exactly MAX_POINTS must still be GPU-eligible"
+    )
+    print("gpu_stack_renderer.is_stack_gpu_eligible: a color_warper stage "
+          "with more points than MAX_POINTS falls back to CPU rather than "
+          "silently rendering with the extras dropped -- OK")
+
+
 def _fork_stack(branch_a_kinds=("cdl",), branch_b_kinds=("cdl",), split_enabled=True, merge_enabled=True):
     """A minimal Stack with one fork region -- `branch_a_kinds`/
     `branch_b_kinds` each a sequence of "cdl"/"grading_primary"/etc.
@@ -679,6 +706,39 @@ def test_fork_with_mixed_stage_kinds_matches_cpu():
           f"contrast across branches matches CPU, max|delta|={delta.max():.6f} -- OK")
 
 
+def test_fork_split_as_the_very_first_stage_with_a_single_branch_b_stage_matches_cpu():
+    """Direct regression coverage for a real GL feedback-loop bug (see
+    render_chain's own docstring, "FORK RENDERING"): with NO stages
+    before the split (the outer ping-pong `output_index` is still at its
+    initial 0) and exactly one enabled Branch B stage, Branch B's own
+    result texture used to land in the SAME ping-pong slot the merge
+    pass would then pick as its own render target (via the merge pass's
+    outer `output_index`, unrelated to _render_stage_sequence's own
+    fresh, locally-reset index) -- reading and writing the same texture
+    in one draw call, undefined GL behavior. Branch A already got a
+    snapshot before this fix; Branch B now does too. A strong, easily-
+    visible transform on Branch B (large gain) makes any reintroduced
+    aliasing show up as a large, obvious delta rather than a marginal
+    one."""
+    _app, context, surface = gsp._make_offscreen_gl_context()
+    image = _test_image()
+    s = Stack()
+    s.add_stage(make_fork_split_stage())  # the very first stage -- outer output_index == 0 here
+    b1 = make_cdl_stage(slope=(2.5, 0.4, 1.8))  # branch B's ONLY stage -- large, visible transform
+    b1.branch = "b"
+    s.add_stage(b1)
+    s.add_stage(make_fork_merge_stage(blend=1.0))  # blend=1.0 -- the merge result IS branch B
+
+    cpu_result = apply_stack_to_image_array(s, image)
+    gpu_result = _render_stack_on_gpu(s, image)
+    delta = np.abs(cpu_result.astype(np.float64) - gpu_result.astype(np.float64))
+    assert delta.max() < 1e-3, delta.max()
+    context.doneCurrent()
+    print(f"GpuStackRenderer: fork_split as the first stage with a single "
+          f"Branch B stage matches CPU (no ping-pong aliasing), "
+          f"max|delta|={delta.max():.6f} -- OK")
+
+
 def test_disabled_fork_split_is_a_noop_matching_cpu():
     _app, context, surface = gsp._make_offscreen_gl_context()
     image = _test_image()
@@ -731,6 +791,7 @@ def test_disabled_fork_merge_matches_cpu():
 
 if __name__ == "__main__":
     test_is_stack_gpu_eligible()
+    test_is_stack_gpu_eligible_false_for_a_color_warper_stage_over_max_points()
     test_is_stack_gpu_eligible_with_forks()
     test_single_cdl_stage_matches_cpu()
     test_cdl_then_aces_drt_chain_matches_cpu()
@@ -756,6 +817,7 @@ if __name__ == "__main__":
     test_fork_with_stages_on_both_branches_matches_cpu()
     test_fork_with_one_branch_empty_matches_cpu()
     test_fork_with_mixed_stage_kinds_matches_cpu()
+    test_fork_split_as_the_very_first_stage_with_a_single_branch_b_stage_matches_cpu()
     test_disabled_fork_split_is_a_noop_matching_cpu()
     test_disabled_fork_merge_matches_cpu()
     print()

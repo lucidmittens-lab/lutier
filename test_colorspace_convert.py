@@ -117,6 +117,39 @@ def test_conversion_result_depends_on_which_pair_is_used():
           "results for the same (saturated) input -- OK")
 
 
+def test_apply_colorspace_conversion_reuses_the_cached_processor():
+    """Regression guard for a real, previously-shipped performance bug
+    (found in code review): apply_colorspace_conversion used to build a
+    fresh cfg.getProcessor(...).getDefaultCPUProcessor() from scratch on
+    EVERY call -- real, measurable work on the hot path for every
+    "colorspace" stage's own live-preview repaint and every custom_drt
+    apply. It now goes through aces_drt._get_colourspace_conversion_
+    processor, an lru_cache-wrapped helper already used everywhere else
+    in this app for the identical operation -- confirmed here via the
+    cache's own hit counter actually incrementing on a repeated call
+    with the same (config, src, dst), not just "the result is correct."
+    """
+    if not csc.OCIO_AVAILABLE:
+        return _skip("test_apply_colorspace_conversion_reuses_the_cached_processor")
+    import aces_drt
+    img = np.full((2, 2, 3), (0.6, 0.3, 0.1), dtype=np.float32)
+    # A src/dst pair this test file hasn't used elsewhere, so its own
+    # cache entry starts fresh regardless of prior test execution order.
+    src, dst = "ACES2065-1", "ACEScc"
+    aces_drt._get_colourspace_conversion_processor.cache_clear()
+
+    csc.apply_colorspace_conversion(img, src, dst)
+    misses_after_first = aces_drt._get_colourspace_conversion_processor.cache_info().misses
+    csc.apply_colorspace_conversion(img, src, dst)
+    info = aces_drt._get_colourspace_conversion_processor.cache_info()
+
+    assert misses_after_first == 1, "the first call must build (and cache) the processor"
+    assert info.hits == 1, "the second, identical call must reuse the cached processor, not rebuild it"
+    assert info.misses == 1
+    print("apply_colorspace_conversion: reuses aces_drt's cached OCIO "
+          "processor instead of rebuilding it from scratch every call -- OK")
+
+
 if __name__ == "__main__":
     test_scene_and_display_lists_are_disjoint()
     test_display_list_names_all_end_in_display_suffix()
@@ -127,5 +160,6 @@ if __name__ == "__main__":
     test_scene_to_scene_round_trip()
     test_display_to_display_conversion_changes_values()
     test_conversion_result_depends_on_which_pair_is_used()
+    test_apply_colorspace_conversion_reuses_the_cached_processor()
     print()
     print("All colorspace_convert tests passed.")

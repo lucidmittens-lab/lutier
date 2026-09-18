@@ -33,17 +33,9 @@ neither is ever read from again.
 Qt-free, fully testable without a display -- same convention as
 stack_memory.py/cdl_library.py.
 """
-import itertools
+import id_counter
 
-_id_counter = itertools.count(1)
-
-
-def next_entry_id():
-    """Monotonically increasing int, unique for the life of the process --
-    used as an entry's identity for GUI selection tracking, same reasoning
-    as stack.next_stage_id()/stack_memory.next_memory_id()/
-    cdl_library.next_entry_id()."""
-    return next(_id_counter)
+next_entry_id = id_counter.make_next_entry_id()
 
 
 class LUTLibraryEntry:

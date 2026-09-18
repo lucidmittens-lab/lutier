@@ -308,8 +308,8 @@ class WarpierWheel(QWidget):
         self._chroma_dropoff = chroma_dropoff
         self.update()
 
-    def reset(self):
-        self.set_points([])
+    def reset(self, emit=True):
+        self.set_points([], emit=emit)
 
     # ---- geometry -------------------------------------------------------
 

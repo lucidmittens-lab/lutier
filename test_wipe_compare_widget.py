@@ -423,19 +423,21 @@ def test_left_drag_still_moves_the_wipe_divider_not_pan():
 
 
 # --- eyedropper (arm/disarm + mousePressEvent dispatch) -------------------
-# read_back_after_frame itself needs a REAL shown window (paintGL never
-# runs under QT_QPA_PLATFORM=offscreen -- see test_wipe_compare_widget_
-# readback.py's own docstring), so it always returns None here -- these
-# tests cover the arm/disarm STATE MACHINE and mousePressEvent's own
-# dispatch/preemption instead (an armed click never falls through to pan
-# or the wipe-divider drag, regardless of whether a real pixel got
-# sampled). The actual end-to-end pixel-sampling behavior is covered
-# separately in test_wipe_compare_widget_readback.py, which already runs
-# with a real window.
+# arm_eyedropper's own callback now takes (x_frac, y_frac) -- the click's
+# own image-relative fraction, not a sampled pixel value (see that
+# method's own docstring: this widget only knows what's on screen, which
+# is the wrong thing for a caller like a Keyer's Pick that wants a
+# specific mid-stack stage's own actual input -- resolving a VALUE from
+# that fraction is the caller's own job now). These tests cover the
+# arm/disarm STATE MACHINE and mousePressEvent's own dispatch/preemption
+# (an armed click never falls through to pan or the wipe-divider drag).
+# The real, painted-frame fraction-resolution case is covered separately
+# in test_wipe_compare_widget_readback.py, which already runs with a
+# real window.
 
 def test_arm_eyedropper_sets_armed_state_and_cross_cursor():
     w = _widget()
-    w.arm_eyedropper(lambda rgb: None)
+    w.arm_eyedropper(lambda x_frac, y_frac: None)
     assert w._eyedropper_armed is True
     assert w.cursor().shape() == Qt.CursorShape.CrossCursor
     print("WipeCompareWidget.arm_eyedropper: sets armed state and a "
@@ -444,7 +446,7 @@ def test_arm_eyedropper_sets_armed_state_and_cross_cursor():
 
 def test_disarm_eyedropper_clears_armed_state_and_cursor():
     w = _widget()
-    w.arm_eyedropper(lambda rgb: None)
+    w.arm_eyedropper(lambda x_frac, y_frac: None)
     w.disarm_eyedropper()
     assert w._eyedropper_armed is False
     assert w._eyedropper_callback is None
@@ -453,26 +455,29 @@ def test_disarm_eyedropper_clears_armed_state_and_cursor():
           "restores the arrow cursor -- OK")
 
 
-def test_armed_click_inside_the_image_disarms_and_does_not_pan_or_drag():
+def test_armed_click_inside_the_image_disarms_and_resolves_a_fraction():
     w = _widget()
     picked = []
-    w.arm_eyedropper(lambda rgb: picked.append(rgb))
+    w.arm_eyedropper(lambda x_frac, y_frac: picked.append((x_frac, y_frac)))
     image_rect = w._image_rect()
     pos = (image_rect.center().x(), image_rect.center().y())
 
     _press(w, pos, button=Qt.MouseButton.LeftButton)
 
-    assert w._eyedropper_armed is False, "one click disarms, even though read_back_after_frame returns None offscreen"
+    assert w._eyedropper_armed is False
     assert w._panning is False
     assert w._dragging is False
-    print("WipeCompareWidget: an armed click inside the image disarms "
-          "and never falls through to pan/wipe-drag -- OK")
+    assert len(picked) == 1
+    assert abs(picked[0][0] - 0.5) < 1e-6 and abs(picked[0][1] - 0.5) < 1e-6
+    print("WipeCompareWidget: an armed click inside the image disarms, "
+          "resolves the click's own fraction, and never falls through to "
+          "pan/wipe-drag -- OK")
 
 
 def test_armed_click_outside_the_image_disarms_without_sampling():
     w = _widget()
     picked = []
-    w.arm_eyedropper(lambda rgb: picked.append(rgb))
+    w.arm_eyedropper(lambda x_frac, y_frac: picked.append((x_frac, y_frac)))
     _press(w, (1, 1), button=Qt.MouseButton.LeftButton)  # top-left letterbox margin
     assert w._eyedropper_armed is False
     assert picked == []
@@ -482,7 +487,7 @@ def test_armed_click_outside_the_image_disarms_without_sampling():
 
 def test_armed_middle_click_disarms_and_does_not_start_panning():
     w = _widget()
-    w.arm_eyedropper(lambda rgb: None)
+    w.arm_eyedropper(lambda x_frac, y_frac: None)
     _press(w, (200, 150), button=Qt.MouseButton.MiddleButton)
     assert w._eyedropper_armed is False
     assert w._panning is False, "an armed eyedropper preempts the middle-button pan gesture too"
@@ -527,6 +532,9 @@ if __name__ == "__main__":
     test_left_drag_still_moves_the_wipe_divider_not_pan()
     test_arm_eyedropper_sets_armed_state_and_cross_cursor()
     test_disarm_eyedropper_clears_armed_state_and_cursor()
+    test_armed_click_inside_the_image_disarms_and_resolves_a_fraction()
+    test_armed_click_outside_the_image_disarms_without_sampling()
+    test_armed_middle_click_disarms_and_does_not_start_panning()
     test_armed_click_inside_the_image_disarms_and_does_not_pan_or_drag()
     test_armed_click_outside_the_image_disarms_without_sampling()
     test_armed_middle_click_disarms_and_does_not_start_panning()

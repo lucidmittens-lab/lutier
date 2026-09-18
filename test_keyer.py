@@ -99,6 +99,146 @@ def test_compute_matte_defaults_to_declared_default_working_colourspace():
           "keyer.DEFAULT_WORKING_COLOURSPACE -- OK")
 
 
+def test_compute_matte_prefilter_blur_defaults_to_a_noop():
+    red = _solid((1.0, 0.0, 0.0))
+    params = {"working_colourspace": SPACE, "hue_center": RED_HUE, "hue_width": 30.0}
+    default = keyer.compute_matte(red, params)
+    explicit_zero = keyer.compute_matte(red, {**params, "prefilter_blur": 0.0})
+    assert np.allclose(default, explicit_zero)
+    print("compute_matte: prefilter_blur=0.0 (the default) is an exact "
+          "no-op -- OK")
+
+
+def test_compute_matte_prefilter_blur_softens_a_hard_edge():
+    size = 16
+    image = np.zeros((size, size, 3), dtype=np.float64)
+    image[:, :size // 2] = (1.0, 0.0, 0.0)  # left half red
+    image[:, size // 2:] = (0.0, 0.0, 1.0)  # right half blue
+    params = {"working_colourspace": SPACE, "hue_center": RED_HUE, "hue_width": 30.0, "softness": 0.0}
+    sharp = keyer.compute_matte(image, params)
+    blurred = keyer.compute_matte(image, {**params, "prefilter_blur": 2.0})
+    row = size // 2
+    # A hard qualifier (softness=0) on an unblurred hard edge produces a
+    # strictly binary matte -- every pixel reads exactly 0 or 1.
+    assert np.all((sharp[row] == 0.0) | (sharp[row] == 1.0))
+    # Blurring image_array before the OKLCh decode mixes red and blue
+    # into each other near the edge, producing genuinely intermediate
+    # matte values the unblurred pass never has.
+    assert np.any((blurred[row] > 0.01) & (blurred[row] < 0.99))
+    print("compute_matte: prefilter_blur softens a hard color edge by "
+          "blurring image_array before the OKLCh decode -- OK")
+
+
+def test_compute_matte_matte_blur_defaults_to_a_noop():
+    red = _solid((1.0, 0.0, 0.0))
+    params = {"working_colourspace": SPACE, "hue_center": RED_HUE, "hue_width": 30.0}
+    default = keyer.compute_matte(red, params)
+    explicit_zero = keyer.compute_matte(red, {**params, "matte_blur": 0.0})
+    assert np.allclose(default, explicit_zero)
+    print("compute_matte: matte_blur=0.0 (the default) is an exact "
+          "no-op -- OK")
+
+
+def test_compute_matte_matte_blur_softens_the_mattes_own_edge():
+    """matte_blur operates on the ALREADY-COMPUTED matte -- distinct
+    from prefilter_blur, which blurs image_array before the OKLCh decode
+    (see module docstring for why Resolve splits these into two
+    separate controls: source noise-reduction vs. matte edge feather)."""
+    size = 16
+    image = np.zeros((size, size, 3), dtype=np.float64)
+    image[:, :size // 2] = (1.0, 0.0, 0.0)  # left half: matches the qualifier
+    image[:, size // 2:] = (0.0, 0.0, 1.0)  # right half: doesn't
+    params = {"working_colourspace": SPACE, "hue_center": RED_HUE, "hue_width": 30.0, "softness": 0.0}
+    sharp = keyer.compute_matte(image, params)
+    blurred = keyer.compute_matte(image, {**params, "matte_blur": 2.0})
+    row = size // 2
+    assert np.all((sharp[row] == 0.0) | (sharp[row] == 1.0))
+    assert np.any((blurred[row] > 0.01) & (blurred[row] < 0.99))
+    print("compute_matte: matte_blur softens the computed matte's own "
+          "edges directly -- OK")
+
+
+def test_compute_matte_matte_blur_and_prefilter_blur_are_independent():
+    size = 16
+    image = np.zeros((size, size, 3), dtype=np.float64)
+    image[:, :size // 2] = (1.0, 0.0, 0.0)
+    image[:, size // 2:] = (0.0, 0.0, 1.0)
+    params = {"working_colourspace": SPACE, "hue_center": RED_HUE, "hue_width": 30.0, "softness": 0.0}
+    matte_blur_only = keyer.compute_matte(image, {**params, "matte_blur": 2.0})
+    prefilter_only = keyer.compute_matte(image, {**params, "prefilter_blur": 2.0})
+    both = keyer.compute_matte(image, {**params, "matte_blur": 2.0, "prefilter_blur": 2.0})
+    row = size // 2
+    assert not np.allclose(both[row], matte_blur_only[row])
+    assert not np.allclose(both[row], prefilter_only[row])
+    print("compute_matte: matte_blur and prefilter_blur act independently "
+          "and combine -- OK")
+
+
+def test_compute_matte_matte_blur_applies_before_clip():
+    size = 16
+    image = np.zeros((size, size, 3), dtype=np.float64)
+    image[:, :size // 2] = (1.0, 0.0, 0.0)
+    image[:, size // 2:] = (0.0, 0.0, 1.0)
+    params = {"working_colourspace": SPACE, "hue_center": RED_HUE, "hue_width": 30.0,
+              "softness": 0.0, "matte_blur": 2.0}
+    blurred = keyer.compute_matte(image, params)
+    row = size // 2
+    assert np.any((blurred[row] > 0.01) & (blurred[row] < 0.99)), \
+        "sanity: matte_blur must actually soften something before clip can re-harden it"
+    # A tight clean black/white band re-hardens the blurred edge back to
+    # binary, proving clip runs AFTER matte_blur (matching Resolve's own
+    # Matte Finesse ordering: Blur Radius above Clean Black/White).
+    cleaned = keyer.compute_matte(image, {**params, "clip_black": 0.45, "clip_white": 0.55})
+    assert np.all((cleaned[row] == 0.0) | (cleaned[row] == 1.0))
+    print("compute_matte: matte_blur runs BEFORE clip_black/clip_white, "
+          "so cleanup can re-harden a blurred edge -- OK")
+
+
+def test_compute_matte_clip_defaults_are_a_noop():
+    red = _solid((1.0, 0.0, 0.0))
+    params = {"working_colourspace": SPACE, "hue_center": RED_HUE + 40.0, "hue_width": 30.0, "softness": 0.5}
+    default = keyer.compute_matte(red, params)
+    explicit = keyer.compute_matte(red, {**params, "clip_black": 0.0, "clip_white": 1.0})
+    assert np.allclose(default, explicit)
+    print("compute_matte: clip_black=0.0/clip_white=1.0 (the defaults) "
+          "are an exact identity remap -- OK")
+
+
+def test_compute_matte_clip_black_zeroes_out_below_threshold():
+    red = _solid((1.0, 0.0, 0.0))
+    params = {"working_colourspace": SPACE, "hue_center": RED_HUE + 40.0, "hue_width": 30.0, "softness": 1.0}
+    plain = keyer.compute_matte(red, params)
+    assert 0.0 < plain[0, 0] < 1.0  # a genuinely partial/soft value, not saturated
+    clipped = keyer.compute_matte(red, {**params, "clip_black": plain[0, 0] + 0.05})
+    assert np.all(clipped < 1e-6)
+    print("compute_matte: clip_black clamps everything at/below it to "
+          "0 -- OK")
+
+
+def test_compute_matte_clip_white_saturates_to_one_above_threshold():
+    red = _solid((1.0, 0.0, 0.0))
+    params = {"working_colourspace": SPACE, "hue_center": RED_HUE + 40.0, "hue_width": 30.0, "softness": 1.0}
+    plain = keyer.compute_matte(red, params)
+    assert 0.0 < plain[0, 0] < 1.0
+    clipped = keyer.compute_matte(red, {**params, "clip_white": plain[0, 0] - 0.05})
+    assert np.allclose(clipped, 1.0, atol=1e-6)
+    print("compute_matte: clip_white clamps everything at/above it to "
+          "1 -- OK")
+
+
+def test_compute_matte_clip_applies_before_invert():
+    red = _solid((1.0, 0.0, 0.0))
+    params = {"working_colourspace": SPACE, "hue_center": RED_HUE + 40.0, "hue_width": 30.0, "softness": 1.0}
+    plain = keyer.compute_matte(red, params)
+    clip_black = plain[0, 0] + 0.05
+    clipped = keyer.compute_matte(red, {**params, "clip_black": clip_black})
+    inverted = keyer.compute_matte(red, {**params, "clip_black": clip_black, "invert": True})
+    assert np.allclose(clipped, 0.0, atol=1e-6)
+    assert np.allclose(inverted, 1.0, atol=1e-6)
+    print("compute_matte: clip_black/clip_white apply BEFORE invert, so "
+          "invert always flips the already-cleaned key -- OK")
+
+
 if __name__ == "__main__":
     test_compute_matte_keys_near_one_for_a_matching_hue()
     test_compute_matte_keys_near_zero_for_a_far_off_hue()
@@ -107,5 +247,15 @@ if __name__ == "__main__":
     test_compute_matte_invert_flips_the_result()
     test_compute_matte_output_is_always_in_unit_range()
     test_compute_matte_defaults_to_declared_default_working_colourspace()
+    test_compute_matte_prefilter_blur_defaults_to_a_noop()
+    test_compute_matte_prefilter_blur_softens_a_hard_edge()
+    test_compute_matte_matte_blur_defaults_to_a_noop()
+    test_compute_matte_matte_blur_softens_the_mattes_own_edge()
+    test_compute_matte_matte_blur_and_prefilter_blur_are_independent()
+    test_compute_matte_matte_blur_applies_before_clip()
+    test_compute_matte_clip_defaults_are_a_noop()
+    test_compute_matte_clip_black_zeroes_out_below_threshold()
+    test_compute_matte_clip_white_saturates_to_one_above_threshold()
+    test_compute_matte_clip_applies_before_invert()
     print()
     print("All keyer tests passed.")

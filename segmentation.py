@@ -61,16 +61,6 @@ DEFAULT_FEATHER = 0.3
 DEFAULT_INVERT = False
 
 
-def _feather_to_dropoff(feather):
-    """Same inverted relationship keyer.py's own _softness_to_dropoff
-    establishes, kept as its own small local copy rather than a cross-
-    module import of that private helper (same convention keyer.py
-    itself follows for color_warper._angular_delta): feather=1 (the
-    softest edge) maps to color_warper.falloff_weight's dropoff=0 (a
-    plain Gaussian, the most gradual tail), feather=0 (the hardest edge)
-    maps to dropoff=1 (a flatter core with a much sharper cutoff)."""
-    return 1.0 - float(np.clip(feather, 0.0, 1.0))
-
 
 def _single_point_mask(image_array, point, tolerance, feather):
     """One seed point's own (H,W) contribution -- 0 outside the
@@ -96,7 +86,7 @@ def _single_point_mask(image_array, point, tolerance, feather):
     region = labeled == seed_label
 
     weight = cw.falloff_weight(
-        distance, wake=max(tolerance, 1e-6), dropoff=_feather_to_dropoff(feather))
+        distance, wake=max(tolerance, 1e-6), dropoff=cw.softness_to_dropoff(feather))
     return np.where(region, weight, 0.0)
 
 

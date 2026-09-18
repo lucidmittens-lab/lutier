@@ -73,6 +73,23 @@ DEFAULT_DROPOFF = 0.0
 DEFAULT_CHROMA_WAKE = 0.5
 DEFAULT_CHROMA_DROPOFF = 0.0
 
+# Bounds on warp_hue_chroma's own per-point chroma_scale ratio (p["c"]/c0)
+# -- a real, previously-shipped bug (found in code review, then confirmed
+# by hand): with no ceiling, dragging a point that started near-neutral
+# (c0 close to 0, easy to land on with an ordinary click near the wheel's
+# own center) out to a normal chroma could produce a ratio in the
+# hundreds, blowing out every nearby pixel's own chroma by that same
+# factor. CHROMA_SCALE_FLOOR raises c0's own "treat as unscalable, fall
+# back to an identity 1.0 scale" threshold from the previous 1e-6 (so
+# small it barely guarded anything a real click could produce) up to a
+# genuinely near-neutral chroma; MAX_CHROMA_SCALE is a second, independent
+# ceiling on the ratio itself for any c0 that clears that floor. Neither
+# bound is reachable by an ordinary drag -- pushing a point's own chroma
+# to 4x its starting point, from a starting point that isn't near-
+# neutral, is already an extreme, clearly-intentional move.
+CHROMA_SCALE_FLOOR = 0.02
+MAX_CHROMA_SCALE = 4.0
+
 # Display-orientation convention shared by every OKLCh visualization in
 # this app (WarpierWheel, the volumetric scope) -- picked so green (OKLCh
 # green's own approximate hue angle) lands at screen-down and magenta
@@ -328,6 +345,29 @@ def falloff_weight(angular_distance, wake=DEFAULT_WAKE, dropoff=DEFAULT_DROPOFF)
     return np.exp(-0.5 * np.power(np.abs(angular_distance) / sigma, 2.0 * n))
 
 
+def softness_to_dropoff(softness):
+    """This function's own `dropoff` runs the OPPOSITE direction from
+    every caller's own "softness"/"feather" knob -- dropoff=1 is a
+    HARDER edge (a flatter core, a much sharper cutoff beyond the wake
+    radius), dropoff=0 the more gradual plain-Gaussian tail. A caller's
+    softness=1 (softest/most gradual edge) should map to dropoff=0, and
+    softness=0 (hardest edge) to dropoff=1 -- the inverted, clamped-to-
+    [0,1] relationship every matte-producing stage kind in this app
+    wants for its own single shared "how hard vs. soft is the edge"
+    control.
+
+    Consolidated here (code review) after being reimplemented
+    byte-for-byte three times -- keyer.py's own _softness_to_dropoff,
+    matte_shape.py's own _softness_to_dropoff, and segmentation.py's own
+    _feather_to_dropoff (that one alone already clipping its input, the
+    one real difference between the three copies -- every caller already
+    clips its own softness/feather to [0,1] before reaching this point
+    anyway, so clipping here too is a safe, behavior-preserving no-op for
+    all of them, and a defensive floor for any future caller that
+    doesn't)."""
+    return 1.0 - float(np.clip(softness, 0.0, 1.0))
+
+
 def warp_hue_chroma(H, C, points, wake=DEFAULT_WAKE, dropoff=DEFAULT_DROPOFF,
                      chroma_wake=DEFAULT_CHROMA_WAKE, chroma_dropoff=DEFAULT_CHROMA_DROPOFF):
     """Vectorized version of the concept mockup's warped() -- H/C are
@@ -390,7 +430,7 @@ def warp_hue_chroma(H, C, points, wake=DEFAULT_WAKE, dropoff=DEFAULT_DROPOFF,
         chroma_w = falloff_weight(C - c0, chroma_wake, chroma_dropoff)
         w = hue_w * chroma_w
         hue_delta = _angular_delta(h0, p["h"])
-        chroma_scale = (p["c"] / c0) if c0 > 1e-6 else 1.0
+        chroma_scale = min(p["c"] / c0, MAX_CHROMA_SCALE) if c0 > CHROMA_SCALE_FLOOR else 1.0
         weight_sum += w
         hue_delta_sum += w * hue_delta
         chroma_scale_sum += w * chroma_scale

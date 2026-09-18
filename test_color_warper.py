@@ -91,6 +91,22 @@ def test_hard_dropoff_stays_higher_within_the_wake_than_soft():
           f"stays stronger than soft ({soft:.3f}) within the wake radius -- OK")
 
 
+def test_softness_to_dropoff_inverts_and_clamps():
+    """Consolidated (code review) from three byte-for-byte-identical
+    private copies (keyer._softness_to_dropoff, matte_shape.
+    _softness_to_dropoff, segmentation._feather_to_dropoff) into this one
+    shared function -- softness=1 (softest edge) maps to dropoff=0,
+    softness=0 (hardest edge) maps to dropoff=1, and out-of-[0,1] inputs
+    are clamped rather than producing a negative or >1 dropoff."""
+    assert cw.softness_to_dropoff(1.0) == 0.0
+    assert cw.softness_to_dropoff(0.0) == 1.0
+    assert cw.softness_to_dropoff(0.3) == 0.7
+    assert cw.softness_to_dropoff(-5.0) == 1.0, "below-range softness clamps to the hardest edge"
+    assert cw.softness_to_dropoff(5.0) == 0.0, "above-range softness clamps to the softest edge"
+    print("softness_to_dropoff: inverts softness into falloff_weight's "
+          "own dropoff convention, clamped to [0,1] -- OK")
+
+
 def test_warp_hue_chroma_exact_at_a_points_own_anchor():
     """A pixel exactly at a point's own h0 should be warped to exactly
     that point's dragged (h, c) target, for any wake/dropoff (weight=1,
@@ -103,6 +119,55 @@ def test_warp_hue_chroma_exact_at_a_points_own_anchor():
     assert abs(C_out[0] - 0.25) < 1e-9
     print("warp_hue_chroma: a pixel at a point's own anchor hue lands "
           "exactly on that point's dragged target -- OK")
+
+
+def test_warp_hue_chroma_near_zero_c0_does_not_blow_out_chroma():
+    """Regression guard for a real, previously-shipped bug (found in code
+    review, then confirmed by hand): chroma_scale = p["c"]/c0 had no
+    ceiling, so a point dropped near-neutral (c0 close to 0 -- easy to
+    land on with an ordinary click near the wheel's own center) and
+    dragged out to a normal chroma produced a ratio in the hundreds,
+    multiplying a nearby pixel's own chroma by that same factor. A pixel
+    sitting exactly at the point's own (near-zero) anchor chroma must now
+    land at a bounded, sane chroma -- not hundreds of times larger than
+    any real OKLCh chroma value."""
+    points = [{"h0": 40.0, "c0": 0.0005, "h": 40.0, "c": 0.2}]  # ratio would be 400x uncapped
+    H_out, C_out = cw.warp_hue_chroma(np.array([40.0]), np.array([0.0005]), points,
+                                       wake=25, dropoff=0.0)
+    assert C_out[0] < 1.0, f"chroma exploded to {C_out[0]} from a near-zero-c0 point drag"
+    print(f"warp_hue_chroma: a point dragged from a near-zero c0 no "
+          f"longer blows out chroma (got {C_out[0]:.4f}, was unbounded "
+          f"before the fix) -- OK")
+
+
+def test_warp_hue_chroma_chroma_scale_ratio_is_capped_at_max():
+    """A c0 just above CHROMA_SCALE_FLOOR, dragged to a chroma that would
+    give an uncapped ratio well past MAX_CHROMA_SCALE, must land exactly
+    at the capped value -- proving the ceiling is a real, enforced clamp
+    on the ratio itself, not just the near-zero-c0 fallback case above."""
+    c0 = cw.CHROMA_SCALE_FLOOR + 0.005
+    points = [{"h0": 40.0, "c0": c0, "h": 40.0, "c": 0.4}]  # uncapped ratio would be well over MAX_CHROMA_SCALE
+    uncapped_ratio = 0.4 / c0
+    assert uncapped_ratio > cw.MAX_CHROMA_SCALE, "test setup: this drag must actually exceed the cap to mean anything"
+    H_out, C_out = cw.warp_hue_chroma(np.array([40.0]), np.array([c0]), points,
+                                       wake=25, dropoff=0.0)
+    expected = c0 * cw.MAX_CHROMA_SCALE
+    assert abs(C_out[0] - expected) < 1e-6, (C_out[0], expected)
+    print(f"warp_hue_chroma: chroma_scale is capped at MAX_CHROMA_SCALE "
+          f"({cw.MAX_CHROMA_SCALE}x) rather than the uncapped {uncapped_ratio:.1f}x -- OK")
+
+
+def test_warp_hue_chroma_normal_drag_is_unaffected_by_the_cap():
+    """The cap must be a no-op for any ordinary drag -- a point starting
+    well above CHROMA_SCALE_FLOOR, dragged to under MAX_CHROMA_SCALE times
+    its own starting chroma, behaves EXACTLY as before this fix."""
+    points = [{"h0": 100.0, "c0": 0.1, "h": 130.0, "c": 0.25}]  # ratio 2.5x -- well under the 4x cap
+    H_out, C_out = cw.warp_hue_chroma(np.array([100.0]), np.array([0.1]), points,
+                                       wake=25, dropoff=0.3)
+    assert abs(H_out[0] - 130.0) < 1e-9
+    assert abs(C_out[0] - 0.25) < 1e-9
+    print("warp_hue_chroma: an ordinary drag (ratio well under the cap) "
+          "is completely unaffected by the fix -- OK")
 
 
 def test_warp_hue_chroma_no_points_is_noop():
@@ -433,7 +498,11 @@ if __name__ == "__main__":
     test_falloff_weight_is_one_at_zero_distance()
     test_falloff_weight_decreases_with_distance()
     test_hard_dropoff_stays_higher_within_the_wake_than_soft()
+    test_softness_to_dropoff_inverts_and_clamps()
     test_warp_hue_chroma_exact_at_a_points_own_anchor()
+    test_warp_hue_chroma_near_zero_c0_does_not_blow_out_chroma()
+    test_warp_hue_chroma_chroma_scale_ratio_is_capped_at_max()
+    test_warp_hue_chroma_normal_drag_is_unaffected_by_the_cap()
     test_warp_hue_chroma_no_points_is_noop()
     test_warp_hue_chroma_far_outside_wake_is_unaffected()
     test_warp_hue_chroma_default_chroma_wake_still_pulls_the_whole_spoke()

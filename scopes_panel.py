@@ -122,6 +122,12 @@ class ScopesPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._image_array = None
+        # See set_image_array/showEvent below -- True when a
+        # set_image_array() call was skipped because this panel wasn't
+        # visible at the time, so showEvent knows there's a real render
+        # still owed, not just a no-op showEvent. Same pattern
+        # lut_viewer_3d.LutViewer3D's own _stale_lut_pending uses.
+        self._stale_render_pending = False
         self._current_scope = SCOPE_HISTOGRAM
         # One dict (scope_name -> QAction) per menu that's ever had
         # populate_menu() called on it -- see that method and
@@ -465,9 +471,32 @@ class ScopesPanel(QWidget):
         changes (see main_window.py wiring: sample_image.after_image_changed
         -> scopes_panel.set_image_array). `image_array` may be None (no
         image loaded, or the current mode has nothing to show), in which
-        case all three scopes clear and a hint label shows instead."""
+        case all three scopes clear and a hint label shows instead.
+
+        Skips the actual histogram/waveform/vectorscope/volumetric
+        recompute while this panel isn't visible -- hidden via the
+        Workspace menu, tabbed/floated away, or simply scrolled out of
+        view in a splitter -- since after_image_changed fires on EVERY
+        stack edit tick and every video-playback frame, whether or not
+        anyone can currently see the result (a real, previously-shipped
+        performance cost -- found in code review; same fix
+        lut_viewer_3d.LutViewer3D.set_lut already has for the identical
+        reason). showEvent below runs the deferred render the next time
+        this panel actually becomes visible again, so it's never stale
+        once shown -- `self._image_array` itself is always kept current
+        regardless of visibility, only the expensive render is skipped."""
         self._image_array = image_array
+        if not self.isVisible():
+            self._stale_render_pending = True
+            return
+        self._stale_render_pending = False
         self._render_current_scope()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._stale_render_pending:
+            self._stale_render_pending = False
+            self._render_current_scope()
 
     # ---- rendering ---------------------------------------------------------
 

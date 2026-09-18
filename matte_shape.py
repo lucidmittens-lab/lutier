@@ -61,15 +61,6 @@ DEFAULT_SOFTNESS = 0.2
 DEFAULT_INVERT = False
 
 
-def _softness_to_dropoff(softness):
-    """Same convention as keyer._softness_to_dropoff -- color_warper.
-    falloff_weight's own `dropoff` runs the OPPOSITE direction from this
-    module's `softness` (dropoff=1 is a HARDER edge, dropoff=0 the more
-    gradual Gaussian tail), so softness=1 (softest) maps to dropoff=0
-    and softness=0 (hardest) maps to dropoff=1."""
-    return 1.0 - softness
-
-
 def compute_shape_matte(shape_hw, params):
     """shape_hw: (H, W), the image's own resolution -- this stage kind
     never reads actual pixel VALUES, only the array's shape, so callers
@@ -113,7 +104,7 @@ def compute_shape_matte(shape_hw, params):
     ny = ry / half_h_px
 
     edge_width = 0.05 + 0.3 * softness
-    dropoff = _softness_to_dropoff(softness)
+    dropoff = cw.softness_to_dropoff(softness)
     if shape == "ellipse":
         radius = np.sqrt(nx * nx + ny * ny)
         excess = np.maximum(0.0, radius - 1.0)

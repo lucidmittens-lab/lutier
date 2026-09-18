@@ -33,7 +33,7 @@ import keyer as ky
 from stack_panel import (
     _ElidingLabel, _StackListWidget, StackPanel, _stage_kind_badge_text,
     _ForkBranchGridRowWidget, _StageRowWidget, _ParamLabel, GRADING_TONE_RANGE_LABELS,
-    GRADING_PRIMARY_FIELD_SPECS,
+    GRADING_PRIMARY_FIELD_SPECS, CDL_SOP_FIELD_DEFAULTS,
 )
 from stack_memory import StackMemory
 from cdl_library import CDLEntry
@@ -507,6 +507,25 @@ def test_printer_lights_reset_zeroes_all_three_spins():
           "three spinboxes and the stage's params -- OK")
 
 
+def test_printer_lights_reset_applies_exactly_once_not_once_per_spin():
+    """Regression guard for a real bug (found in code review): before
+    this fix, each of the 3 R/G/B spins had its own live valueChanged ->
+    _apply_printer_lights_live cascade still active during a batch
+    reset, so ONE click on Reset fired up to 3 separate live-applies."""
+    panel, stage = _panel_with_one_printer_lights_stage()
+    panel._pl_spins["R"].setValue(30)
+    panel._pl_spins["G"].setValue(-10)
+    panel._pl_spins["B"].setValue(5)
+
+    emit_count = [0]
+    panel.stack_changed.connect(lambda: emit_count.__setitem__(0, emit_count[0] + 1))
+    panel._on_pl_reset_clicked()
+
+    assert emit_count[0] == 1, f"expected exactly 1 apply/re-render, got {emit_count[0]}"
+    print("StackPanel printer lights inspector: Reset to 0 applies/"
+          "re-renders exactly ONCE, not once per spin -- OK")
+
+
 def test_grading_primary_field_has_a_color_balance_wheel():
     """Per Tom: "adding ... color wheels to operators that dont have
     them" -- Grading Primary didn't have one before."""
@@ -592,6 +611,52 @@ def test_grading_primary_reset_zeroes_wheel_and_all_fields():
     assert stage.params["gamma"] == (1.0, 1.0, 1.0, 1.0)
     print("StackPanel Grading Primary: Reset to Identity zeroes every "
           "field's spinboxes AND its wheel -- OK")
+
+
+def test_cdl_reset_sop_zeroes_wheels_masters_and_fine_spins():
+    panel, stage = _panel_with_one_cdl_stage()
+    panel._cdl_sop_spins["slope"]["R"].setValue(2.0)
+    panel._cdl_wheels["offset"].set_balance(0.4, -0.2)
+    panel._cdl_master_spins["power"].setValue(1.5)
+
+    panel._on_cdl_reset_sop_clicked()
+
+    for field_key in ("slope", "offset", "power"):
+        default = CDL_SOP_FIELD_DEFAULTS[field_key]
+        for channel in ("R", "G", "B"):
+            assert panel._cdl_sop_spins[field_key][channel].value() == default
+        assert panel._cdl_master_spins[field_key].value() == default
+        x, y = panel._cdl_wheels[field_key].balance()
+        assert abs(x) < 1e-9 and abs(y) < 1e-9
+    assert stage.params["slope"] == (1.0, 1.0, 1.0)
+    assert stage.params["offset"] == (0.0, 0.0, 0.0)
+    assert stage.params["power"] == (1.0, 1.0, 1.0)
+    print("StackPanel CDL: Reset SOP to Identity zeroes every field's "
+          "fine spins, master spin, AND wheel -- OK")
+
+
+def test_cdl_reset_sop_applies_exactly_once_not_once_per_spin():
+    """Regression guard for a real bug (found in code review): before
+    this fix, each of the 9 R/G/B fine spins (3 fields x 3 channels) had
+    its own live valueChanged -> _apply_cdl_live cascade still active
+    during a batch reset, so ONE click on 'Reset SOP to Identity' fired
+    9 separate live-applies (and 9 re-renders), each briefly writing a
+    transiently-wrong intermediate SOP state into stage.params before the
+    reset actually finished. It must now apply -- and emit stack_changed
+    -- exactly ONCE per click, matching Grading Primary/Tone's own
+    already-batched reset."""
+    panel, stage = _panel_with_one_cdl_stage()
+    panel._cdl_sop_spins["slope"]["R"].setValue(2.0)
+    panel._cdl_sop_spins["offset"]["G"].setValue(-0.3)
+    panel._cdl_sop_spins["power"]["B"].setValue(0.7)
+
+    emit_count = [0]
+    panel.stack_changed.connect(lambda: emit_count.__setitem__(0, emit_count[0] + 1))
+    panel._on_cdl_reset_sop_clicked()
+
+    assert emit_count[0] == 1, f"expected exactly 1 apply/re-render, got {emit_count[0]}"
+    print("StackPanel CDL: Reset SOP to Identity applies/re-renders "
+          "exactly ONCE per click, not once per fine spin -- OK")
 
 
 def test_grading_primary_refresh_on_select_does_not_corrupt_stored_values():
@@ -1056,6 +1121,42 @@ def test_delete_stage_linked_falls_back_to_plain_removal_for_an_ordinary_stage()
           "stage is still just removed by itself, as before -- OK")
 
 
+def test_on_row_delete_clicked_refreshes_the_inspector_exactly_once():
+    """Regression guard for a real bug (found in code review):
+    _refresh_list's own tail already calls _on_selection_changed ->
+    _refresh_inspector (its own rebuild runs with the list widget's
+    signals blocked, then replays the selection-changed cascade
+    directly) -- a separate _refresh_inspector() call right after
+    _refresh_list() in the delete handlers was a redundant second full
+    inspector rebuild on every single stage deletion."""
+    panel, _win = _shown_panel_with_fork("both")
+    stage = st.make_cdl_stage()
+    panel.stack.add_stage(stage, index=0)
+    panel._refresh_list()
+
+    call_count = [0]
+    original = panel._refresh_inspector_body
+    panel._refresh_inspector_body = lambda: (call_count.__setitem__(0, call_count[0] + 1), original())[1]
+    panel._on_row_delete_clicked(stage.id)
+
+    assert call_count[0] == 1, f"expected exactly 1 inspector rebuild, got {call_count[0]}"
+    print("StackPanel._on_row_delete_clicked: rebuilds the inspector "
+          "exactly ONCE per deletion, not twice -- OK")
+
+
+def test_on_remove_clicked_refreshes_the_inspector_exactly_once():
+    panel, stage = _panel_with_one_cdl_stage()
+
+    call_count = [0]
+    original = panel._refresh_inspector_body
+    panel._refresh_inspector_body = lambda: (call_count.__setitem__(0, call_count[0] + 1), original())[1]
+    panel._on_remove_clicked()
+
+    assert call_count[0] == 1, f"expected exactly 1 inspector rebuild, got {call_count[0]}"
+    print("StackPanel._on_remove_clicked: rebuilds the inspector exactly "
+          "ONCE per deletion, not twice -- OK")
+
+
 def test_fork_grid_cell_shows_its_kind_badge_too():
     """Round two, per Tom: "the glyphs for operators dont show up when
     they are in a fork." Badges used to be full-width-row-only, back
@@ -1283,6 +1384,66 @@ def test_grading_tone_channel_label_double_click_resets_just_that_channel():
           "own 'R' label resets just that channel -- OK")
 
 
+def test_exposure_contrast_reset_zeroes_all_fields_and_applies_once():
+    """Regression guard for a real bug (found in code review): before
+    this fix, each of the 3 fields had its own live valueChanged ->
+    _apply_ec_live cascade still active during a batch reset, so ONE
+    click on Reset fired up to 3 separate live-applies."""
+    import exposure_contrast as ec
+    _app()
+    panel = StackPanel()
+    panel._on_add_exposure_contrast_clicked()
+    stage = panel.stack.stages[0]
+    panel._on_row_clicked(stage.id)
+    panel._ec_field_spins["exposure"].setValue(2.5)
+    panel._ec_field_spins["contrast"].setValue(1.5)
+    panel._ec_field_spins["gamma"].setValue(0.5)
+
+    emit_count = [0]
+    panel.stack_changed.connect(lambda: emit_count.__setitem__(0, emit_count[0] + 1))
+    panel._on_ec_reset_clicked()
+
+    assert panel._ec_field_spins["exposure"].value() == ec.IDENTITY_EXPOSURE
+    assert panel._ec_field_spins["contrast"].value() == ec.IDENTITY_CONTRAST
+    assert panel._ec_field_spins["gamma"].value() == ec.IDENTITY_GAMMA
+    assert stage.params["exposure"] == ec.IDENTITY_EXPOSURE
+    assert emit_count[0] == 1, f"expected exactly 1 apply/re-render, got {emit_count[0]}"
+    print("StackPanel Exposure/Contrast inspector: Reset restores every "
+          "field to identity and applies/re-renders exactly ONCE, not "
+          "once per field -- OK")
+
+
+def test_custom_drt_reset_restores_defaults_and_applies_once():
+    """Regression guard for a real bug (found in code review): before
+    this fix, ~11 numeric fields PLUS the mastering-display combo each
+    had their own live cascade still active during a batch reset, so
+    ONE click on 'Reset to Defaults' fired ~11+ separate live-applies."""
+    import custom_drt as cdr
+    _app()
+    panel = StackPanel()
+    panel._on_add_custom_drt_clicked()
+    stage = panel.stack.stages[0]
+    panel._on_row_clicked(stage.id)
+    panel._cdr_spins["contrast"].setValue(0.2)
+    panel._cdr_spins["identity_zone"].setValue(0.3)
+    idx = panel.cdr_mastering_display_combo.findText("HDR")
+    panel.cdr_mastering_display_combo.setCurrentIndex(idx)
+
+    emit_count = [0]
+    panel.stack_changed.connect(lambda: emit_count.__setitem__(0, emit_count[0] + 1))
+    panel._on_cdr_reset_clicked()
+
+    assert panel._cdr_spins["contrast"].value() == cdr.DEFAULT_CONTRAST
+    assert panel._cdr_spins["identity_zone"].value() == cdr.DEFAULT_IDENTITY_ZONE
+    assert panel.cdr_mastering_display_combo.currentText() == cdr.DEFAULT_MASTERING_DISPLAY
+    assert stage.params["contrast"] == cdr.DEFAULT_CONTRAST
+    assert stage.params["mastering_display"] == cdr.DEFAULT_MASTERING_DISPLAY
+    assert emit_count[0] == 1, f"expected exactly 1 apply/re-render, got {emit_count[0]}"
+    print("StackPanel Custom DRT inspector: Reset to Defaults restores "
+          "every field AND the mastering display, applies/re-renders "
+          "exactly ONCE, not once per field -- OK")
+
+
 def test_exposure_contrast_field_label_double_click_resets_that_field():
     import exposure_contrast as ec
     _app()
@@ -1384,6 +1545,55 @@ def test_color_warper_reset_restores_identity():
           "chroma_dropoff -- OK")
 
 
+def test_color_warper_reset_also_resets_the_wheels_own_internal_state():
+    """Regression guard: blocking each spin's own valueChanged during a
+    batch reset (see the fix below) also blocks the wheel-state side
+    effect those handlers normally carry (_on_cw_wake_changed etc. call
+    self.cw_wheel.set_wake(value) in ADDITION to applying live) -- must
+    still update the wheel's own copy of wake/dropoff/chroma_wake/
+    chroma_dropoff directly, or the wheel's own mesh rendering would
+    silently keep showing stale values even though stage.params is
+    correctly reset (exactly the class of bug Tom once suspected -- "i
+    feel like when i look away chroma wake goes back to .5" -- though
+    that specific report was never reproduced)."""
+    panel, stage = _panel_with_one_color_warper_stage()
+    panel.cw_wake_spin.setValue(80.0)
+    panel.cw_dropoff_spin.setValue(0.9)
+    panel.cw_chroma_wake_spin.setValue(0.05)
+    panel.cw_chroma_dropoff_spin.setValue(0.9)
+
+    panel._on_cw_reset_clicked()
+
+    assert panel.cw_wheel._wake == cw.DEFAULT_WAKE
+    assert panel.cw_wheel._dropoff == cw.DEFAULT_DROPOFF
+    assert panel.cw_wheel._chroma_wake == cw.DEFAULT_CHROMA_WAKE
+    assert panel.cw_wheel._chroma_dropoff == cw.DEFAULT_CHROMA_DROPOFF
+    print("StackPanel WARPier inspector: Reset to Identity also resets "
+          "the wheel widget's OWN internal wake/dropoff/chroma_wake/"
+          "chroma_dropoff, not just stage.params -- OK")
+
+
+def test_color_warper_reset_applies_exactly_once_not_once_per_control():
+    """Regression guard for a real bug (found in code review): before
+    this fix, the wheel's own points_changed AND each of the 4 spins'
+    own valueChanged cascades were still active during a batch reset, so
+    ONE click on 'Reset to Identity' fired up to 5 separate live-applies
+    (each including a color_warper stage's own relatively expensive
+    OKLCh warp)."""
+    panel, stage = _panel_with_one_color_warper_stage()
+    panel.cw_wheel.set_points([{"h0": 35.0, "c0": 0.15, "h": 50.0, "c": 0.15}])
+    panel.cw_wake_spin.setValue(80.0)
+    panel.cw_chroma_wake_spin.setValue(0.05)
+
+    emit_count = [0]
+    panel.stack_changed.connect(lambda: emit_count.__setitem__(0, emit_count[0] + 1))
+    panel._on_cw_reset_clicked()
+
+    assert emit_count[0] == 1, f"expected exactly 1 apply/re-render, got {emit_count[0]}"
+    print("StackPanel WARPier inspector: Reset to Identity applies/"
+          "re-renders exactly ONCE, not once per control -- OK")
+
+
 def test_color_warper_refresh_on_select_does_not_corrupt_stored_values():
     """Switching AWAY from a color_warper stage and back must not treat
     the resulting widget resync as a live edit -- same class of bug the
@@ -1424,6 +1634,10 @@ def test_add_keyer_starts_at_defaults():
     assert stage.params["hue_width"] == ky.DEFAULT_HUE_WIDTH
     assert stage.params["softness"] == ky.DEFAULT_SOFTNESS
     assert stage.params["invert"] == ky.DEFAULT_INVERT
+    assert stage.params["prefilter_blur"] == ky.DEFAULT_PREFILTER_BLUR
+    assert stage.params["matte_blur"] == ky.DEFAULT_MATTE_BLUR
+    assert stage.params["clip_black"] == ky.DEFAULT_CLIP_BLACK
+    assert stage.params["clip_white"] == ky.DEFAULT_CLIP_WHITE
     print("StackPanel: a freshly-added 'keyer' stage starts at keyer.py's "
           "own defaults -- OK")
 
@@ -1441,6 +1655,10 @@ def test_keyer_inspector_fields_apply_live():
     panel.ky_lightness_max_spin.setValue(0.8)
     panel.ky_softness_spin.setValue(0.6)
     panel.ky_invert_checkbox.setChecked(True)
+    panel.ky_prefilter_blur_spin.setValue(1.5)
+    panel.ky_matte_blur_spin.setValue(0.8)
+    panel.ky_clip_black_spin.setValue(0.1)
+    panel.ky_clip_white_spin.setValue(0.9)
     assert stage.params["working_colourspace"] == cw.REFERENCE_LINEAR_SPACE
     assert stage.params["hue_center"] == 210.0
     assert stage.params["hue_width"] == 45.0
@@ -1450,6 +1668,10 @@ def test_keyer_inspector_fields_apply_live():
     assert stage.params["lightness_max"] == 0.8
     assert stage.params["softness"] == 0.6
     assert stage.params["invert"] is True
+    assert stage.params["prefilter_blur"] == 1.5
+    assert stage.params["matte_blur"] == 0.8
+    assert stage.params["clip_black"] == 0.1
+    assert stage.params["clip_white"] == 0.9
     print("StackPanel Keyer inspector: every field applies live to the "
           "selected stage's params -- OK")
 
@@ -1530,11 +1752,13 @@ def test_highlight_checkbox_syncs_when_switching_between_two_keyers():
 def test_ky_pick_clicked_requests_the_eyedropper_with_a_callback():
     panel, stage = _panel_with_one_keyer_stage()
     requests = []
-    panel.set_eyedropper_requester(lambda callback: requests.append(callback))
+    panel.set_eyedropper_requester(lambda stage_id, callback: requests.append((stage_id, callback)))
     panel._on_ky_pick_clicked()
-    assert len(requests) == 1 and callable(requests[0])
+    assert len(requests) == 1
+    requested_stage_id, requested_callback = requests[0]
+    assert requested_stage_id == stage.id and callable(requested_callback)
     print("StackPanel: clicking Pick requests the Viewer's own eyedropper "
-          "via the wired requester -- OK")
+          "for THIS stage's own id via the wired requester -- OK")
 
 
 def test_ky_pick_clicked_is_a_noop_without_a_wired_requester():
@@ -1625,8 +1849,16 @@ def test_keyer_refresh_on_select_does_not_corrupt_stored_values():
     panel, stage = _panel_with_one_keyer_stage()
     panel.ky_hue_center_spin.setValue(77.0)
     panel.ky_softness_spin.setValue(0.42)
+    panel.ky_prefilter_blur_spin.setValue(2.25)
+    panel.ky_matte_blur_spin.setValue(1.1)
+    panel.ky_clip_black_spin.setValue(0.15)
+    panel.ky_clip_white_spin.setValue(0.85)
     stored_hue = stage.params["hue_center"]
     stored_softness = stage.params["softness"]
+    stored_prefilter_blur = stage.params["prefilter_blur"]
+    stored_matte_blur = stage.params["matte_blur"]
+    stored_clip_black = stage.params["clip_black"]
+    stored_clip_white = stage.params["clip_white"]
 
     other = st.make_cdl_stage()
     panel.stack.add_stage(other)
@@ -1635,6 +1867,10 @@ def test_keyer_refresh_on_select_does_not_corrupt_stored_values():
 
     assert stage.params["hue_center"] == stored_hue
     assert stage.params["softness"] == stored_softness
+    assert stage.params["prefilter_blur"] == stored_prefilter_blur
+    assert stage.params["matte_blur"] == stored_matte_blur
+    assert stage.params["clip_black"] == stored_clip_black
+    assert stage.params["clip_white"] == stored_clip_white
     print("StackPanel Keyer inspector: switching away and back does not "
           "corrupt the stage's stored params -- OK")
 
@@ -2003,10 +2239,13 @@ if __name__ == "__main__":
     test_printer_lights_spin_change_applies_live()
     test_printer_lights_gang_mirrors_r_to_g_and_b()
     test_printer_lights_reset_zeroes_all_three_spins()
+    test_printer_lights_reset_applies_exactly_once_not_once_per_spin()
     test_grading_primary_field_has_a_color_balance_wheel()
     test_grading_primary_wheel_drag_shifts_rgb_leaves_master_alone()
     test_grading_primary_master_edit_shifts_rgb_preserves_wheel_position()
     test_grading_primary_channel_spin_edit_moves_wheel_leaves_master_alone()
+    test_cdl_reset_sop_zeroes_wheels_masters_and_fine_spins()
+    test_cdl_reset_sop_applies_exactly_once_not_once_per_spin()
     test_grading_primary_reset_zeroes_wheel_and_all_fields()
     test_grading_primary_refresh_on_select_does_not_corrupt_stored_values()
     test_grading_tone_range_has_a_color_balance_wheel()
@@ -2031,6 +2270,8 @@ if __name__ == "__main__":
     test_delete_stage_linked_removes_both_markers_and_untags_interior()
     test_delete_stage_linked_works_via_fork_merge_and_via_remove_clicked()
     test_delete_stage_linked_falls_back_to_plain_removal_for_an_ordinary_stage()
+    test_on_row_delete_clicked_refreshes_the_inspector_exactly_once()
+    test_on_remove_clicked_refreshes_the_inspector_exactly_once()
     test_fork_grid_cell_shows_its_kind_badge_too()
     test_drop_indicator_spans_only_the_target_column_inside_a_fork()
     test_drop_indicator_spans_the_full_width_for_an_ordinary_row()
@@ -2044,12 +2285,16 @@ if __name__ == "__main__":
     test_grading_tone_start_width_labels_reset_individually()
     test_grading_tone_channel_label_double_click_resets_just_that_channel()
     test_exposure_contrast_field_label_double_click_resets_that_field()
+    test_exposure_contrast_reset_zeroes_all_fields_and_applies_once()
+    test_custom_drt_reset_restores_defaults_and_applies_once()
     test_add_color_warper_starts_at_identity()
     test_color_warper_wheel_drag_applies_live()
     test_color_warper_wake_and_dropoff_spins_apply_live()
     test_color_warper_chroma_wake_and_dropoff_spins_apply_live()
     test_color_warper_space_combo_applies_live()
     test_color_warper_reset_restores_identity()
+    test_color_warper_reset_also_resets_the_wheels_own_internal_state()
+    test_color_warper_reset_applies_exactly_once_not_once_per_control()
     test_color_warper_refresh_on_select_does_not_corrupt_stored_values()
     test_color_warper_badge_text()
     test_keyer_badge_text()

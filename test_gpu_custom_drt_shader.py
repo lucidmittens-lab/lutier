@@ -127,6 +127,25 @@ def test_gpu_render_matches_cpu_for_a_neutral_ramp():
     context.doneCurrent()
 
 
+def test_gpu_render_matches_cpu_for_out_of_range_blend_percentile():
+    """Regression guard, GPU side: custom_drt.apply_custom_drt's own
+    blend_percentile safety clamp (see that function's own comment, and
+    custom_drt._BLEND_PERCENTILE_EPSILON) was hand-ported into
+    set_custom_drt_uniforms -- confirms the GPU shader clamps the SAME
+    way the CPU does for a value the real UI could never produce
+    (blend_percentile<=0 or >=1), rather than reproducing the NaN/inf
+    bug on the live-preview GPU path specifically."""
+    _app, context, surface = gsp._make_offscreen_gl_context()
+    rng = np.random.default_rng(7)
+    test_image = rng.uniform(-0.1, 3.0, size=(8, 12, 3)).astype(np.float32)
+    for bad_value in (-2.0, 0.0, 1.0, 3.0):
+        params = dict(_DEFAULT_UNIFORM_PARAMS, blend_percentile=bad_value)
+        _render_and_compare(
+            "ACEScct", "SDR", None, params, test_image,
+            f"out-of-range blend_percentile={bad_value}")
+    context.doneCurrent()
+
+
 def test_gpu_render_matches_cpu_for_every_mastering_display_and_final_target():
     """Each (mastering_display, final_target) combination bakes a
     DIFFERENT compile-time matrix + EOTF into the shader (see
@@ -187,6 +206,7 @@ if __name__ == "__main__":
     test_gpu_render_matches_cpu_at_toms_tuned_values()
     test_gpu_render_matches_cpu_with_nonzero_fullness()
     test_gpu_render_matches_cpu_for_a_neutral_ramp()
+    test_gpu_render_matches_cpu_for_out_of_range_blend_percentile()
     test_gpu_render_matches_cpu_for_every_mastering_display_and_final_target()
     test_gpu_render_matches_cpu_for_hdr_mastering_brightness_picklist()
     test_gpu_render_matches_cpu_for_theatrical_dci_white_adaptation()

@@ -127,11 +127,17 @@ def _click(target, pos, button=Qt.MouseButton.LeftButton):
     QApplication.sendEvent(target, event)
 
 
-def test_arm_eyedropper_samples_the_real_on_screen_pixel():
+def test_arm_eyedropper_resolves_the_real_on_screen_click_fraction():
     """The one thing test_wipe_compare_widget.py's own offscreen
-    eyedropper tests can't cover (read_back_after_frame always returns
-    None there) -- an armed click against a REAL painted frame samples
-    the actual on-screen pixel and hands it to the callback."""
+    eyedropper tests can't cover (a real _image_rect() geometry from an
+    actually-painted frame) -- an armed click against a REAL painted
+    frame resolves to the correct image-relative fraction. arm_eyedropper
+    itself no longer samples a pixel VALUE at all (see its own docstring
+    for why: it only knows the final on-screen composited result, which
+    is the wrong thing for a caller -- e.g. a Keyer's Pick -- that wants
+    a specific mid-stack stage's own actual input; resolving position to
+    a pixel VALUE is the caller's own job now, against whatever array it
+    considers authoritative)."""
     w = _shown_widget()
     array = np.zeros((48, 64, 3), dtype=np.float32)
     array[:, :32] = (0.6, 0.2, 0.2)  # left half reddish
@@ -140,16 +146,18 @@ def test_arm_eyedropper_samples_the_real_on_screen_pixel():
     QTest.qWait(_PAINT_WAIT_MS)
 
     picked = []
-    w.arm_eyedropper(lambda rgb: picked.append(rgb))
+    w.arm_eyedropper(lambda x_frac, y_frac: picked.append((x_frac, y_frac)))
     image_rect = w._image_rect()
     left_pos = (image_rect.left() + image_rect.width() * 0.25, image_rect.center().y())
     _click(w, left_pos)
 
     assert len(picked) == 1
-    assert np.allclose(picked[0], (0.6, 0.2, 0.2), atol=1e-2), picked[0]
+    assert abs(picked[0][0] - 0.25) < 1e-2
+    assert abs(picked[0][1] - 0.5) < 1e-2
     assert w._eyedropper_armed is False
-    print(f"WipeCompareWidget.arm_eyedropper: a click samples the real "
-          f"on-screen pixel, got {picked[0]} -- OK")
+    print(f"WipeCompareWidget.arm_eyedropper: a click against a real "
+          f"painted frame resolves the correct image fraction, got "
+          f"{picked[0]} -- OK")
 
 
 def test_arm_eyedropper_disarms_after_exactly_one_pick():
@@ -159,15 +167,15 @@ def test_arm_eyedropper_disarms_after_exactly_one_pick():
     QTest.qWait(_PAINT_WAIT_MS)
 
     picked = []
-    w.arm_eyedropper(lambda rgb: picked.append(rgb))
+    w.arm_eyedropper(lambda x_frac, y_frac: picked.append((x_frac, y_frac)))
     image_rect = w._image_rect()
     pos = (image_rect.center().x(), image_rect.center().y())
     _click(w, pos)
-    _click(w, pos)  # second click, after disarming -- must not sample again
+    _click(w, pos)  # second click, after disarming -- must not resolve again
 
     assert len(picked) == 1
     print("WipeCompareWidget.arm_eyedropper: one-shot -- a second click "
-          "after the first pick samples nothing -- OK")
+          "after the first pick resolves nothing -- OK")
 
 
 def test_read_back_after_frame_returns_none_after_clear():
@@ -190,7 +198,7 @@ if __name__ == "__main__":
     test_read_back_after_frame_matches_cpu_grading_gpu_eligible()
     test_read_back_after_frame_reflects_a_live_stack_edit()
     test_read_back_after_frame_works_for_a_gpu_ineligible_already_graded_array()
-    test_arm_eyedropper_samples_the_real_on_screen_pixel()
+    test_arm_eyedropper_resolves_the_real_on_screen_click_fraction()
     test_arm_eyedropper_disarms_after_exactly_one_pick()
     test_read_back_after_frame_returns_none_after_clear()
     print()

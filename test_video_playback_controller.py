@@ -174,6 +174,86 @@ def test_tick_pushes_raw_frame_when_no_stack_or_empty_stack():
           "frame unchanged, no grading attempted -- OK")
 
 
+def test_tick_notifies_scopes_for_a_gpu_eligible_stack():
+    """Regression test for a real bug (per code review): before this fix,
+    _tick pushed frames straight to WipeCompareWidget.set_after and never
+    called SampleImagePanel._set_current_after_array at all, so anything
+    listening for after_image_changed (ScopesPanel, via main_window.py's
+    own wiring) froze on whatever frame playback started from for the
+    entire duration it played -- histogram/waveform/vectorscope would
+    show stale data throughout playback, not just look slow to update.
+    A GPU-eligible stack still grades on the GPU for the Viewer itself,
+    but Scopes needs its own small, CPU-graded sample regardless (same
+    "GPU-ELIGIBLE STACKS ALWAYS RECOMPUTE AT SCOPES RESOLUTION" rule
+    sample_image_panel.py's own refresh_preview already follows for
+    ordinary parameter edits)."""
+    panel = _panel_with_video()
+    cdl_stack = st.Stack(stages=[st.make_cdl_stage(slope=(1.2, 0.9, 1.0))])
+    panel.set_stack_getter(lambda: cdl_stack)
+    seen = []
+    panel.after_image_changed.connect(seen.append)
+    controller = VideoPlaybackController(panel)
+    controller.play()
+    controller._tick()
+
+    # Checked BEFORE pause() -- pause() re-parks via its own seek/recompute
+    # path, which legitimately emits after_image_changed again and would
+    # otherwise conflate _tick's own emission with pause()'s.
+    assert len(seen) == 1
+    assert seen[0] is not None
+    assert panel.get_current_after_array() is seen[0]
+    # The Scopes-facing array must be CPU-graded (matching the CDL's own
+    # slope), NOT the raw decoded frame -- the Viewer grades on the GPU,
+    # but Scopes never sees that result.
+    raw_pixel = panel.compare._after_state.array[0, 0]
+    graded_pixel = seen[0][0, 0]
+    assert not np.allclose(raw_pixel, graded_pixel), (
+        "the Scopes-facing array must reflect the CDL grade, not raw decoded pixels")
+    controller.pause()
+    print("VideoPlaybackController._tick: notifies Scopes (after_image_changed) "
+          "with a CPU-graded frame even for a GPU-eligible stack -- OK")
+
+
+def test_tick_notifies_scopes_for_a_gpu_ineligible_stack():
+    panel = _panel_with_video()
+    import app_logic
+    identity_lut = app_logic.create_identity_lut(size=5)
+    lut_stage = st.make_lut_stage(identity_lut)
+    lut_stage.params["retarget_from"] = "ACEScct"
+    lut_stage.params["retarget_to"] = "ACES2065-1"
+    ineligible_stack = st.Stack(stages=[lut_stage])
+    panel.set_stack_getter(lambda: ineligible_stack)
+    seen = []
+    panel.after_image_changed.connect(seen.append)
+    controller = VideoPlaybackController(panel)
+    controller.play()
+    controller._tick()
+
+    assert len(seen) == 1  # checked before pause() -- see the GPU-eligible test's own comment
+    # Same array actually pushed to the Viewer for this (CPU-graded)
+    # branch -- no redundant second stack-apply needed.
+    assert np.array_equal(seen[0], panel.compare._after_state.array)
+    controller.pause()
+    print("VideoPlaybackController._tick: notifies Scopes with the same "
+          "CPU-graded frame already pushed to the Viewer -- OK")
+
+
+def test_tick_notifies_scopes_with_no_stack():
+    panel = _panel_with_video()
+    panel.set_stack_getter(lambda: st.Stack())  # empty stack
+    seen = []
+    panel.after_image_changed.connect(seen.append)
+    controller = VideoPlaybackController(panel)
+    controller.play()
+    controller._tick()
+
+    assert len(seen) == 1  # checked before pause() -- see the GPU-eligible test's own comment
+    assert seen[0] is not None
+    controller.pause()
+    print("VideoPlaybackController._tick: notifies Scopes even with no "
+          "stack (or an empty one) applied -- OK")
+
+
 def test_play_emits_playback_started():
     panel = _panel_with_video()
     controller = VideoPlaybackController(panel)
@@ -500,6 +580,9 @@ if __name__ == "__main__":
     test_tick_pushes_the_raw_frame_with_gpu_stack_for_a_gpu_eligible_stack()
     test_tick_cpu_grades_the_frame_for_a_gpu_ineligible_stack()
     test_tick_pushes_raw_frame_when_no_stack_or_empty_stack()
+    test_tick_notifies_scopes_for_a_gpu_eligible_stack()
+    test_tick_notifies_scopes_for_a_gpu_ineligible_stack()
+    test_tick_notifies_scopes_with_no_stack()
     test_play_emits_playback_started()
     test_tick_pushes_a_resolution_capped_proxy_not_full_resolution()
     test_pause_reparks_at_full_resolution_through_the_grading_pipeline()

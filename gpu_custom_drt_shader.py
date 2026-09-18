@@ -69,12 +69,6 @@ import aces_drt
 import custom_drt
 import gpu_shader_prototype as gsp
 
-_UNIFORM_NAMES = (
-    "uContrast", "uHeadroom", "uBlendPercentile", "uTailWidth",
-    "uDesatStart", "uDesatEnd", "uIdentityZone", "uTransitionSoftness", "uFullness",
-    "uMasteringBrightness",
-)
-
 # GLSL port of custom_drt.py's own tonescale/desaturation math -- see that
 # module's docstring for the pipeline; every formula here is a direct
 # transcription of its Python counterpart, same variable names where GLSL
@@ -434,7 +428,20 @@ def set_custom_drt_uniforms(gl_module, program, contrast, headroom, blend_percen
     render (see gpu_stack_renderer.GpuStackRenderer._set_uniforms_for_
     stage), so no CAMier slider drag (or mastering_brightness pick) ever
     recompiles this stage's program, same bar gpu_cdl_shader.
-    set_cdl_uniforms meets for CDL."""
+    set_cdl_uniforms meets for CDL.
+
+    Clamped the SAME way custom_drt.apply_custom_drt's own CPU path is
+    (see that function's own comment, and custom_drt._BLEND_PERCENTILE_
+    EPSILON) -- this GLSL mirror hand-ports the identical cdrHyperbolic
+    InverseStops math, which is just as NaN/inf-prone at
+    blend_percentile<=0 or >=1 on the GPU as it is on the CPU."""
+    blend_percentile = min(max(float(blend_percentile), custom_drt._BLEND_PERCENTILE_EPSILON),
+                            1.0 - custom_drt._BLEND_PERCENTILE_EPSILON)
+    desat_start = min(max(float(desat_start), 0.0), 1.0)
+    desat_end = min(max(float(desat_end), 0.0), 1.0)
+    identity_zone = min(max(float(identity_zone), 0.0), 1.0)
+    transition_softness = min(max(float(transition_softness), 0.0), 1.0)
+
     gl_module.glUniform1f(gl_module.glGetUniformLocation(program, "uContrast"), float(contrast))
     gl_module.glUniform1f(gl_module.glGetUniformLocation(program, "uHeadroom"), float(headroom))
     gl_module.glUniform1f(

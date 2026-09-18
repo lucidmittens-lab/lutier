@@ -45,6 +45,8 @@ import color_warper
 import gpu_shader_prototype as gsp
 
 MAX_POINTS = color_warper.MAX_POINTS
+CHROMA_SCALE_FLOOR = color_warper.CHROMA_SCALE_FLOOR
+MAX_CHROMA_SCALE = color_warper.MAX_CHROMA_SCALE
 
 _UNIFORM_POINT_COUNT = "uCwPointCount"
 _UNIFORM_POINT_ANCHOR = "uCwPointAnchor"
@@ -133,7 +135,13 @@ vec3 cwWarp(vec3 linearRgb) {{
         float chromaW = cwFalloffWeight(chroma - c0, {_UNIFORM_CHROMA_WAKE}, {_UNIFORM_CHROMA_DROPOFF});
         float w = hueW * chromaW;
         float hueDelta = cwAngularDelta(h0, {_UNIFORM_POINT_TARGET}[i].x);
-        float cScale = c0 > 1e-6 ? ({_UNIFORM_POINT_TARGET}[i].y / c0) : 1.0;
+        // Ceiling on the chroma_scale ratio -- see color_warper.
+        // CHROMA_SCALE_FLOOR/MAX_CHROMA_SCALE's own comment: an
+        // unbounded ratio (the old `c0 > 1e-6 ? (target/c0) : 1.0`)
+        // could blow a pixel's own chroma out by a factor in the
+        // hundreds for a point dragged away from a near-neutral origin.
+        float cScale = c0 > {CHROMA_SCALE_FLOOR}
+            ? min({_UNIFORM_POINT_TARGET}[i].y / c0, {MAX_CHROMA_SCALE}) : 1.0;
         weightSum += w;
         hueDeltaSum += w * hueDelta;
         chromaScaleSum += w * cScale;
@@ -220,12 +228,30 @@ def _build_entry(config_name, working_colourspace):
     return _CacheEntry(program, decode_processor.getDefaultGPUProcessor(), encode_processor.getDefaultGPUProcessor())
 
 
-def is_color_warper_gpu_eligible(config_name, working_colourspace):
+def is_color_warper_gpu_eligible(config_name, working_colourspace, point_count=0):
     """True if a "color_warper" stage using this (config_name,
-    working_colourspace) can render on the GPU. Safe to call with NO
-    current GL context -- generates and inspects the GLSL text a real
-    build would compile, never actually compiles it."""
+    working_colourspace, point_count) can render on the GPU. Safe to call
+    with NO current GL context -- generates and inspects the GLSL text a
+    real build would compile, never actually compiles it.
+
+    `point_count` (default 0, so every existing call site that predates
+    this param keeps behaving exactly as before) is checked against
+    MAX_POINTS -- a real, previously-shipped bug (found in code review):
+    set_color_warper_uniforms' own `count = min(len(points), MAX_POINTS)`
+    silently drops anything past MAX_POINTS, but nothing in eligibility
+    ever looked at point count at all, so a stage with more than
+    MAX_POINTS points (unreachable via the wheel widget's own UI cap
+    today, per this module's own "POINT COUNT" docstring section -- but
+    reachable via a hand-edited/loaded project file, or if that UI cap is
+    ever raised without updating MAX_POINTS here) still rendered on the
+    GPU with the extras silently missing, while the CPU path (used for
+    export/bake) honors every point -- live preview and export could
+    disagree with nothing to explain why. Falling back to CPU for an
+    over-the-cap stage instead means every rendered pixel -- preview AND
+    export -- comes from the SAME code path, honoring every point."""
     if not aces_drt.OCIO_AVAILABLE:
+        return False
+    if point_count > color_warper.MAX_POINTS:
         return False
     try:
         _generate_combined_shader_text(config_name, working_colourspace)
