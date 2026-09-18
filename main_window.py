@@ -43,11 +43,11 @@ _build_default_dock_layout, also reachable any time via Workspace >
 
 Browser, Media Libraries, LUT Library, and Galleries are four separate
 panels (per Tom) -- "Files" is the filesystem LUT browser
-(browser_panel.py, unchanged), "Media Libraries" (image_library_panel.py +
-image_library.py, inserted between Browser and LUT Library per Tom) is a
-shelf of reference images ingested into session memory (see that module's
-docstring for the one "embedded in memory, path-referenced on disk"
-caveat), "LUT Library" (lut_library_panel.py + lut_library.py) is a shelf
+(browser_panel.py, unchanged), "Media Libraries" (media_panel.py +
+media_library.py, inserted between Browser and LUT Library per Tom) is a
+sortable, columned table of still/video files catalogued BY REFERENCE
+(see that module's docstring -- an entry never embeds decoded pixel
+data, just a path plus header metadata), "LUT Library" (lut_library_panel.py + lut_library.py) is a shelf
 of LUTs INGESTED into session memory -- Import... reads a real LUT file
 once and keeps the loaded table itself, not just its path, so it (and any
 Stack stage built from it, see StackPanel.add_lut_stage_from_library_entry)
@@ -70,7 +70,7 @@ a Stack Memory routes into StackPanel.set_stack, applying a CDL entry
 routes into StackPanel.apply_cdl_entry, applying a LUT Library
 entry routes into StackPanel.add_lut_stage_from_library_entry, and
 applying a Media Libraries entry routes into SampleImagePanel's
-Source/Reference slots (see image_library_panel.py's docstring) -- all
+Source/Reference slots (see media_panel.py's docstring) -- all
 exactly like opening a session does -- none of these panels has a
 reference to StackPanel or SampleImagePanel, MainWindow wires all of them
 together (self.stack_memories_panel.recall_requested ->
@@ -78,7 +78,7 @@ self.stack_panel.set_stack, self.stack_memories_panel.apply_cdl_requested ->
 self.stack_panel.apply_cdl_entry, self.stack_panel.cdl_save_requested ->
 self.stack_memories_panel.save_cdl_entry, self.lut_library_panel.apply_requested
 -> self.stack_panel.add_lut_stage_from_library_entry,
-self.image_library_panel.load_as_sample_requested/
+self.media_panel.load_as_sample_requested/
 load_as_reference_requested -> self.sample_image.
 load_sample_from_library_entry/load_reference_from_library_entry).
 
@@ -223,7 +223,7 @@ from PySide6.QtCore import Qt, QTimer, QByteArray, QEvent, QThread, QObject, Sig
 from browser_panel import BrowserPanel
 from stack_memories_panel import StackMemoriesPanel
 from lut_library_panel import LUTLibraryPanel
-from image_library_panel import ImageLibraryPanel
+from media_panel import MediaPanel
 from timeline_panel import TimelinePanel
 from sample_image_panel import SampleImagePanel
 from stack_panel import StackPanel
@@ -247,7 +247,7 @@ import gpu_stack_renderer
 from stack_memory import StackMemoryLibrary, GalleryStillLibrary
 from cdl_library import CDLLibrary
 from lut_library import LUTLibrary
-from image_library import ImageLibrary
+from media_library import MediaLibrary
 from undo_history import UndoHistory
 from help_text import USER_MANUAL_MARKDOWN
 from floating_dialog import make_floating_tool_window, show_floating
@@ -971,9 +971,10 @@ class MainWindow(QMainWindow):
         # split into their own stacked group so all four are visible at
         # once instead of one-tab-at-a-time. "Files" is the unchanged
         # filesystem LUT browser, "Media Libraries" (between Browser and
-        # LUT Library, per Tom) is a shelf of reference images ingested
-        # into session memory -- see image_library_panel.py/
-        # image_library.py -- "LUT Library" is a shelf of LUTs ingested
+        # LUT Library, per Tom) is a sortable, columned table of media
+        # files catalogued by reference (path + header metadata, never a
+        # decoded pixel array) -- see media_panel.py/media_library.py --
+        # "LUT Library" is a shelf of LUTs ingested
         # into session memory -- see lut_library_panel.py/lut_library.py --
         # "Galleries" is a shelf of named, saved Stack snapshots you can
         # recall/update/rename/delete/export/import, externally-imported
@@ -990,13 +991,20 @@ class MainWindow(QMainWindow):
         self.browser.file_selected.connect(lambda path: self.stack_panel.add_lut_stage_from_path(path))
         self._make_dock("browser_frame", "Browser", self.browser)
 
-        # Image Library's two apply_requested signals get connected to
+        # Media Panel's two apply_requested signals get connected to
         # self.sample_image once that's built further below (SampleImagePanel
         # doesn't exist yet at this point in the method).
-        self.image_library_panel = ImageLibraryPanel()
+        self.media_panel = MediaPanel()
+        # "image_library_frame" (the dock's objectName, used by
+        # workspace_io.py's saved-layout persistence) deliberately stays
+        # the old name from before the Media Panel rewrite -- renaming it
+        # would silently reset this one panel's remembered position for
+        # every user with an existing saved workspace layout, same reason
+        # session_io.py's load_session keeps reading the old
+        # "image_library" session key too.
         self._make_dock(
-            "image_library_frame", "Media Libraries", self.image_library_panel,
-            corner_widget=self.image_library_panel.menu_button)
+            "image_library_frame", "Media Libraries", self.media_panel,
+            corner_widget=self.media_panel.menu_button)
 
         self.lut_library_panel = LUTLibraryPanel()
         # Applying an entry hands back the LUTLibraryEntry itself (already
@@ -1052,8 +1060,8 @@ class MainWindow(QMainWindow):
             corner_widget=self.stack_memories_panel.menu_button)
 
         # Continuity Grading Timeline (see timeline.py's own docstring) --
-        # sources clips from Image Library only, wired further below once
-        # self.image_library_panel's add_to_timeline_requested signal is
+        # sources clips from the Media Panel only, wired further below once
+        # self.media_panel's add_to_timeline_requested signal is
         # ready to connect (deferred, same reasoning as
         # load_as_sample_requested below).
         self.timeline_panel = TimelinePanel()
@@ -1140,19 +1148,19 @@ class MainWindow(QMainWindow):
         # same way here as it would from that menu).
         self.sample_image.restore_default_image()
 
-        # Image Library entries "apply" into one of the Viewer's two
+        # Media Library entries "apply" into one of the Viewer's two
         # image slots rather than adding a Stack stage (see
-        # image_library_panel.py's docstring) -- this panel has no idea
+        # media_panel.py's docstring) -- this panel has no idea
         # SampleImagePanel exists, MainWindow wires the two together, same
         # arrangement as every other library's apply_requested. Deferred to
-        # here (rather than right after image_library_panel is built, up in
+        # here (rather than right after media_panel is built, up in
         # the left column above) since self.sample_image doesn't exist
         # until this point in the method.
-        self.image_library_panel.load_as_sample_requested.connect(
+        self.media_panel.load_as_sample_requested.connect(
             self.sample_image.load_sample_from_library_entry)
-        self.image_library_panel.load_as_reference_requested.connect(
+        self.media_panel.load_as_reference_requested.connect(
             self.sample_image.load_reference_from_library_entry)
-        self.image_library_panel.add_to_timeline_requested.connect(
+        self.media_panel.add_to_timeline_requested.connect(
             self.timeline_panel.add_clip_from_library_entry)
 
         # Sequence/Shot toggle (see stack_panel.py's own docstring on
@@ -1187,8 +1195,8 @@ class MainWindow(QMainWindow):
         # Stack Memory's automatic thumbnail+full_still capture at save
         # time; a GalleryStill's "Load as Reference" routes to
         # load_reference_from_path (not load_reference_from_library_entry
-        # -- a GalleryStill has no cached decoded array, unlike an
-        # ImageLibraryEntry, see that class's own docstring), via a lambda
+        # -- a GalleryStill has no cached decoded array, same as a
+        # MediaEntry, see that class's own docstring), via a lambda
         # since both sides live on the UI thread (no cross-thread signal
         # concern, same as the video playback lock/unlock wiring above).
         self.stack_memories_panel.set_still_capture_getter(self._capture_gallery_still)
@@ -1483,8 +1491,8 @@ class MainWindow(QMainWindow):
         workspace_menu.addAction("Media Cache Folder...", self._choose_media_cache_folder)
 
         # ---- category menus -- see docstring above ------------------------
-        image_library_menu = menu_bar.addMenu("Media Libraries")
-        self.image_library_panel.populate_menu(image_library_menu)
+        media_library_menu = menu_bar.addMenu("Media Libraries")
+        self.media_panel.populate_menu(media_library_menu)
 
         lut_library_menu = menu_bar.addMenu("LUT Library")
         self.lut_library_panel.populate_menu(lut_library_menu)
@@ -1569,7 +1577,7 @@ class MainWindow(QMainWindow):
                 or self.stack_memories_panel.get_gallery_library().stills
                 or self.stack_memories_panel.get_cdl_library().entries
                 or self.lut_library_panel.get_library().entries
-                or self.image_library_panel.get_library().entries
+                or self.media_panel.get_library().entries
                 or self.timeline_panel.get_timeline().clips):
             reply = QMessageBox.question(
                 self, "New Session",
@@ -1615,7 +1623,7 @@ class MainWindow(QMainWindow):
         self.stack_memories_panel.load_gallery_library(GalleryStillLibrary())
         self.stack_memories_panel.load_cdl_library(CDLLibrary())
         self.lut_library_panel.load_library(LUTLibrary())
-        self.image_library_panel.load_library(ImageLibrary())
+        self.media_panel.load_library(MediaLibrary())
         # Reset BEFORE restore_default_image() below, not after -- that
         # call itself fires image_loaded, and it should be free to seed
         # the fresh canvas from the default image's own dimensions the
@@ -1645,7 +1653,7 @@ class MainWindow(QMainWindow):
             return
         try:
             (new_stack, sample_image_state, memory_library, gallery_still_library,
-             cdl_library, lut_library, image_library, undo_history_state,
+             cdl_library, lut_library, media_library, undo_history_state,
              loaded_canvas, loaded_timeline, warnings) = session_io.load_session(path)
         except Exception as e:  # noqa: BLE001 -- surface any read/parse failure to the user
             QMessageBox.critical(self, "Failed to open session", str(e))
@@ -1682,7 +1690,7 @@ class MainWindow(QMainWindow):
         self.stack_memories_panel.load_gallery_library(gallery_still_library)
         self.stack_memories_panel.load_cdl_library(cdl_library)
         self.lut_library_panel.load_library(lut_library)
-        self.image_library_panel.load_library(image_library)
+        self.media_panel.load_library(media_library)
         if sample_image_state is not None:
             self.sample_image.load_session_state(sample_image_state)
         # Set AFTER load_session_state above, not before -- reloading the
@@ -1737,7 +1745,7 @@ class MainWindow(QMainWindow):
                 gallery_still_library=self.stack_memories_panel.get_gallery_library(),
                 cdl_library=self.stack_memories_panel.get_cdl_library(),
                 lut_library=self.lut_library_panel.get_library(),
-                image_library=self.image_library_panel.get_library(),
+                media_library=self.media_panel.get_library(),
                 undo_history=self._undo_history, canvas=self._canvas,
                 timeline=self.timeline_panel.get_timeline())
         except Exception as e:  # noqa: BLE001 -- surface any write failure to the user
@@ -3252,12 +3260,11 @@ class MainWindow(QMainWindow):
         export_still_to_library_checkbox (per Tom, a SECONDARY checkbox --
         see _show_export_dialog/_on_export_still_toggled, only reachable
         at all when this one's checked) additionally hands the just-
-        written still to ImageLibraryPanel.import_from_path, i.e. a real
-        re-decode of the file on disk rather than the in-memory array --
-        matches how every other Media Libraries import already works (see
-        image_library.py's docstring on why entries there are path-
-        referenced/re-decoded rather than fully embedded, unlike the LUT
-        Library's import_lut_object above)."""
+        written still's PATH to MediaPanel.import_from_path -- matches how
+        every other Media Libraries import already works (see
+        media_library.py's docstring on why entries there are path-
+        referenced, never embedded, unlike the LUT Library's
+        import_lut_object above)."""
         if not self.sample_image.has_sample_image():
             return "Export Still skipped: no source image loaded."
         still_path = str(Path(lut_out_path).with_suffix(".png"))
@@ -3270,7 +3277,7 @@ class MainWindow(QMainWindow):
 
         lines = [f"Exported a still to:\n{still_path}"]
         if self.export_still_to_library_checkbox.isChecked():
-            self.image_library_panel.import_from_path(still_path)
+            self.media_panel.import_from_path(still_path)
             lines.append("Imported the still into the Media Libraries.")
         return "\n".join(lines)
 

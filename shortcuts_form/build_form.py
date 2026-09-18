@@ -4,7 +4,7 @@ menu-bar dropdown item in LUTier (File, Edit, Workspace, Image Library,
 LUT Library, CDL Library, Stack Memories, Viewer, Stack, Scopes, Graph,
 Help), enumerated directly from main_window.py's _build_menu_bar and
 each panel's populate_menu() (see stack_panel.py, sample_image_panel.py,
-scopes_panel.py, lut_viewer_3d.py, image_library_panel.py,
+scopes_panel.py, lut_viewer_3d.py, media_panel.py,
 lut_library_panel.py, cdl_library_panel.py, stack_memories_panel.py) --
 not guessed or reconstructed from memory.
 

@@ -2,12 +2,12 @@
 id_counter.py -- the one shared "monotonically increasing int, unique for
 the life of the process" id-generator shape used across this app's
 in-memory library/collection classes (CDLEntry, LUTLibraryEntry,
-ImageLibraryEntry, ...) for GUI selection tracking -- picking a row back
-out of a QListWidget by identity rather than by fragile index, which
-shifts under reorder/delete.
+MediaEntry, ...) for GUI selection tracking -- picking a row back
+out of a QListWidget/QTableWidget by identity rather than by fragile
+index, which shifts under reorder/delete/sort.
 
 Previously reimplemented byte-for-byte in cdl_library.py, lut_library.py,
-and image_library.py (each its own `itertools.count(1)` + a `next_entry_
+and media_library.py (each its own `itertools.count(1)` + a `next_entry_
 id()` wrapper, only the cross-reference in each docstring actually
 differing) -- consolidated here (code review) rather than left
 triplicated. make_next_entry_id() returns a FRESH counter-backed

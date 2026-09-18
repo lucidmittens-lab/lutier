@@ -144,7 +144,7 @@ def test_gallery_still_library_add_rename_remove_find():
     except KeyError:
         pass
     print("GalleryStillLibrary: add_still/rename/remove/find behave like "
-          "ImageLibrary's equivalent methods -- OK")
+          "MediaLibrary's equivalent methods -- OK")
 
 
 def test_gallery_still_copy_is_independent_with_same_id():

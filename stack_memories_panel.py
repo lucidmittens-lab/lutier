@@ -63,16 +63,16 @@ STILLS GALLERY (Phase 3, per Tom: "Stack library should not be part of
   - a NEW GalleryStill (stack_memory.py) -- an externally-imported
     reference still, via the mono "Import..." action -- Load as
     Reference sends it to the Viewer's Reference slot (via
-    sample_image_panel.load_reference_from_path, since a GalleryStill
-    doesn't keep a decoded array in memory the way an ImageLibraryEntry
-    does -- see that class's own docstring).
+    sample_image_panel.load_reference_from_path, same path-only
+    decode-on-demand a media_library.MediaEntry now also uses -- see
+    that class's own docstring).
 
-Deliberately kept OUT of the real Media Library (image_library.py/
-image_library_panel.py) -- Tom's own instruction: "for now just relevant
+Deliberately kept OUT of the real Media Library (media_library.py/
+media_panel.py) -- Tom's own instruction: "for now just relevant
 that we're not folding it into the media library." Update/Export/Import
 .ltm only make sense for a memory row -- selecting a still or CDL row and
 invoking one of those is a guarded no-op with an explanatory message,
-same "wrong-kind selection" treatment image_library_panel.py's own
+same "wrong-kind selection" treatment media_panel.py's own
 video-vs-still asymmetry (Load as Reference) already uses. Rename/Delete
 work generically across all three kinds. Double-clicking (or Enter) a row
 does whichever action is that row's own PRIMARY one -- Recall for a
@@ -569,8 +569,8 @@ class StackMemoriesPanel(QWidget):
     def import_still_from_path(self, path):
         """Decode `path` just long enough to generate a thumbnail -- a
         GalleryStill is disk-referenced only (see that class's own
-        docstring), so, unlike ImageLibraryEntry, the decoded array
-        itself is never kept around."""
+        docstring), same as a media_library.MediaEntry, so the decoded
+        array itself is never kept around."""
         try:
             array = load_image_as_array(path, max_dimension=None)
         except Exception as e:  # noqa: BLE001 -- surface any decode failure to the user

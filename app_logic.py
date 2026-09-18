@@ -648,7 +648,7 @@ def png_bytes_to_array(png_bytes):
     float32 array in [0,1]. Used to reload a StackMemory's captured
     full_still (Stills Gallery, Phase 3 follow-up) for "Load as
     Reference", since that bytes-only capture has no source_path to
-    reload from the way a GalleryStill or ImageLibraryEntry does."""
+    reload from the way a GalleryStill or MediaEntry does."""
     img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
     return np.asarray(img, dtype=np.float32) / 255.0
 

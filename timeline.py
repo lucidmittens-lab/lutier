@@ -28,7 +28,7 @@ import stack as st
 # A Timeline is a single-kind list (only ever TimelineClip rows, unlike
 # stack_memories_panel.py's StackMemory/GalleryStill/CDLEntry union list)
 # -- the plain per-module counter shape applies directly, same as
-# image_library.py/cdl_library.py/lut_library.py already use. No need for
+# media_library.py/cdl_library.py/lut_library.py already use. No need for
 # stack_memory.py's own next_memory_id()/next_gallery_still_id() shared-
 # counter trick, which exists only to keep two DIFFERENT row kinds from
 # colliding in the same union list.
@@ -48,16 +48,16 @@ DEFAULT_FRAME_RATE = 24.0
 class TimelineClip:
     """One shot in the timeline: a name, a path-referenced media source
     (re-decoded fresh, same "how to rebuild it, not the built thing"
-    principle image_library.ImageLibraryEntry/stack_memory.GalleryStill
+    principle media_library.MediaEntry/stack_memory.GalleryStill
     already use for the identical reason -- can't be reconstructed if the
     source file has since moved), an in/out frame range into that source,
     and an OWNED, live `stack.Stack` -- this clip's own independent grade
     (see module docstring on why this is NOT a copy-on-save snapshot the
     way StackMemory is).
 
-    `media_kind` reuses image_library.MEDIA_KINDS ("still"/"video") --
+    `media_kind` reuses media_library.MEDIA_KINDS ("still"/"video") --
     deliberately not import-coupled to that module here (a plain string,
-    same as ImageLibraryEntry's own field), so this module has no Qt-
+    same as MediaEntry's own field), so this module has no Qt-
     adjacent or app_logic dependency at all. `in_frame`/`out_frame` are
     always meaningful, even for a still (see DEFAULT_FRAME_RATE's own
     comment) -- a still-kind clip is just a source with exactly one

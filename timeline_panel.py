@@ -1,23 +1,25 @@
 """
 timeline_panel.py -- the "Timeline" panel: an ordered list of clips built
-up from the Image Library for continuity grading review (see timeline.py's
+up from the Media Library for continuity grading review (see timeline.py's
 own docstring for the full feature background). This first pass covers
 list/add/remove/reorder/selection only -- no playback yet (that's
 timeline_playback_controller.py, a later build step) and no Sequence/Shot
 toggle wiring yet (that's stack_panel.py's job, driven by clip_selected
 below).
 
-Mirrors image_library_panel.py's plain-icon QListWidget row shape (a
-thumbnail via setIcon + a name/duration label) rather than stack_panel.py's
-setItemWidget-based rows, specifically so Qt's own built-in
-InternalMove drag-reorder can be used as-is -- setItemWidget content is
-what makes InternalMove unreliable there (see stack_panel.py's own
-_StackListWidget docstring), and Timeline rows don't use it.
+A plain-icon QListWidget row shape (a thumbnail via setIcon + a name/
+duration label) rather than stack_panel.py's setItemWidget-based rows,
+specifically so Qt's own built-in InternalMove drag-reorder can be used
+as-is -- setItemWidget content is what makes InternalMove unreliable
+there (see stack_panel.py's own _StackListWidget docstring), and Timeline
+rows don't use it. (media_panel.py's own rows moved to a QTableWidget in
+the Media Panel rewrite -- Timeline's list-row shape here is unrelated
+and unaffected.)
 
 Clips are added from the OUTSIDE (via add_clip_from_library_entry), the
-target of a new add_to_timeline_requested signal on ImageLibraryPanel --
+target of a new add_to_timeline_requested signal on MediaPanel --
 this panel has no file dialog or ingestion path of its own, same
-"Timeline only ever sources from the Image Library" restriction the
+"Timeline only ever sources from the Media Library" restriction the
 approved plan calls for.
 
 A freshly-added clip gets an in/out range covering the full source (video)
@@ -236,7 +238,7 @@ class TimelinePanel(QWidget):
     # ---- add / rename / remove ---------------------------------------------
 
     def add_clip_from_library_entry(self, entry):
-        """Target of ImageLibraryPanel's add_to_timeline_requested signal
+        """Target of MediaPanel's add_to_timeline_requested signal
         (wired in main_window.py) -- the only way a clip enters the
         Timeline (module docstring)."""
         if entry.media_kind == "video":

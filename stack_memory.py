@@ -30,12 +30,12 @@ deliberately kept in this one module since they share a panel
     own save flow for where that capture happens; this module never
     generates one itself, just stores/copies whatever it's handed, same
     "this module owns the data shape, not how it's produced" split
-    image_library.py already follows for ITS thumbnail field.
+    media_library.py already follows for ITS thumbnail field.
   - GalleryStill is a NEW, separate class for externally-imported
-    reference stills -- PATH-REFERENCED like image_library.ImageLibraryEntry
+    reference stills -- PATH-REFERENCED like media_library.MediaEntry
     (it has a real source file to re-decode from, unlike a StackMemory's
     capture-at-save-time grab, which doesn't), NOT folded into
-    ImageLibrary (Tom's own explicit instruction: "we're not folding it
+    MediaLibrary (Tom's own explicit instruction: "we're not folding it
     into the media library").
 
 Qt-free, fully testable without a display -- same convention as stack.py,
@@ -99,10 +99,10 @@ class GalleryStill:
     docstring) -- PATH-REFERENCED, not embedded: source_path/
     source_filename are load-bearing for session persistence (re-decoded
     fresh on load), same "how to rebuild it, not the built thing"
-    principle image_library.ImageLibraryEntry uses for the identical
+    principle media_library.MediaEntry uses for the identical
     reason (see that module's docstring on the practical consequence:
     can't be reconstructed if the source file has since moved). Deliberately
-    NOT a subclass of ImageLibraryEntry -- structurally similar, but a
+    NOT a subclass of MediaEntry -- structurally similar, but a
     distinct type on purpose so stack_memories_panel.py's union list can
     tell a memory row from a still row with a plain isinstance check, and
     so the two never accidentally become interchangeable with the real
@@ -183,7 +183,7 @@ class StackMemoryLibrary:
 
 class GalleryStillLibrary:
     """An ordered list of GalleryStill entries (Phase 3) -- same shape as
-    ImageLibrary, deliberately kept a separate, sibling collection rather
+    MediaLibrary, deliberately kept a separate, sibling collection rather
     than reusing that class (see GalleryStill's own docstring)."""
 
     def __init__(self, stills=None):

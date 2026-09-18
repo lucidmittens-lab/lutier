@@ -7,7 +7,7 @@ without a display -- the GUI layer (main_window.py) just calls
 save_session/load_session and hands the result to StackPanel.set_stack /
 SampleImagePanel.load_session_state / StackMemoriesPanel.load_library /
 StackMemoriesPanel.load_cdl_library / LUTLibraryPanel.load_library /
-ImageLibraryPanel.load_library.
+MediaPanel.load_library.
 
 WHAT'S SAVED: the working Stack (every stage's kind/label/enabled/opacity/
 params, Stack.size/domain_min/domain_max), the Sample and Reference image
@@ -17,9 +17,10 @@ stack_memory.py) -- each memory is its own independent stack, serialized
 the exact same way the working stack is (memory_library_to_session_list
 just calls stack_to_session_dict per memory) -- every saved CDL Library
 entry (see cdl_library.py), every saved LUT Library entry (see
-lut_library.py), and every saved Image Library entry (see
-image_library.py -- note this one is path-referenced, not embedded, see
-VERSION 5 below). WORKSPACE LAYOUT (window size, which panels are shown/
+lut_library.py), and every saved Media Library entry (see
+media_library.py -- note this one is path-referenced, not embedded, and
+(as of VERSION 12) never holds decoded pixel data at all, just header
+metadata -- see VERSION 5 and VERSION 12 below). WORKSPACE LAYOUT (window size, which panels are shown/
 hidden or floating, splitter sizes) is deliberately NOT part of this list
 as of VERSION 7 -- see that version's own note further down, and
 workspace_io.py's docstring for where it actually lives now. The Viewer's
@@ -161,7 +162,7 @@ import json
 import numpy as np
 import colour
 
-from app_logic import load_lut_any_format, create_identity_lut, load_image_as_array
+from app_logic import load_lut_any_format, create_identity_lut, get_image_native_size
 import stack as st
 import canvas as cv
 import video_source
@@ -179,11 +180,29 @@ from stack_memory import StackMemory, StackMemoryLibrary, GalleryStill, GalleryS
 from timeline import Timeline, TimelineClip, DEFAULT_FRAME_RATE
 from cdl_library import CDLEntry, CDLLibrary
 from lut_library import LUTLibraryEntry, LUTLibrary
-from image_library import ImageLibraryEntry, ImageLibrary
+from media_library import MediaEntry, MediaLibrary
 from atomic_write import atomic_open
 
 SESSION_FORMAT = "lutier-session"
-SESSION_VERSION = 11
+SESSION_VERSION = 12
+
+# VERSION 12 (Media Panel rewrite, per Tom: "a proper media panel...
+# columned database referring to files on disk, no longer embed data in
+# memory") replaces the old image_library entry shape (which re-decoded
+# every entry's FULL pixel array both at import time and, worse, eagerly
+# for EVERY entry on session load) with media_library's path-only
+# MediaEntry -- see that module's own docstring. The session key itself
+# is renamed "image_library" -> "media_library" (media_library_to_
+# session_list/media_library_from_session_list, below); load_session
+# reads the new key with a fallback to the old one
+# (data.get("media_library", data.get("image_library", []))), so a file
+# saved by any earlier version still loads. Two new per-entry fields,
+# width/height (a still's native size, a video's frame size -- both
+# probed HEADER-ONLY, never decoded), are added; a pre-VERSION-12 file
+# has neither key, so media_library_from_session_list re-probes them
+# cheaply on load rather than defaulting them to None (the whole point
+# of the column existing in the new table UI is to have a real value to
+# show/sort by, not an empty one) -- see that function's own docstring.
 
 # VERSION 11 (Continuity Grading Timeline, per Tom: "we need to start
 # thinking about a video sequence" -> a multi-clip timeline) adds a
@@ -806,7 +825,7 @@ def memory_library_to_session_list(library):
     stack, serialized the identical way the working one is. VERSION 10
     (Stills Gallery, Phase 3) additionally writes thumbnail (a
     media_cache.py storage descriptor -- already a plain JSON-able dict,
-    or None -- see image_library_to_session_list's identical treatment
+    or None -- see media_library_to_session_list's identical treatment
     of its own thumbnail field) and full_still (Phase 3 follow-up, per
     Tom: "also capture full canvas-res still" -- a SECOND, same-shaped
     media_cache.py descriptor, see stack_memory.StackMemory's own
@@ -842,7 +861,7 @@ def memory_library_from_session_list(entries):
     stack_from_session_dict uses per-stage, just one level up. A
     pre-VERSION-10 file has no thumbnail key; .get("thumbnail") defaults
     it to None, same "old file loads fine, just without the newer field"
-    convention as image_library_from_session_list."""
+    convention as media_library_from_session_list."""
     library = StackMemoryLibrary()
     warnings = []
     for entry in entries:
@@ -931,12 +950,12 @@ def timeline_from_session_dict(data):
 
 def gallery_stills_to_session_list(library):
     """GalleryStillLibrary -> plain JSON-able list (Phase 3, Stills
-    Gallery) -- same shape as image_library_to_session_list, since
-    GalleryStill is structurally the same as ImageLibraryEntry minus the
+    Gallery) -- same shape as media_library_to_session_list, since
+    GalleryStill is structurally the same as MediaEntry minus the
     video-specific fields (no media_kind/frame metadata -- a gallery
     still is always a still, see stack_memory.GalleryStill's own
     docstring on why it's a distinct class rather than reusing
-    ImageLibraryEntry)."""
+    MediaEntry)."""
     return [
         {
             "name": still.name,
@@ -953,11 +972,11 @@ def gallery_stills_from_session_list(entries_data):
     """Inverse of gallery_stills_to_session_list -- returns
     (library, warnings). A GalleryStill has no in-memory pixel data to
     reconstruct (it's thumbnail-only, see that class's docstring), so
-    unlike image_library_from_session_list there's no re-decode step and
+    unlike media_library_from_session_list there's no re-probe step and
     thus no way for a MISSING source file to fail here -- source_path is
     kept as-is (the still simply can't be re-imported/re-thumbnailed
     later if the file has moved, same practical caveat
-    image_library.py's docstring already documents for its own entries,
+    media_library.py's docstring already documents for its own entries,
     but with no load-time failure mode since nothing is actually read)."""
     library = GalleryStillLibrary()
     warnings = []
@@ -1125,18 +1144,19 @@ def lut_library_from_session_list(entries_data):
     return library, warnings
 
 
-def image_library_to_session_list(library):
-    """image_library.ImageLibrary -> plain JSON-able list. UNLIKE
-    lut_library_to_session_list, this does NOT embed pixel data -- just
-    name/source_path/source_colourspace, re-decoded fresh on load -- see
-    this module's docstring (VERSION 5) and image_library.py's own
-    docstring for why. VERSION 10 (Media Library Phase 2) additionally
-    writes media_kind/frame_count/frame_rate/duration (video metadata,
-    ignored/absent for a still entry) and thumbnail (a media_cache.py
-    storage descriptor -- already a plain JSON-able dict, see that
-    module -- or None), re-generated on load rather than embedded-by-
-    value if missing, same "how to rebuild it" principle as the pixel
-    data itself."""
+def media_library_to_session_list(library):
+    """media_library.MediaLibrary -> plain JSON-able list. Path-
+    referenced, not embedded, same as the old image_library_to_
+    session_list before it (VERSION 5) -- see this module's docstring and
+    media_library.py's own docstring for why. VERSION 12 (Media Panel
+    rewrite) additionally writes width/height -- an entry's own header-
+    probed values, see media_library.py's MediaEntry docstring -- so a
+    reload doesn't need to re-probe them (still done as a fallback for a
+    pre-VERSION-12 file with neither key, see media_library_from_
+    session_list). media_kind/frame_count/frame_rate/duration (video
+    metadata, ignored/absent for a still entry) and thumbnail (a
+    media_cache.py storage descriptor -- already a plain JSON-able dict,
+    see that module -- or None) are unchanged from VERSION 10."""
     return [
         {
             "name": entry.name,
@@ -1144,6 +1164,8 @@ def image_library_to_session_list(library):
             "source_filename": entry.source_filename,
             "source_path": entry.source_path,
             "media_kind": entry.media_kind,
+            "width": entry.width,
+            "height": entry.height,
             "frame_count": entry.frame_count,
             "frame_rate": entry.frame_rate,
             "duration": entry.duration,
@@ -1154,46 +1176,59 @@ def image_library_to_session_list(library):
     ]
 
 
-def image_library_from_session_list(entries_data):
-    """Inverse of image_library_to_session_list. Returns (library,
+def media_library_from_session_list(entries_data):
+    """Inverse of media_library_to_session_list. Returns (library,
     warnings) -- an entry whose source file has since moved/been deleted
     can't be reconstructed (unlike a LUT Library entry), so this reports
     a warning and skips it, same "one bad thing doesn't sink everything
-    else" rule as every other per-entry failure in this module. A video
-    entry (media_kind == "video", VERSION 10+) is reopened via
-    video_source.VideoSource instead of load_image_as_array -- same
-    "re-decode fresh on load" principle, just the video codepath -- and
-    only its first frame is kept in memory, same as import (see
-    image_library.py's docstring). A pre-VERSION-10 file has no
-    media_kind key at all; .get("media_kind", "still") defaults it to a
-    still, same "old file loads fine, just without the newer field"
-    convention every prior version bump here already follows."""
-    library = ImageLibrary()
+    else" rule as every other per-entry failure in this module.
+
+    VERSION 12 (Media Panel rewrite): NO raster decode happens here at
+    all, for either a still or a video entry -- this is the actual point
+    of the rewrite (the old image_library_from_session_list re-decoded
+    every single entry's FULL pixel array, eagerly, for the whole
+    library, on every session load). A still's width/height come from
+    the saved value if present, else a header-only app_logic.
+    get_image_native_size(path) probe (pre-VERSION-12 file, or a saved
+    entry that predates this field); a video's width/height/frame_count/
+    frame_rate/duration come from the saved values if present, else an
+    open+immediately-closed video_source.VideoSource(path) for its
+    stream metadata only -- no decode_next_frame() call either way. That
+    header probe doubles as this function's "does the file still exist /
+    is it readable" check, replacing the old full-decode-as-existence-
+    check. A pre-VERSION-10 file has no media_kind key at all;
+    .get("media_kind", "still") defaults it to a still, same "old file
+    loads fine, just without the newer field" convention every prior
+    version bump here already follows."""
+    library = MediaLibrary()
     warnings = []
     for data in entries_data:
-        name = data.get("name", "Image")
+        name = data.get("name", "Media")
         path = data.get("source_path")
         media_kind = data.get("media_kind", "still")
+        width, height = data.get("width"), data.get("height")
         try:
             if not path:
                 raise ValueError("no source path recorded")
-            if media_kind == "video":
-                source = video_source.VideoSource(path)
-                try:
-                    array = source.decode_next_frame()
-                finally:
-                    source.close()
-            else:
-                array = load_image_as_array(path, max_dimension=None)
+            if width is None or height is None:
+                if media_kind == "video":
+                    source = video_source.VideoSource(path)
+                    try:
+                        width, height = source.width, source.height
+                    finally:
+                        source.close()
+                else:
+                    width, height = get_image_native_size(path)
         except Exception as e:  # noqa: BLE001 -- one bad entry shouldn't sink the rest
-            warnings.append(f'Skipped Image Library entry "{name}": {e}')
+            warnings.append(f'Skipped Media Library entry "{name}": {e}')
             continue
-        library.entries.append(ImageLibraryEntry(
-            name, array,
+        library.entries.append(MediaEntry(
+            name, path,
             source_colourspace=data.get("source_colourspace"),
             source_filename=data.get("source_filename"),
-            source_path=path,
             media_kind=media_kind,
+            width=width,
+            height=height,
             frame_count=data.get("frame_count"),
             frame_rate=data.get("frame_rate"),
             duration=data.get("duration"),
@@ -1204,7 +1239,7 @@ def image_library_from_session_list(entries_data):
 
 def save_session(path, stack, sample_image_state, stack_memory_library=None,
                   gallery_still_library=None, cdl_library=None, lut_library=None,
-                  image_library=None, undo_history=None, canvas=None, timeline=None):
+                  media_library=None, undo_history=None, canvas=None, timeline=None):
     """sample_image_state: whatever SampleImagePanel.get_session_state()
     returned (a dict, or None if no image is currently loaded).
     stack_memory_library: whatever StackMemoriesPanel.get_library()
@@ -1218,9 +1253,9 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
     Gallery, per Tom, so this now lives on StackMemoriesPanel too, same
     panel as gallery_still_library above). lut_library: whatever
     LUTLibraryPanel.get_library() returned (a lut_library.LUTLibrary, or
-    None to save with no LUT Library entries). image_library: whatever
-    ImageLibraryPanel.get_library() returned (an image_library.ImageLibrary,
-    or None to save with no Image Library entries). undo_history: the
+    None to save with no LUT Library entries). media_library: whatever
+    MediaPanel.get_library() returned (a media_library.MediaLibrary,
+    or None to save with no Media Library entries). undo_history: the
     MainWindow's undo_history.UndoHistory for the working Stack, or None
     to save with no persisted undo history (e.g. for callers -- tests,
     Stack Memory export -- that have no undo history of their own; see
@@ -1285,9 +1320,9 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
             lut_library_to_session_list(lut_library)
             if lut_library is not None else []
         ),
-        "image_library": (
-            image_library_to_session_list(image_library)
-            if image_library is not None else []
+        "media_library": (
+            media_library_to_session_list(media_library)
+            if media_library is not None else []
         ),
         "undo_history": undo_history_data,
         "canvas": (
@@ -1303,18 +1338,21 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
 
 def load_session(path):
     """Returns (stack, sample_image_state_or_None, stack_memory_library,
-    gallery_still_library, cdl_library, lut_library, image_library,
+    gallery_still_library, cdl_library, lut_library, media_library,
     undo_history_state, canvas, timeline, warnings).
     Raises ValueError if `path` isn't a LUTier session file at all (wrong
     format/not JSON) -- that's a hard failure, unlike a single
-    unreconstructable stage/memory/LUT Library/Image Library entry. Files
+    unreconstructable stage/memory/LUT Library/Media Library entry. Files
     saved before Stack Memories existed (version 1), before the CDL
     Library existed (version 1/2), before the LUT Library existed
-    (version 1/2/3), or before the Image Library/Reference image existed
-    (version 1-4) load fine with an empty memory library/CDL Library/LUT
-    Library/Image Library (and no Reference image), via the
+    (version 1/2/3), or before the Image/Media Library/Reference image
+    existed (version 1-4) load fine with an empty memory library/CDL
+    Library/LUT Library/Media Library (and no Reference image), via the
     .get("stack_memories", [])/.get("cdl_library", [])/
-    .get("lut_library", [])/.get("image_library", []) defaults below.
+    .get("lut_library", [])/.get("media_library", data.get("image_library",
+    [])) defaults below -- the last one also covers VERSION 5-11 files,
+    which wrote the library under the old "image_library" key (see this
+    module's VERSION 12 note).
 
     undo_history_state is None for any file with no persisted undo
     history -- version < 8, or a version 8+ file saved with
@@ -1352,9 +1390,9 @@ def load_session(path):
     lut_library, lut_library_warnings = lut_library_from_session_list(
         data.get("lut_library", []))
     warnings = warnings + lut_library_warnings
-    image_library, image_library_warnings = image_library_from_session_list(
-        data.get("image_library", []))
-    warnings = warnings + image_library_warnings
+    media_library, media_library_warnings = media_library_from_session_list(
+        data.get("media_library", data.get("image_library", [])))
+    warnings = warnings + media_library_warnings
     sample_image_state = data.get("sample_image")
 
     undo_history_state = None
@@ -1371,5 +1409,5 @@ def load_session(path):
     warnings = warnings + timeline_warnings
 
     return (stack, sample_image_state, memory_library, gallery_still_library,
-            cdl_library, lut_library, image_library, undo_history_state, canvas,
+            cdl_library, lut_library, media_library, undo_history_state, canvas,
             timeline, warnings)

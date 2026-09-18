@@ -40,10 +40,10 @@ opacity -- see lut_controls_panel.py, stack_panel.py, scopes_panel.py,
 lut_viewer_3d.py, none of them setObjectName'd, so these are type
 selectors) gets a highlight-colored fill/handle instead of the fully
 unstyled native look it had before. QScrollBar (currently only ever
-appears implicitly via QListWidget -- see browser_panel.py/
-lut_library_panel.py/image_library_panel.py/
-stack_memories_panel.py/stack_panel.py's list widgets, none of which had
-ANY scrollbar styling before this) gets a thin, minimal handle that
+appears implicitly via QListWidget/QTableWidget -- see browser_panel.py/
+lut_library_panel.py/media_panel.py/
+stack_memories_panel.py/stack_panel.py's list/table widgets, none of which
+had ANY scrollbar styling before this) gets a thin, minimal handle that
 picks up the same accent on hover.
 
 Deliberately NOT in this pass: QCheckBox/QRadioButton indicators.
@@ -1284,9 +1284,9 @@ QSlider#videoScrubSlider::handle:horizontal {{
     background: transparent;
 }}
 
-/* -- Scrollbars (implicit, via QListWidget across every library/browser
-   panel -- see browser_panel.py, lut_library_panel.py,
-   image_library_panel.py, stack_memories_panel.py, stack_panel.py) ---- */
+/* -- Scrollbars (implicit, via QListWidget/QTableWidget across every
+   library/browser panel -- see browser_panel.py, lut_library_panel.py,
+   media_panel.py, stack_memories_panel.py, stack_panel.py) ---- */
 /* Had zero styling before -- whatever the native OS scrollbar looked
    like. Thin, minimal, transparent track; handle picks up the accent
    color on hover only, staying quiet (palette(mid)) at rest so it

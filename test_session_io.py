@@ -32,14 +32,14 @@ import timeline as tl
 import thumbnail
 import media_cache
 from lut_library import LUTLibraryEntry, LUTLibrary
-from image_library import ImageLibraryEntry, ImageLibrary
+from media_library import MediaEntry, MediaLibrary
 from undo_history import UndoHistory
 
 
 def _make_test_clip(path, frame_count=6, frame_rate=24, width=16, height=12):
     """Same tiny-real-encoded-clip fixture convention as
     test_video_source.py's own _make_test_clip -- a genuinely decodable
-    file, not a mock, so image_library_from_session_list's video branch
+    file, not a mock, so media_library_from_session_list's video branch
     is exercised for real."""
     container = av.open(path, mode="w")
     stream = container.add_stream("libx264", rate=frame_rate)
@@ -678,7 +678,7 @@ def test_load_session_with_unknown_future_stage_kind_still_loads_others():
             json.dump(data, f)
 
         (loaded_stack, _sample_image_state, _memory_library, _gallery_still_library,
-         _cdl_library, _lut_library, _image_library, _undo_history_state, _canvas, _timeline,
+         _cdl_library, _lut_library, _media_library, _undo_history_state, _canvas, _timeline,
          warnings) = session_io.load_session(path)
 
         assert len(loaded_stack.stages) == 1
@@ -737,7 +737,7 @@ def test_save_and_load_session_round_trips_lut_library_and_embedded_stage():
         session_io.save_session(path, stack, None, lut_library=lut_library)
 
         (loaded_stack, sample_image_state, memory_library, gallery_still_library,
-         cdl_library, loaded_lut_library, loaded_image_library, undo_history_state,
+         cdl_library, loaded_lut_library, loaded_media_library, undo_history_state,
          canvas, timeline, warnings) = session_io.load_session(path)
 
         assert warnings == []
@@ -748,7 +748,7 @@ def test_save_and_load_session_round_trips_lut_library_and_embedded_stage():
         assert np.allclose(
             loaded_stack.stages[0].params["lut"].table,
             embedded_stage.params["lut"].table)
-        assert loaded_image_library.entries == []
+        assert loaded_media_library.entries == []
     print("save_session/load_session: a LUT Library entry and an "
           "'embedded' Stack stage both survive a real file round trip -- "
           "OK")
@@ -799,61 +799,98 @@ def test_load_session_ignores_a_leftover_workspace_key_from_version_6():
           "tuple -- OK")
 
 
-# ---- image_library_to_session_list / image_library_from_session_list -----
+# ---- media_library_to_session_list / media_library_from_session_list -----
 
-def test_image_library_session_round_trip_via_real_file():
-    """Unlike the LUT Library, Image Library entries are path-referenced
-    (see session_io.image_library_to_session_list's docstring) -- so a
-    round trip only works if the source file is still there to re-decode,
-    which this test proves by writing a real PNG to disk first."""
+def test_session_io_never_imports_a_full_raster_decoder():
+    """The actual point of the Media Panel rewrite (per Tom: "columned
+    database referring to files on disk, no longer embed data in
+    memory"): session_io.py must not even HAVE a way to do a full pixel
+    decode of a Media Library entry any more -- confirms the old
+    load_image_as_array import (used by the pre-VERSION-12 eager-decode-
+    on-load path) is really gone, not just unused."""
+    assert not hasattr(session_io, "load_image_as_array")
+    assert hasattr(session_io, "get_image_native_size")
+    print("session_io: no full-raster-decode import remains -- only the "
+          "header-only get_image_native_size probe -- OK")
+
+
+def test_media_library_session_round_trip_via_real_file():
+    """Unlike the LUT Library, Media Library entries are path-referenced
+    (see session_io.media_library_to_session_list's docstring) -- so a
+    round trip only works if the source file is still there to header-
+    probe, which this test proves by writing a real PNG to disk first.
+    VERSION 12: width/height round-trip too, and no pixel array exists
+    on either the original or rebuilt entry."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = os.path.join(tmp_dir, "swatch.png")
         Image.fromarray(
             (np.full((4, 6, 3), 128, dtype=np.uint8))
         ).save(path)
 
-        library = ImageLibrary()
-        library.add_entry(ImageLibraryEntry(
-            "Swatch", load_image_array_for_test(path),
-            source_colourspace="sRGB", source_filename="swatch.png",
-            source_path=path))
+        library = MediaLibrary()
+        library.add_entry(MediaEntry(
+            "Swatch", path, source_colourspace="sRGB",
+            source_filename="swatch.png", width=6, height=4))
 
-        serialized = json.loads(json.dumps(session_io.image_library_to_session_list(library)))
-        rebuilt_library, warnings = session_io.image_library_from_session_list(serialized)
+        serialized = json.loads(json.dumps(session_io.media_library_to_session_list(library)))
+        rebuilt_library, warnings = session_io.media_library_from_session_list(serialized)
 
         assert warnings == []
         assert len(rebuilt_library.entries) == 1
         rebuilt_entry = rebuilt_library.entries[0]
         assert rebuilt_entry.name == "Swatch"
         assert rebuilt_entry.source_colourspace == "sRGB"
-        assert rebuilt_entry.array.shape[:2] == (4, 6)
-    print("image_library_to_session_list/image_library_from_session_list: "
-          "an entry backed by a real file on disk round-trips (re-decoded "
-          "fresh, not embedded) -- OK")
+        assert not hasattr(rebuilt_entry, "array")
+        assert (rebuilt_entry.width, rebuilt_entry.height) == (6, 4)
+    print("media_library_to_session_list/media_library_from_session_list: "
+          "an entry backed by a real file on disk round-trips its path and "
+          "width/height, no pixel data anywhere -- OK")
 
 
-def test_image_library_video_entry_session_round_trip():
-    """Media Library Phase 2: a video entry (media_kind="video") persists
-    its frame_count/frame_rate/duration/thumbnail and reconstructs its
-    first-frame array by reopening the real clip via video_source, not
-    load_image_as_array."""
+def test_media_library_from_session_list_reprobes_missing_width_height():
+    """A pre-VERSION-12 file has no width/height keys at all -- must fall
+    back to a header-only app_logic.get_image_native_size probe (never a
+    full decode, see test_session_io_never_imports_a_full_raster_decoder
+    above) rather than leaving them None forever."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "old_swatch.png")
+        Image.fromarray(np.full((4, 6, 3), 128, dtype=np.uint8)).save(path)
+        old_data = [{
+            "name": "Old Swatch", "source_path": path,
+            "source_filename": "old_swatch.png", "source_colourspace": None,
+        }]
+        library, warnings = session_io.media_library_from_session_list(old_data)
+        assert warnings == []
+        assert len(library.entries) == 1
+        assert (library.entries[0].width, library.entries[0].height) == (6, 4)
+    print("media_library_from_session_list: a pre-VERSION-12 file with no "
+          "width/height keys gets them re-probed from the file's own "
+          "header -- OK")
+
+
+def test_media_library_video_entry_session_round_trip():
+    """Media Library Phase 2/VERSION 12: a video entry (media_kind=
+    "video") persists its width/height/frame_count/frame_rate/duration/
+    thumbnail, and a pre-VERSION-12 file with no saved width/height gets
+    them re-probed from the real clip's own stream metadata via
+    video_source.VideoSource -- with no frame decoded either way."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = os.path.join(tmp_dir, "clip.mp4")
-        _make_test_clip(path)
+        _make_test_clip(path, width=16, height=12)
 
         media_cache.set_cache_dir(None)  # embed-in-session mode for this test
-        array = np.zeros((12, 16, 3), dtype=np.float32)
         thumb = media_cache.store_thumbnail(
-            "test-clip", thumbnail.make_thumbnail_png_bytes(array))
+            "test-clip", thumbnail.make_thumbnail_png_bytes(
+                np.zeros((12, 16, 3), dtype=np.float32)))
 
-        library = ImageLibrary()
-        library.add_entry(ImageLibraryEntry(
-            "Clip", array, source_filename="clip.mp4", source_path=path,
+        library = MediaLibrary()
+        library.add_entry(MediaEntry(
+            "Clip", path, source_filename="clip.mp4",
             media_kind="video", frame_count=6, frame_rate=24.0,
-            duration=0.25, thumbnail=thumb))
+            duration=0.25, thumbnail=thumb))  # no width/height saved -- must be re-probed
 
-        serialized = json.loads(json.dumps(session_io.image_library_to_session_list(library)))
-        rebuilt_library, warnings = session_io.image_library_from_session_list(serialized)
+        serialized = json.loads(json.dumps(session_io.media_library_to_session_list(library)))
+        rebuilt_library, warnings = session_io.media_library_from_session_list(serialized)
 
         assert warnings == []
         assert len(rebuilt_library.entries) == 1
@@ -863,13 +900,15 @@ def test_image_library_video_entry_session_round_trip():
         assert rebuilt_entry.frame_rate == 24.0
         assert rebuilt_entry.duration == 0.25
         assert rebuilt_entry.thumbnail == thumb
-        assert rebuilt_entry.array.shape[:2] == (12, 16)
-    print("image_library_to_session_list/image_library_from_session_list: "
+        assert (rebuilt_entry.width, rebuilt_entry.height) == (16, 12)
+        assert not hasattr(rebuilt_entry, "array")
+    print("media_library_to_session_list/media_library_from_session_list: "
           "a video entry round-trips its media_kind/metadata/thumbnail, "
-          "reconstructing its first frame via video_source -- OK")
+          "re-probing width/height from stream metadata with no frame "
+          "decode -- OK")
 
 
-def test_image_library_from_session_list_defaults_media_kind_for_old_files():
+def test_media_library_from_session_list_defaults_media_kind_for_old_files():
     """A pre-VERSION-10 file has no media_kind key at all -- must default
     to 'still' (see session_io.py's own VERSION 10 docstring), not
     crash or misclassify as video."""
@@ -880,23 +919,16 @@ def test_image_library_from_session_list_defaults_media_kind_for_old_files():
             "name": "Old Swatch", "source_path": path,
             "source_filename": "old_swatch.png", "source_colourspace": None,
         }]
-        library, warnings = session_io.image_library_from_session_list(old_data)
+        library, warnings = session_io.media_library_from_session_list(old_data)
         assert warnings == []
         assert len(library.entries) == 1
         assert library.entries[0].media_kind == "still"
         assert library.entries[0].is_video is False
-    print("image_library_from_session_list: a pre-VERSION-10 file with no "
+    print("media_library_from_session_list: a pre-VERSION-10 file with no "
           "media_kind key defaults to 'still' -- OK")
 
 
-def load_image_array_for_test(path):
-    """Local stand-in for app_logic.load_image_as_array -- avoids pulling
-    in the full app_logic import chain just to build a fixture array for
-    this one test; session_io itself still uses the real loader."""
-    return np.asarray(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
-
-
-def test_image_library_from_session_list_skips_missing_file_with_warning():
+def test_media_library_from_session_list_skips_missing_file_with_warning():
     """An entry whose source_path no longer exists can't be reconstructed
     (unlike a LUT Library entry, which is embedded by value) -- must be
     skipped with a warning, not raise."""
@@ -904,13 +936,47 @@ def test_image_library_from_session_list_skips_missing_file_with_warning():
         "name": "Gone", "source_path": "/nonexistent/path/gone.png",
         "source_filename": "gone.png", "source_colourspace": None,
     }]
-    library, warnings = session_io.image_library_from_session_list(bad_data)
+    library, warnings = session_io.media_library_from_session_list(bad_data)
     assert len(library.entries) == 0
     assert len(warnings) == 1
     assert "Gone" in warnings[0]
-    print("image_library_from_session_list: an entry whose source file "
+    print("media_library_from_session_list: an entry whose source file "
           "has since moved/been deleted is skipped with a warning, "
           "doesn't raise -- OK")
+
+
+def test_load_session_reads_the_old_image_library_key_as_a_fallback():
+    """VERSION 12 renamed the session key "image_library" -> "media_library"
+    -- a session file saved by an OLDER version of this app (which only
+    ever wrote "image_library") must still load its Media Library
+    entries, via load_session's data.get("media_library",
+    data.get("image_library", [])) fallback (see session_io.py's own
+    VERSION 12 note)."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        img_path = os.path.join(tmp_dir, "swatch.png")
+        Image.fromarray(np.full((4, 6, 3), 128, dtype=np.uint8)).save(img_path)
+        session_path = os.path.join(tmp_dir, "old_version.ltr")
+        data = {
+            "format": "lutier-session", "version": 11,
+            "stack": {"stages": []}, "sample_image": None,
+            "image_library": [{
+                "name": "Old-Key Swatch", "source_path": img_path,
+                "source_filename": "swatch.png", "source_colourspace": None,
+                "media_kind": "still",
+            }],
+        }
+        with open(session_path, "w") as f:
+            json.dump(data, f)
+
+        (_stack, _sample_image_state, _memory_library, _gallery_still_library,
+         _cdl_library, _lut_library, media_library, _undo_history_state,
+         _canvas, _timeline, warnings) = session_io.load_session(session_path)
+
+        assert warnings == []
+        assert len(media_library.entries) == 1
+        assert media_library.entries[0].name == "Old-Key Swatch"
+    print("load_session: a pre-VERSION-12 file's old 'image_library' key "
+          "still loads via the new key's fallback -- OK")
 
 
 # ---- memory_library_to_session_list / from_session_list (thumbnail) ------
@@ -1155,7 +1221,7 @@ def test_save_and_load_session_round_trips_memories_and_gallery_stills():
             gallery_still_library=gallery_library)
 
         (_stack, _sample_image_state, loaded_memory_library, loaded_gallery_library,
-         _cdl_library, _lut_library, _image_library, _undo_history_state, _canvas, _timeline,
+         _cdl_library, _lut_library, _media_library, _undo_history_state, _canvas, _timeline,
          warnings) = session_io.load_session(path)
 
         assert warnings == []
@@ -1202,11 +1268,11 @@ def test_load_session_without_lut_library_key_defaults_to_empty():
             json.dump(data, f)
 
         (_stack, _sample_image_state, _memory_library, _gallery_still_library,
-         _cdl_library, lut_library, image_library, _undo_history_state, _canvas, _timeline,
+         _cdl_library, lut_library, media_library, _undo_history_state, _canvas, _timeline,
          warnings) = session_io.load_session(path)
         assert warnings == []
         assert lut_library.entries == []
-        assert image_library.entries == []
+        assert media_library.entries == []
     print("load_session: a session file with no 'lut_library' key at "
           "all (pre-version-4) loads fine with an empty LUT Library -- OK")
 
@@ -1228,7 +1294,7 @@ def test_save_and_load_session_round_trips_undo_history():
         session_io.save_session(path, stack_b, None, undo_history=history)
 
         (_stack, _sample_image_state, _memory_library, _gallery_still_library,
-         _cdl_library, _lut_library, _image_library, undo_history_state, _canvas, _timeline,
+         _cdl_library, _lut_library, _media_library, undo_history_state, _canvas, _timeline,
          warnings) = session_io.load_session(path)
 
         assert warnings == []
@@ -1461,10 +1527,13 @@ if __name__ == "__main__":
     test_lut_library_from_session_list_skips_bad_entry_with_warning()
     test_save_session_never_writes_a_workspace_key()
     test_load_session_ignores_a_leftover_workspace_key_from_version_6()
-    test_image_library_session_round_trip_via_real_file()
-    test_image_library_video_entry_session_round_trip()
-    test_image_library_from_session_list_defaults_media_kind_for_old_files()
-    test_image_library_from_session_list_skips_missing_file_with_warning()
+    test_session_io_never_imports_a_full_raster_decoder()
+    test_media_library_session_round_trip_via_real_file()
+    test_media_library_from_session_list_reprobes_missing_width_height()
+    test_media_library_video_entry_session_round_trip()
+    test_media_library_from_session_list_defaults_media_kind_for_old_files()
+    test_media_library_from_session_list_skips_missing_file_with_warning()
+    test_load_session_reads_the_old_image_library_key_as_a_fallback()
     test_memory_library_session_round_trip_with_thumbnail()
     test_memory_library_to_session_list_drops_a_broken_memory_with_a_warning()
     test_memory_library_from_session_list_defaults_thumbnail_for_old_files()

@@ -22,7 +22,7 @@ def test_make_next_entry_id_gives_each_caller_its_own_independent_counter():
           "counter -- one module's ids never affect another's -- OK")
 
 
-def test_cdl_library_lut_library_image_library_each_have_independent_counters():
+def test_cdl_library_lut_library_media_library_each_have_independent_counters():
     """The actual real-world usage this refactor preserves: each of the
     three registry modules gets its own next_entry_id, still starting
     fresh (unaffected by however many ids the OTHER modules have already
@@ -30,7 +30,7 @@ def test_cdl_library_lut_library_image_library_each_have_independent_counters():
     consolidated out of three separate itertools.count(1) instances."""
     import cdl_library
     import lut_library
-    import image_library
+    import media_library
     # Just confirm each is callable and returns increasing ints -- can't
     # assert on the exact STARTING value since other tests in the same
     # process may have already advanced these module-level counters
@@ -41,16 +41,16 @@ def test_cdl_library_lut_library_image_library_each_have_independent_counters():
     b1 = lut_library.next_entry_id()
     b2 = lut_library.next_entry_id()
     assert b2 == b1 + 1
-    c1 = image_library.next_entry_id()
-    c2 = image_library.next_entry_id()
+    c1 = media_library.next_entry_id()
+    c2 = media_library.next_entry_id()
     assert c2 == c1 + 1
-    print("cdl_library/lut_library/image_library: each still has its own "
+    print("cdl_library/lut_library/media_library: each still has its own "
           "independent, monotonically increasing next_entry_id -- OK")
 
 
 if __name__ == "__main__":
     test_make_next_entry_id_counts_up_from_one()
     test_make_next_entry_id_gives_each_caller_its_own_independent_counter()
-    test_cdl_library_lut_library_image_library_each_have_independent_counters()
+    test_cdl_library_lut_library_media_library_each_have_independent_counters()
     print()
     print("All id_counter tests passed.")

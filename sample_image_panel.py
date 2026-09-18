@@ -625,7 +625,7 @@ class SampleImagePanel(QWidget):
         # No "Load Source Image.../Load Video.../Load Reference Image..."
         # here anymore (per Tom: "remove the ability to load a source or
         # reference from disk within the viewer panel") -- the Media
-        # Libraries panel (image_library_panel.py, "Load as Source"/
+        # Libraries panel (media_panel.py, "Load as Source"/
         # "Load as Reference") is now the sole ingestion path for both
         # slots; this panel only ever gets content pushed into it, never
         # pulls it directly from a file dialog itself. "Load Default
@@ -1049,47 +1049,36 @@ class SampleImagePanel(QWidget):
         return True
 
     def load_sample_from_library_entry(self, entry):
-        """Wired to ImageLibraryPanel.load_as_sample_requested. A VIDEO
-        entry (Media Library Phase 2) routes to load_video instead --
-        entry.array only ever holds that entry's first decoded frame
-        (see image_library.py's docstring), not something a Sample slot
-        should be parked on when the real video file is right there via
-        entry.source_path; this gets the full transport bar back, not a
-        frozen still.
-
-        For a STILL entry: the array is already decoded at native
-        resolution (see image_library.py/image_library_panel.py's own
-        load_image_as_array(..., max_dimension=None) call) -- used
-        directly, no resampling needed."""
+        """Wired to MediaPanel.load_as_sample_requested. A media_library.
+        MediaEntry never carries decoded pixel data (see that module's
+        docstring) -- both branches here decode fresh from
+        entry.source_path, via the exact same path-only entry points
+        already used for a plain "Load as Source" from disk. A VIDEO
+        entry routes to load_video (full transport bar, not a frozen
+        still); a STILL entry routes to load_image, which decodes at
+        native resolution itself."""
         if entry.is_video:
             self.load_video(entry.source_path)
-            return
-        self._current_path = entry.source_path
-        self._original_array = entry.array
-        self.status_label.setText("")
-        self._recompute_working_array()
-        self._recompute_sample_after()
-        self._render_wipe()
+        else:
+            self.load_image(entry.source_path)
 
     def load_reference_from_library_entry(self, entry):
-        """Wired to ImageLibraryPanel.load_as_reference_requested -- see
+        """Wired to MediaPanel.load_as_reference_requested -- see
         load_sample_from_library_entry, identical idea for the Reference
-        slot."""
-        self._reference_current_path = entry.source_path
-        self._reference_original_array = entry.array
-        self._recompute_reference_working_array()
-        self._render_wipe()
+        slot: entry.source_path is decoded fresh via load_reference_from_
+        path, the same path-only entry point already used for a
+        GalleryStill (see that method's own docstring)."""
+        self.load_reference_from_path(entry.source_path)
 
     def load_reference_from_path(self, path):
         """Decodes `path` fresh and loads it into the Reference slot --
         same underlying work as load_reference_from_library_entry, but a
         stable public entry point for callers that only have a PATH, not
-        an ImageLibraryEntry with an already-decoded array. Used by
-        stack_memories_panel.py's Stills Gallery (Phase 3, per Tom):
-        a GalleryStill is disk-referenced only, unlike an ImageLibraryEntry
-        which keeps its decoded pixels in memory for the session (see
-        stack_memory.py's GalleryStill docstring on why), so this always
-        re-decodes rather than reusing a cached array."""
+        a MediaEntry. Used by stack_memories_panel.py's Stills Gallery
+        (Phase 3, per Tom): a GalleryStill is disk-referenced only, same
+        as a MediaEntry (see media_library.py's docstring), so this
+        always decodes fresh rather than reusing a cached array -- there
+        never is one to reuse."""
         return self._load_reference_image_core(path)
 
     def load_reference_from_array(self, array):
@@ -1667,8 +1656,8 @@ class SampleImagePanel(QWidget):
         used by main_window.py's Save Session. Deliberately just paths +
         tags, never pixel data -- same "how to rebuild it, not the built
         thing" principle as LUT stage provenance in stack_panel.py.
-        Reference's path (see image_library.py's docstring on the
-        Image-Library-vs-LUT/CDL-Library difference) genuinely can go
+        Reference's path (see media_library.py's docstring on the
+        Media-Library-vs-LUT/CDL-Library difference) genuinely can go
         missing across a save/reload if its source file has since moved
         -- unlike Source, there's no bundled default to gracefully fall
         back to, so a missing Reference on load just stays empty (with a

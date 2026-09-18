@@ -64,14 +64,17 @@ reading is `app_logic.load_lut_any_format` (dispatches to
 
 ## Media Libraries
 
-A shelf of reference stills AND video imported into the session. Import
-a file, then double-click an entry (or right-click it for "Load as
-Source"/"Load as Reference"/"Rename..."/"Delete") to load it as
-the Viewer's Source or Reference image (video only supports Source, not
-Reference).
+A sortable, columned table of still AND video files catalogued by
+reference — click a column header (Name/Kind/Resolution/Duration/Color
+Space/Path) to sort. Import a file, then double-click a row (or
+right-click it for "Load as Source"/"Load as Reference"/"Rename..."/
+"Delete") to load it as the Viewer's Source or Reference image (video
+only supports Source, not Reference). Entries are catalogued by path and
+header metadata only, never a decoded copy of the file's pixel data —
+moving or deleting the source file after import breaks that entry.
 
-**Source:** `image_library_panel.py`; entries are `image_library.py`'s
-`ImageLibraryEntry`/`ImageLibrary`.
+**Source:** `media_panel.py`; entries are `media_library.py`'s
+`MediaEntry`/`MediaLibrary`.
 
 ## LUT Library
 

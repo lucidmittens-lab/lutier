@@ -67,7 +67,7 @@ def set_cache_dir(path_or_none):
 
 def store_thumbnail(entry_id, png_bytes):
     """Store `png_bytes` (from thumbnail.make_thumbnail_png_bytes) for
-    `entry_id` (any caller-chosen stable id -- an ImageLibraryEntry/
+    `entry_id` (any caller-chosen stable id -- a MediaEntry/
     StackMemory/GalleryStill's own id is the expected use), returning a
     small descriptor dict callers persist verbatim in the session file:
 

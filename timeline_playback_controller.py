@@ -39,7 +39,7 @@ same lock video_playback_controller.py's own docstring established for
 single-clip playback). Re-decoded fresh from clip.source_path each time
 the clip comes up (never cached across plays) -- same "how to rebuild
 it, not the built thing" principle as every other path-referenced
-source in this app (image_library.ImageLibraryEntry, timeline.
+source in this app (media_library.MediaEntry, timeline.
 TimelineClip's own docstring on why a clip only ever stores a path + a
 small thumbnail, not the full decoded array).
 
