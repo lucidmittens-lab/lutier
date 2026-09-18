@@ -530,6 +530,50 @@ def test_load_video_parks_on_the_first_frame_through_the_still_pipeline():
           "pipeline a still-image load uses -- OK")
 
 
+def test_load_video_with_the_already_open_path_is_a_noop():
+    """Regression guard: reopening the SAME file must not discard the
+    user's own in/out marks/scrub position -- one real cause found while
+    building Add to Sequence (per Tom: "marking in and out dont seem to
+    work at all"): selecting a just-added Timeline clip whose
+    source_path is the file it was just marked on re-triggers load_video
+    via main_window._on_timeline_clip_selected, which used to always
+    reset those marks right back out."""
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=10, size=(64, 48))
+    assert panel.load_video(path)
+    panel.seek_video_frame(4)
+    panel._on_video_set_in_clicked()
+    panel.seek_video_frame(8)
+    panel._on_video_set_out_clicked()
+    panel.seek_video_frame(6)
+
+    assert panel.load_video(path) is True
+    assert panel._playback_controller.in_point == 4
+    assert panel._playback_controller.out_point == 8
+    assert panel._video_frame_index == 6, "the parked scrub position must be untouched too"
+    print("SampleImagePanel.load_video: a no-op for the already-open "
+          "path -- doesn't discard in/out marks or scrub position -- OK")
+
+
+def test_load_video_with_a_different_path_still_does_a_full_reset():
+    """The no-op guard above must be path-specific -- a genuinely
+    different video still gets the ordinary "fresh clip" reset."""
+    _app()
+    panel = SampleImagePanel()
+    path_a = _make_test_video(frame_count=10, size=(64, 48))
+    path_b = _make_test_video(frame_count=6, size=(64, 48))
+    assert panel.load_video(path_a)
+    panel._on_video_set_in_clicked()
+
+    assert panel.load_video(path_b)
+    assert panel._video_source.path == path_b
+    assert panel._playback_controller.in_point == 0
+    assert panel._playback_controller.out_point is None
+    print("SampleImagePanel.load_video: a different path still resets "
+          "in/out as a fresh clip -- OK")
+
+
 def test_seek_video_frame_updates_the_working_array():
     _app()
     panel = SampleImagePanel()
@@ -1001,27 +1045,128 @@ def test_source_timecode_field_switches_content_with_mode_not_leftovers():
           "mode -- OK")
 
 
-def test_video_set_in_out_and_clear_buttons_are_disabled_and_are_noops():
-    """Timeline-level in/out is out of scope for this pass (see
-    timeline_playback_controller.py's own module docstring) -- these
-    three buttons must be disabled and inert, not silently acting on the
-    single-clip controller anymore."""
+def test_video_set_in_out_and_clear_buttons_mark_the_single_clip():
+    """Per direct feedback: "marking in and out dont seem to work at
+    all" -- Set In/Set Out/Clear must be enabled and act on the single
+    directly-loaded clip's own _playback_controller."""
     _app()
     panel = SampleImagePanel()
     path = _make_test_video(frame_count=10, size=(64, 48))
     assert panel.load_video(path)
-    assert not panel._video_set_in_button.isEnabled()
-    assert not panel._video_set_out_button.isEnabled()
-    assert not panel._video_clear_in_out_button.isEnabled()
+    assert panel._video_set_in_button.isEnabled()
+    assert panel._video_set_out_button.isEnabled()
+    assert panel._video_clear_in_out_button.isEnabled()
 
     panel.seek_video_frame(3)
     panel._on_video_set_in_clicked()
+    assert panel._playback_controller.in_point == 3
+
+    panel.seek_video_frame(7)
     panel._on_video_set_out_clicked()
+    assert panel._playback_controller.out_point == 7
+
     panel._on_video_clear_in_out_clicked()
     assert panel._playback_controller.in_point == 0
     assert panel._playback_controller.out_point is None
-    print("SampleImagePanel: Set In/Set Out/Clear buttons are disabled "
-          "and are true no-ops -- OK")
+    print("SampleImagePanel: Set In/Set Out/Clear mark and clear the "
+          "single directly-loaded clip's own range -- OK")
+
+
+def test_set_in_out_marks_persist_and_repaint_when_switching_back_to_source():
+    """Marking a range while parked in RECORD mode must not be lost --
+    _playback_controller's own in_point/out_point update regardless of
+    mode (only the scrub bar's visual markers are mode-gated, see
+    _on_video_in_out_changed's own docstring)."""
+    panel, timeline_obj = _panel_with_two_clip_timeline(frame_counts=(10, 6))
+    panel.load_video(_make_test_video(frame_count=8, size=(64, 48)))
+    panel.seek_video_frame(2)
+    panel._viewer_mode_badge.setChecked(True)  # RECORD
+
+    panel._on_video_set_in_clicked()
+    assert panel._playback_controller.in_point == 2
+
+    panel._viewer_mode_badge.setChecked(False)  # back to SOURCE
+    assert panel._video_scrub_slider._in_point == 2, (
+        "switching back to SOURCE should repaint the scrub bar's markers")
+    print("SampleImagePanel: an in/out mark made in RECORD mode "
+          "persists and repaints once back in SOURCE mode -- OK")
+
+
+def test_get_source_range_for_timeline_is_none_with_no_video_loaded():
+    _app()
+    panel = SampleImagePanel()
+    assert panel.get_source_range_for_timeline() is None
+    print("SampleImagePanel.get_source_range_for_timeline: None with no "
+          "video loaded -- OK")
+
+
+def test_get_source_range_for_timeline_uses_the_marked_range():
+    """Per direct feedback: "will be necessary to be able to mark
+    desired ranges and add to sequence"."""
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=10, size=(64, 48))
+    assert panel.load_video(path)
+    panel.seek_video_frame(2)
+    panel._on_video_set_in_clicked()
+    panel.seek_video_frame(7)
+    panel._on_video_set_out_clicked()
+
+    name, source_path, media_kind, in_frame, out_frame = panel.get_source_range_for_timeline()
+    assert source_path == path
+    assert media_kind == "video"
+    assert (in_frame, out_frame) == (2, 7)
+    print("SampleImagePanel.get_source_range_for_timeline: reflects the "
+          "marked In/Out range -- OK")
+
+
+def test_get_source_range_for_timeline_falls_back_to_the_whole_clip():
+    """No marked range at all -- same default add_clip_from_library_
+    entry already uses for a freshly-imported entry (the full clip)."""
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=10, size=(64, 48))
+    assert panel.load_video(path)
+
+    name, source_path, media_kind, in_frame, out_frame = panel.get_source_range_for_timeline()
+    assert (in_frame, out_frame) == (0, 9)
+    print("SampleImagePanel.get_source_range_for_timeline: falls back "
+          "to the whole clip when nothing's been marked -- OK")
+
+
+def test_add_to_sequence_button_emits_the_marked_range():
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=10, size=(64, 48))
+    assert panel.load_video(path)
+    panel.seek_video_frame(3)
+    panel._on_video_set_in_clicked()
+    panel.seek_video_frame(6)
+    panel._on_video_set_out_clicked()
+
+    received = []
+    panel.add_source_range_to_timeline_requested.connect(
+        lambda *args: received.append(args))
+    panel._video_add_to_sequence_button.click()
+
+    assert len(received) == 1
+    name, source_path, media_kind, in_frame, out_frame = received[0]
+    assert source_path == path
+    assert media_kind == "video"
+    assert (in_frame, out_frame) == (3, 6)
+    print("SampleImagePanel: Add to Sequence emits the marked range -- OK")
+
+
+def test_add_to_sequence_button_is_a_noop_with_no_video_loaded():
+    _app()
+    panel = SampleImagePanel()
+    received = []
+    panel.add_source_range_to_timeline_requested.connect(
+        lambda *args: received.append(args))
+    panel._video_add_to_sequence_button.click()
+    assert received == []
+    print("SampleImagePanel: Add to Sequence is a no-op with no video "
+          "loaded -- OK")
 
 
 def test_video_loop_button_toggles_timeline_controller_loop_state():
@@ -1053,20 +1198,37 @@ def test_video_speed_combo_drives_the_timeline_controller_speed():
           "controller's speed -- OK")
 
 
-def test_video_home_end_shortcuts_are_disabled_and_are_noops():
+def test_video_home_end_shortcuts_jump_to_the_marked_in_out_points():
+    _app()
+    panel = SampleImagePanel()
+    path = _make_test_video(frame_count=10, size=(64, 48))
+    assert panel.load_video(path)
+    panel.seek_video_frame(2)
+    panel._on_video_set_in_clicked()
+    panel.seek_video_frame(7)
+    panel._on_video_set_out_clicked()
+    panel.seek_video_frame(4)
+
+    panel._on_video_jump_to_in_clicked()
+    assert panel._video_frame_index == 2, "Home should jump to the marked In point"
+
+    panel.seek_video_frame(4)
+    panel._on_video_jump_to_out_clicked()
+    assert panel._video_frame_index == 7, "End should jump to the marked Out point"
+    print("SampleImagePanel: Home/End jump to the marked In/Out points -- OK")
+
+
+def test_video_jump_to_out_uses_the_last_frame_when_out_point_unset():
     _app()
     panel = SampleImagePanel()
     path = _make_test_video(frame_count=10, size=(64, 48))
     assert panel.load_video(path)
     panel.seek_video_frame(4)
 
-    panel._on_video_jump_to_in_clicked()
-    assert panel._video_frame_index == 4, "Home must be a no-op"
-
     panel._on_video_jump_to_out_clicked()
-    assert panel._video_frame_index == 4, "End must be a no-op"
-    print("SampleImagePanel: Home/End shortcut handlers are disabled and "
-          "are true no-ops -- OK")
+    assert panel._video_frame_index == 9, "End should land on the clip's own last frame when Out is unset"
+    print("SampleImagePanel: End jumps to the clip's own last frame "
+          "when no Out point has been marked -- OK")
 
 
 def test_load_reference_from_array_loads_directly_into_reference_slot():

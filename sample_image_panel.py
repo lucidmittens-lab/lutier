@@ -233,6 +233,11 @@ class SampleImagePanel(QWidget):
     after_image_changed = Signal(object)
     image_loaded = Signal(int, int)
     video_loaded = Signal(int, float)
+    # name, source_path, media_kind, in_frame, out_frame -- see
+    # _on_video_add_to_sequence_clicked's own docstring. Same "this
+    # panel has no idea TimelinePanel exists, MainWindow wires them
+    # together" arrangement as MediaPanel.add_to_timeline_requested.
+    add_source_range_to_timeline_requested = Signal(str, str, str, int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -560,14 +565,21 @@ class SampleImagePanel(QWidget):
         self._video_play_button.clicked.connect(self._on_video_play_pause_clicked)
         transport_layout.addWidget(self._video_play_button)
 
-        # Step/In/Out/Clear are all disabled for now (Tom, 2026-08-24:
-        # the transport is exclusive to the Timeline) -- see
-        # _on_video_step_back_clicked's own docstring on why these can't
-        # just be left pointed at the single-clip controller anymore
-        # (they'd silently hijack the Viewer away from whatever the
-        # Timeline is showing). Left in place, greyed out, rather than
-        # removed outright -- a real Timeline-aware version of each is a
-        # scoped fast-follow, not a dead feature.
+        # Step is still disabled (Tom, 2026-08-24: the transport is
+        # exclusive to the Timeline) -- see _on_video_step_back_clicked's
+        # own docstring on why frame-stepping specifically can't just be
+        # left pointed at the single-clip controller (it would silently
+        # hijack the Viewer away from whatever's currently on screen in
+        # RECORD mode). Left in place, greyed out, rather than removed
+        # outright -- a real Timeline-aware version is a scoped
+        # fast-follow, not a dead feature. Set In/Set Out/Clear below
+        # were disabled here too for the same original reason, but
+        # re-enabled per Tom's later "marking in and out dont seem to
+        # work at all" -- unlike Step, they always act on the single
+        # directly-loaded/selected clip's own _playback_controller
+        # regardless of the current SOURCE/RECORD toggle (see their own
+        # handlers' docstrings), so there's no "which controller do I
+        # hijack" ambiguity for them the way there is for Step.
         self._video_step_back_button = QToolButton()
         self._video_step_back_button.setObjectName("videoTransportButton")
         self._video_step_back_button.setText("◀│")
@@ -590,26 +602,41 @@ class SampleImagePanel(QWidget):
         self._video_set_in_button = QToolButton()
         self._video_set_in_button.setObjectName("videoTransportButton")
         self._video_set_in_button.setText("[")
-        self._video_set_in_button.setToolTip("Not yet supported for Timeline playback")
-        self._video_set_in_button.setEnabled(False)
+        self._video_set_in_button.setToolTip("Set In point at the current frame (I)")
         self._video_set_in_button.clicked.connect(self._on_video_set_in_clicked)
         transport_layout.addWidget(self._video_set_in_button)
 
         self._video_set_out_button = QToolButton()
         self._video_set_out_button.setObjectName("videoTransportButton")
         self._video_set_out_button.setText("]")
-        self._video_set_out_button.setToolTip("Not yet supported for Timeline playback")
-        self._video_set_out_button.setEnabled(False)
+        self._video_set_out_button.setToolTip("Set Out point at the current frame (O)")
         self._video_set_out_button.clicked.connect(self._on_video_set_out_clicked)
         transport_layout.addWidget(self._video_set_out_button)
 
         self._video_clear_in_out_button = QToolButton()
         self._video_clear_in_out_button.setObjectName("videoTransportButton")
         self._video_clear_in_out_button.setText("⊘")
-        self._video_clear_in_out_button.setToolTip("Not yet supported for Timeline playback")
-        self._video_clear_in_out_button.setEnabled(False)
+        self._video_clear_in_out_button.setToolTip("Clear In/Out (reset to the full clip)")
         self._video_clear_in_out_button.clicked.connect(self._on_video_clear_in_out_clicked)
         transport_layout.addWidget(self._video_clear_in_out_button)
+
+        # Add to Sequence (per Tom: "will be necessary to be able to
+        # mark desired ranges and add to sequence") -- appends a NEW
+        # Timeline clip covering exactly the marked [In, Out] range of
+        # the single directly-loaded/selected clip (the full clip if
+        # nothing's been marked -- see get_source_range_for_timeline's
+        # own docstring), via add_source_range_to_timeline_requested
+        # (wired in main_window.py to TimelinePanel.add_clip_with_range,
+        # the same "this panel has no idea TimelinePanel exists"
+        # arrangement every other cross-panel signal in this app uses).
+        self._video_add_to_sequence_button = QToolButton()
+        self._video_add_to_sequence_button.setObjectName("videoTransportButton")
+        self._video_add_to_sequence_button.setText("➕")
+        self._video_add_to_sequence_button.setToolTip(
+            "Add the marked In/Out range (or the whole clip, if nothing's "
+            "marked) to the Sequence as a new Timeline clip")
+        self._video_add_to_sequence_button.clicked.connect(self._on_video_add_to_sequence_clicked)
+        transport_layout.addWidget(self._video_add_to_sequence_button)
 
         self._video_loop_button = QToolButton()
         self._video_loop_button.setObjectName("videoTransportButton")
@@ -931,7 +958,21 @@ class SampleImagePanel(QWidget):
         review only, not realtime playback (see video_playback_
         controller.py for that, a fully separate, decoupled path per
         Tom's own confirmed scope: "realtime playback but no simultaneous
-        grading/playback"). Returns True on success."""
+        grading/playback"). Returns True on success.
+
+        A NO-OP (still returns True) if `path` is already the currently
+        open source -- reopening the identical file would otherwise
+        discard the user's own in/out marks, loop state, and parked
+        scrub position for no reason (Tom: "marking in and out dont
+        seem to work at all" -- one real cause, found while building Add
+        to Sequence: selecting a just-added Timeline clip whose
+        source_path is the SAME file it was just marked on re-triggers
+        this method via main_window._on_timeline_clip_selected, which
+        used to always clear those marks right back out). A genuinely
+        DIFFERENT path still gets the full "fresh clip" reset just
+        below, unchanged."""
+        if self._video_source is not None and str(self._video_source.path) == str(path):
+            return True
         try:
             source = video_source.VideoSource(path)
         except Exception as e:  # noqa: BLE001 -- surface any open/decode failure to the user
@@ -1247,23 +1288,39 @@ class SampleImagePanel(QWidget):
             self._playback_controller.in_point, self._playback_controller.out_point)
 
     def _on_video_set_in_clicked(self):
-        """Disabled for now -- see _on_video_step_back_clicked's own
-        docstring. Timeline-level in/out (a partial-range sub-selection
-        of the WHOLE timeline, not one clip's own in_frame/out_frame,
-        which are already set when the clip is added/via Set Duration)
-        is out of scope for this pass -- see timeline_playback_
-        controller.py's own module docstring."""
-        return
+        """Marks In at the single directly-loaded/selected clip's
+        CURRENT frame (per Tom: "marking in and out dont seem to work
+        at all") -- always acts on _playback_controller regardless of
+        the current SOURCE/RECORD toggle (see this method's sibling
+        handlers and the "..." menu's own reasoning), since a marked
+        range only ever exists to be added to the Sequence via Add to
+        Sequence (_on_video_add_to_sequence_clicked), a single-clip
+        concept. Timeline-level in/out (a partial-range TRIM of a clip
+        ALREADY on the Timeline) is a different, still-unbuilt feature
+        -- see timeline_playback_controller.py's own module docstring."""
+        self._playback_controller.set_in_point()
+        self._on_video_in_out_changed()
 
     def _on_video_set_out_clicked(self):
-        """Disabled for now -- see _on_video_set_in_clicked's own
-        docstring."""
-        return
+        """See _on_video_set_in_clicked's own docstring."""
+        self._playback_controller.set_out_point()
+        self._on_video_in_out_changed()
 
     def _on_video_clear_in_out_clicked(self):
-        """Disabled for now -- see _on_video_set_in_clicked's own
-        docstring."""
-        return
+        """See _on_video_set_in_clicked's own docstring."""
+        self._playback_controller.clear_in_out()
+        self._on_video_in_out_changed()
+
+    def _on_video_in_out_changed(self):
+        """Shared tail for Set In/Set Out/Clear -- only actually repaints
+        the scrub bar's markers while SOURCE mode is active (see
+        _sync_video_in_out_markers/_refresh_scrub_slider_for_mode's own
+        docstrings on why RECORD mode's scrub bar has no in/out marker
+        concept at all); _playback_controller's own in_point/out_point
+        are updated either way, regardless of mode, so a mark made while
+        parked in RECORD mode is still there once you switch back."""
+        if self._viewer_mode == "source":
+            self._sync_video_in_out_markers()
 
     def _on_video_loop_toggled(self, checked):
         self._active_transport_controller().set_loop_enabled(checked)
@@ -1274,15 +1331,53 @@ class SampleImagePanel(QWidget):
             self._active_transport_controller().set_speed(speed)
 
     def _on_video_jump_to_in_clicked(self):
-        """Disabled for now -- see _on_video_set_in_clicked's own
-        docstring (Home jumps to the SAME in_point Set In/Out would
-        control)."""
-        return
+        """Home -- jumps to the SAME in_point Set In/Out controls (see
+        _on_video_set_in_clicked). Pauses first, same "an explicit jump
+        always parks, never leaves the timer ticking through it"
+        convention the scrub bar's own drag-to-seek already uses."""
+        if self._video_source is None:
+            return
+        self._playback_controller.pause()
+        self.seek_video_frame(self._playback_controller.in_point)
 
     def _on_video_jump_to_out_clicked(self):
-        """Disabled for now -- see _on_video_jump_to_in_clicked's own
-        docstring."""
-        return
+        """End -- jumps to the EFFECTIVE out point (out_point if
+        explicitly set, else the clip's own last frame -- same
+        "None means play to the end" convention VideoPlaybackController.
+        _out_limit already uses internally for playback itself)."""
+        source = self._video_source
+        if source is None:
+            return
+        out_point = self._playback_controller.out_point
+        if out_point is None:
+            out_point = max(0, source.frame_count - 1) if source.frame_count else 0
+        self._playback_controller.pause()
+        self.seek_video_frame(out_point)
+
+    def get_source_range_for_timeline(self):
+        """(name, source_path, media_kind, in_frame, out_frame) for the
+        single directly-loaded/selected clip's currently MARKED range
+        (per Tom: "will be necessary to be able to mark desired ranges
+        and add to sequence") -- out_frame falls back to the clip's own
+        last frame when nothing's been marked (_playback_controller.
+        out_point is None, its own "play to the end" convention), so
+        this doubles as "the whole clip" when no range was ever marked,
+        same default add_clip_from_library_entry already uses. None if
+        no video is currently loaded as Source -- nothing to add."""
+        source = self._video_source
+        if source is None:
+            return None
+        in_frame = self._playback_controller.in_point
+        out_frame = self._playback_controller.out_point
+        if out_frame is None:
+            out_frame = max(0, source.frame_count - 1) if source.frame_count else in_frame
+        return Path(source.path).stem, source.path, "video", in_frame, out_frame
+
+    def _on_video_add_to_sequence_clicked(self):
+        range_info = self.get_source_range_for_timeline()
+        if range_info is None:
+            return
+        self.add_source_range_to_timeline_requested.emit(*range_info)
 
     def _load_reference_image_core(self, path):
         """Mirrors _load_image_core, but for the Reference slot -- see this

@@ -22,10 +22,15 @@ this panel has no file dialog or ingestion path of its own, same
 "Timeline only ever sources from the Media Library" restriction the
 approved plan calls for.
 
-A freshly-added clip gets an in/out range covering the full source (video)
-or a fixed hold duration at this Timeline's own frame_rate (still) -- v1
-has no trim UI (per plan, out of scope for this pass), so these are the
-clip's working defaults until trim editing exists as a later fast-follow.
+A clip added from a Media Library entry (add_clip_from_library_entry)
+gets an in/out range covering the full source (video) or a fixed hold
+duration at this Timeline's own frame_rate (still) -- these are its
+working defaults until trimmed. A clip added from a marked Source
+in/out selection (add_clip_with_range, per Tom: "will be necessary to
+be able to mark desired ranges and add to sequence") covers exactly
+that range instead. Still no in-place trim UI for a clip ALREADY on the
+Timeline (per plan, out of scope for this pass) -- marking a range only
+ever happens before a clip is added, on the Source side.
 
 NOT TESTED IN THIS ENVIRONMENT -- same PySide6/libEGL wall as the rest of
 the GUI layer. Please run main_window.py and confirm: (1) "Add to
@@ -239,15 +244,27 @@ class TimelinePanel(QWidget):
 
     def add_clip_from_library_entry(self, entry):
         """Target of MediaPanel's add_to_timeline_requested signal
-        (wired in main_window.py) -- the only way a clip enters the
-        Timeline (module docstring)."""
+        (wired in main_window.py) -- the FULL source range every time
+        (see add_clip_with_range for a caller-chosen sub-range, e.g. a
+        marked Source in/out selection)."""
         if entry.media_kind == "video":
             out_frame = max(0, (entry.frame_count or 1) - 1)
         else:
             out_frame = max(0, int(round(DEFAULT_STILL_HOLD_SECONDS * self.timeline.frame_rate)) - 1)
-        clip = tl.TimelineClip(
+        self.add_clip_with_range(
             entry.name, entry.source_path, entry.media_kind, 0, out_frame,
             thumbnail=entry.thumbnail)
+
+    def add_clip_with_range(self, name, source_path, media_kind, in_frame, out_frame, thumbnail=None):
+        """Target of SampleImagePanel's add_source_range_to_timeline_
+        requested signal (wired in main_window.py, per Tom: "will be
+        necessary to be able to mark desired ranges and add to
+        sequence") -- appends a clip covering exactly [in_frame,
+        out_frame] of `source_path`, the marked-range counterpart to
+        add_clip_from_library_entry's always-full-range add. The only
+        two places that ever construct a TimelineClip and append it,
+        sharing this one tail so both stay in sync."""
+        clip = tl.TimelineClip(name, source_path, media_kind, in_frame, out_frame, thumbnail=thumbnail)
         self.timeline.add_clip(clip)
         self._refresh_list(keep_selection=len(self.timeline.clips) - 1)
 

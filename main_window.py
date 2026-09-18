@@ -1162,6 +1162,13 @@ class MainWindow(QMainWindow):
             self.sample_image.load_reference_from_library_entry)
         self.media_panel.add_to_timeline_requested.connect(
             self.timeline_panel.add_clip_from_library_entry)
+        # Add to Sequence (per Tom: "will be necessary to be able to
+        # mark desired ranges and add to sequence") -- the Viewer's own
+        # marked-range counterpart to the Media Library's always-full-
+        # range add just above; same "this panel has no idea the other
+        # one exists" arrangement.
+        self.sample_image.add_source_range_to_timeline_requested.connect(
+            self.timeline_panel.add_clip_with_range)
 
         # Sequence/Shot toggle (see stack_panel.py's own docstring on
         # activate_shot_mode/notify_selected_clip_changed) -- this panel
