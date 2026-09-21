@@ -71,6 +71,15 @@ from video_playback_controller import (
 
 TIMELINE_PLAYBACK_STATUS_TEXT = "TIMELINE PLAYBACK — grade locked"
 
+# Extra temporary halving of DECODE_PROXY_MAX_DIMENSION during an active
+# RECORD-mode scrub burst (see _enter_clip's own `downres` param, driven
+# by sample_image_panel.SCRUB_DOWNRES_FACTOR/_on_video_scrub_slider_
+# changed) -- Timeline clips already never decode above DECODE_PROXY_MAX_
+# DIMENSION even at rest (see TimelineController.pause's own docstring on
+# why there's no full-native "parked" mode here), so "settled" for RECORD
+# mode means back to that existing cap, not native.
+RECORD_SEEK_DOWNRES_FACTOR = 2
+
 
 class TimelineController(QObject):
     """`panel`: the SampleImagePanel this controller plays into (same
@@ -149,7 +158,7 @@ class TimelineController(QObject):
         self._clip_index = clip_index
         self._frame_in_clip = 0
 
-    def seek_to_record_frame(self, record_frame):
+    def seek_to_record_frame(self, record_frame, downres=False):
         """Repositions this controller (pausing first if currently
         playing) to an arbitrary frame within the WHOLE Timeline, not
         just a clip's own start (see seek_to_clip) -- `record_frame` is
@@ -164,7 +173,13 @@ class TimelineController(QObject):
         direct feedback: "the scrub bar seems to only represent a single
         clip in the timeline. it should represent the whole timeline" --
         see sample_image_panel.py's own wiring). No-op on an empty
-        Timeline, same as play()."""
+        Timeline, same as play().
+
+        `downres` (per Tom: "make scrub drop the render resolution to
+        half until settled so its more performant") -- passed straight
+        to _enter_clip; only sample_image_panel.py's own scrub-burst
+        detection ever passes True here, see that module's SCRUB_DOWNRES
+        _FACTOR/_on_video_scrub_slider_changed."""
         self.pause()
         timeline_obj = self._timeline_getter() if self._timeline_getter else None
         if timeline_obj is None or not timeline_obj.clips:
@@ -173,8 +188,7 @@ class TimelineController(QObject):
         record_frame = max(0, min(record_frame, total - 1))
         clip_index, frame_in_clip = self._locate_record_frame(timeline_obj, record_frame)
         clip = timeline_obj.clips[clip_index]
-        if self._enter_clip(clip, frame_in_clip=frame_in_clip):
-            self._clip_index = clip_index
+        self._enter_clip(clip_index, clip, frame_in_clip=frame_in_clip, downres=downres)
 
     @staticmethod
     def _locate_record_frame(timeline_obj, record_frame):
@@ -208,7 +222,7 @@ class TimelineController(QObject):
             self._clip_index = 0
             self._frame_in_clip = 0
         clip = timeline_obj.clips[self._clip_index]
-        if not self._enter_clip(clip, frame_in_clip=self._frame_in_clip):
+        if not self._enter_clip(self._clip_index, clip, frame_in_clip=self._frame_in_clip):
             return
         self._playing = True
         self._panel.status_label.setText(TIMELINE_PLAYBACK_STATUS_TEXT)
@@ -284,24 +298,43 @@ class TimelineController(QObject):
         getter = self._sequence_stack_getter
         return getter() if getter else st.Stack()
 
-    def _enter_clip(self, clip, frame_in_clip=0):
-        """Opens/decodes whatever `clip` needs and pushes ITS frame at
-        `frame_in_clip` (an offset from clip.in_frame) to the Viewer --
-        returns False (Viewer left untouched) if the clip's own source
-        can't be opened/decoded, so callers (play()/_advance_to_next_
-        clip) can bail out cleanly on a missing/moved file rather than
-        getting stuck. Always closes any previously-open VideoSource
-        first (module docstring -- only one clip's source is ever open
-        at a time)."""
+    def _enter_clip(self, clip_index, clip, frame_in_clip=0, downres=False):
+        """Opens/decodes whatever `clip` needs (the clip at `clip_index`)
+        and pushes ITS frame at `frame_in_clip` (an offset from clip.
+        in_frame) to the Viewer -- returns False (Viewer left untouched,
+        self._clip_index/_frame_in_clip left AT THEIR OLD VALUES) if the
+        clip's own source can't be opened/decoded, so callers (play()/
+        seek_to_record_frame/_advance_to_next_clip) can bail out cleanly
+        on a missing/moved file rather than getting stuck. Always closes
+        any previously-open VideoSource first (module docstring -- only
+        one clip's source is ever open at a time).
+
+        Sets self._clip_index HERE, before frame_changed.emit() below --
+        callers must NOT set it themselves afterward. Previously every
+        caller set self._clip_index only AFTER this method returned,
+        which meant frame_changed listeners reading current_record_frame
+        () during THIS method's own emit -- e.g. TimelinePanel's playhead
+        sync -- paired the NEW frame_in_clip with the OLD (stale)
+        clip_index, computing a wrong record-space position at every
+        seek and every clip-boundary crossing during playback (the
+        visible "transport playhead vs. Timeline view playhead" desync).
+
+        `downres` (see RECORD_SEEK_DOWNRES_FACTOR/seek_to_record_frame's
+        own docstring) halves DECODE_PROXY_MAX_DIMENSION for this one
+        decode -- play()/_advance_to_next_clip never pass it, only an
+        active RECORD-mode scrub burst does."""
         self._close_video_source()
         composed = st.compose_stacks(clip.stack, self._current_sequence_stack())
+        max_dimension = (
+            DECODE_PROXY_MAX_DIMENSION // RECORD_SEEK_DOWNRES_FACTOR if downres
+            else DECODE_PROXY_MAX_DIMENSION)
         if clip.media_kind == "video":
             try:
                 source = video_source.VideoSource(clip.source_path)
             except Exception:  # noqa: BLE001 -- missing/moved/corrupt file, same as any other re-decode path
                 return False
             frame = source.seek_to_frame(
-                clip.in_frame + frame_in_clip, max_dimension=DECODE_PROXY_MAX_DIMENSION)
+                clip.in_frame + frame_in_clip, max_dimension=max_dimension)
             if frame is None:
                 source.close()
                 return False
@@ -310,10 +343,11 @@ class TimelineController(QObject):
         else:
             try:
                 array = app_logic.load_image_as_array(
-                    clip.source_path, max_dimension=DECODE_PROXY_MAX_DIMENSION)
+                    clip.source_path, max_dimension=max_dimension)
             except Exception:  # noqa: BLE001 -- missing/moved/corrupt file
                 return False
             push_graded_frame_to_viewer(self._panel, composed, array)
+        self._clip_index = clip_index
         self._frame_in_clip = frame_in_clip
         self.frame_changed.emit()
         return True
@@ -398,9 +432,8 @@ class TimelineController(QObject):
                 return
             next_index = 0
         clip = timeline_obj.clips[next_index]
-        if not self._enter_clip(clip, frame_in_clip=0):
+        if not self._enter_clip(next_index, clip, frame_in_clip=0):
             # Couldn't open the next clip (missing file, say) -- stop
             # rather than get stuck ticking on a broken source forever.
             self.stop()
             return
-        self._clip_index = next_index

@@ -871,6 +871,42 @@ def test_switching_viewer_mode_mid_playback_pauses_both_controllers():
           "both controllers -- OK")
 
 
+def test_activate_record_mode_switches_from_source_and_pauses_it():
+    """activate_record_mode -- the public entry point MainWindow uses when
+    a seek originates from the Timeline view itself (clicking its ruler),
+    so the transport visibly shows RECORD rather than leaving a stale
+    SOURCE scrub bar/labels frozen underneath a Record-space seek (see
+    that method's own docstring on the reported "playhead desync")."""
+    panel = _panel_with_timeline_clip()
+    panel.load_video(_make_test_video(frame_count=10, size=(64, 48)))
+    panel._on_video_play_pause_clicked()  # SOURCE mode's Play
+    assert panel._playback_controller.is_playing
+
+    panel.activate_record_mode()
+
+    assert panel._viewer_mode == "record"
+    assert panel._viewer_mode_badge.isChecked()
+    assert panel._viewer_mode_badge.text() == "RECORD"
+    assert not panel._playback_controller.is_playing, "leaving SOURCE mid-playback must pause it"
+    print("SampleImagePanel.activate_record_mode: switches to RECORD and "
+          "pauses SOURCE playback -- OK")
+
+
+def test_activate_record_mode_is_a_noop_already_in_record():
+    panel = _panel_with_timeline_clip()
+    panel._viewer_mode_badge.setChecked(True)
+    assert panel._viewer_mode == "record"
+    panel._timeline_controller.play()
+    assert panel._timeline_controller.is_playing
+
+    panel.activate_record_mode()
+
+    assert panel._viewer_mode == "record"
+    assert panel._timeline_controller.is_playing, "already-RECORD is a no-op, must not pause Timeline playback"
+    print("SampleImagePanel.activate_record_mode: a no-op when already in "
+          "RECORD mode -- OK")
+
+
 def test_viewer_stays_in_source_mode_for_a_plain_loaded_video():
     """Loading a video directly (not via the Timeline) never touches
     self._timeline_controller at all -- the Viewer must stay in SOURCE
@@ -968,6 +1004,93 @@ def test_scrub_bar_tracks_record_position_during_timeline_playback():
     panel._timeline_controller.stop()
     print("SampleImagePanel: the scrub bar's VALUE tracks live during "
           "RECORD-mode Timeline playback -- OK")
+
+
+def test_isolated_scrub_click_in_source_mode_decodes_at_full_resolution():
+    """Per Tom: "make scrub drop the render resolution to half until
+    settled so its more performant" -- an ISOLATED single scrub call (a
+    plain click-to-jump, not part of a drag) must still decode at full
+    native resolution immediately, same as before this existed."""
+    panel = SampleImagePanel()
+    panel.load_video(_make_test_video(frame_count=8, size=(64, 48)))
+
+    panel._on_video_scrub_slider_changed(3)
+
+    assert panel._image_array.shape[:2] == (48, 64)
+    assert panel._last_scrub_was_downres is False
+    print("SampleImagePanel: an isolated scrub click decodes at full "
+          "resolution, not downres -- OK")
+
+
+def test_scrub_burst_in_source_mode_downreses_starting_on_the_second_tick():
+    panel = SampleImagePanel()
+    panel.load_video(_make_test_video(frame_count=8, size=(64, 48)))
+
+    panel._on_video_scrub_slider_changed(1)  # tick 1 -- starts the settle timer, full res
+    assert panel._last_scrub_was_downres is False
+
+    panel._on_video_scrub_slider_changed(2)  # tick 2, before tick 1 settled -- a real burst
+    assert panel._last_scrub_was_downres is True
+    long_side = max(panel._image_array.shape[:2])
+    assert long_side <= 32, (
+        f"expected SCRUB_DOWNRES_FACTOR=2 of the 64x48 source's own long "
+        f"side (64/2=32), got a long side of {long_side}")
+    print("SampleImagePanel: a SOURCE-mode scrub tick arriving before the "
+          "previous one settled decodes at half native resolution -- OK")
+
+
+def test_scrub_settling_after_a_source_mode_burst_decodes_full_resolution():
+    panel = SampleImagePanel()
+    panel.load_video(_make_test_video(frame_count=8, size=(64, 48)))
+    panel._on_video_scrub_slider_changed(1)
+    panel._on_video_scrub_slider_changed(2)  # now in downres mode, per the test above
+    assert panel._last_scrub_was_downres is True
+
+    QTest.qWait(sample_image_panel_module.SCRUB_SETTLE_DEBOUNCE_MS + 100)
+
+    assert panel._last_scrub_was_downres is False
+    assert panel._image_array.shape[:2] == (48, 64), (
+        "once the scrub burst goes quiet, the frame at the LAST scrubbed "
+        "position should be re-decoded at full resolution")
+    assert panel._video_frame_index == 2
+    print("SampleImagePanel: once a SOURCE-mode scrub burst goes quiet, "
+          "one final full-resolution decode replaces the downres one -- OK")
+
+
+def test_scrub_burst_in_record_mode_downreses_the_timeline_clip():
+    """Same scrub-downres mechanism, RECORD mode -- "globally," per Tom's
+    own wording. RECORD mode already always caps to DECODE_PROXY_MAX_
+    DIMENSION even when settled (Timeline clips have no full-native
+    parked mode, see TimelineController.pause's own docstring), so this
+    confirms the BURST tick goes narrower still (an extra halving), using
+    a source frame wide enough that the two caps are unambiguously
+    different sizes."""
+    panel, timeline_obj = _panel_with_two_clip_timeline(frame_counts=(10, 6), size=(800, 600))
+    panel._viewer_mode_badge.setChecked(True)  # RECORD
+
+    # RECORD-mode frames push straight to the Viewer via TimelineController
+    # (push_graded_frame_to_viewer), not through panel._image_array (that's
+    # the SOURCE-mode/parked-frame pipeline) -- read the pushed array back
+    # off the Viewer's own after-state, same as test_timeline_playback_
+    # controller.py's own convention for this exact controller.
+    panel._on_video_scrub_slider_changed(2)  # tick 1 -- full RECORD-mode cap (1280), unaffected (800 < 1280)
+    assert panel._last_scrub_was_downres is False
+    assert max(panel.compare._after_state.array.shape[:2]) == 800
+
+    panel._on_video_scrub_slider_changed(3)  # tick 2, before tick 1 settled -- a real burst
+    assert panel._last_scrub_was_downres is True
+    long_side = max(panel.compare._after_state.array.shape[:2])
+    assert long_side <= 640, f"expected RECORD_SEEK_DOWNRES_FACTOR=2 of 1280 (640), got {long_side}"
+    print("SampleImagePanel: a RECORD-mode scrub burst decodes the "
+          "Timeline clip at half of DECODE_PROXY_MAX_DIMENSION -- OK")
+
+    QTest.qWait(sample_image_panel_module.SCRUB_SETTLE_DEBOUNCE_MS + 100)
+    assert panel._last_scrub_was_downres is False
+    assert max(panel.compare._after_state.array.shape[:2]) == 800, (
+        "settling in RECORD mode restores the ordinary DECODE_PROXY_MAX_"
+        "DIMENSION cap (not native -- Timeline clips never go full-native)")
+    print("SampleImagePanel: settling after a RECORD-mode scrub burst "
+          "restores the normal (not native) Timeline decode resolution -- OK")
 
 
 def test_switching_to_record_mode_positions_scrub_bar_at_current_record_frame():

@@ -68,6 +68,7 @@ TRACK_MARGIN = 6
 MIN_TICK_SPACING_PX = 56  # ruler ticks never crowd closer than this
 THUMBNAIL_LABEL_MIN_WIDTH = 40  # blocks narrower than this show no text, just color/thumbnail
 THUMBNAIL_MIN_WIDTH = 14  # blocks narrower than this show no thumbnail either, just a flat block
+THUMBNAIL_ICON_WIDTH = 34  # a small fixed-size icon at the block's left edge, not stretched across it
 
 _NICE_TICK_SECONDS = (
     1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400,
@@ -397,14 +398,21 @@ class TimelineTrackWidget(QWidget):
         if png_bytes and rect.width() >= THUMBNAIL_MIN_WIDTH:
             pixmap = QPixmap()
             if pixmap.loadFromData(png_bytes, "PNG"):
+                # A small fixed-size icon pinned to the block's left edge
+                # -- stretching the thumbnail to cover the WHOLE block
+                # (as this used to do) reads badly once a clip is more
+                # than a couple hundred frames wide, and isn't needed to
+                # tell clips apart at a glance.
+                icon_width = min(THUMBNAIL_ICON_WIDTH, rect.width())
+                icon_rect = QRectF(rect.left(), rect.top(), icon_width, rect.height())
                 painter.save()
-                painter.setClipRect(rect)
+                painter.setClipRect(icon_rect)
                 scaled = pixmap.scaled(
-                    rect.size().toSize(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    icon_rect.size().toSize(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                     Qt.TransformationMode.SmoothTransformation)
                 painter.drawPixmap(
-                    int(rect.left() + (rect.width() - scaled.width()) / 2),
-                    int(rect.top() + (rect.height() - scaled.height()) / 2),
+                    int(icon_rect.left() + (icon_rect.width() - scaled.width()) / 2),
+                    int(icon_rect.top() + (icon_rect.height() - scaled.height()) / 2),
                     scaled)
                 painter.restore()
 

@@ -164,6 +164,26 @@ SCOPES_MAX_DIMENSION = 512
 # commit an undo step" are related but genuinely separate questions.
 EDIT_SETTLE_DEBOUNCE_MS = 150
 
+# Scrub-time downres (per Tom: "make scrub drop the render resolution to
+# half until settled so its more performant") -- same settle-timer/burst-
+# detection SHAPE as EDIT_SETTLE_DEBOUNCE_MS/_editing_settle_timer above,
+# applied to the transport scrub bar instead of Stack edits. The scrub
+# bar's own valueChanged fires continuously while dragging (QSlider's
+# default tracking=True), so an ISOLATED single valueChanged (a plain
+# click-to-jump) still decodes at full/normal resolution immediately --
+# only a genuine BURST of rapid calls (an actual drag) gets temporarily
+# downres'd, with one final full-quality decode once the burst goes
+# quiet. See _on_video_scrub_slider_changed/_on_scrub_settled. Applies to
+# BOTH scrub modes ("globally"): SOURCE (seek_video_frame, which decodes
+# at full native resolution when settled -- currently NO cap at all, the
+# main cost this targets) and RECORD (TimelineController.
+# seek_to_record_frame, which already always caps to DECODE_PROXY_MAX_
+# DIMENSION even when settled -- see that module's own docstring on why
+# Timeline clips have no full-native "parked" mode; this only adds a
+# temporary EXTRA halving of that existing cap during a burst).
+SCRUB_DOWNRES_FACTOR = 2
+SCRUB_SETTLE_DEBOUNCE_MS = 150
+
 # The three things either side of the wipe (or the single view, when the
 # wipe's disabled -- see _render_wipe, which reuses the Right selection as
 # the single-view source rather than tracking a fourth independent state)
@@ -373,6 +393,18 @@ class SampleImagePanel(QWidget):
         self._editing_settle_timer = QTimer(self)
         self._editing_settle_timer.setSingleShot(True)
         self._editing_settle_timer.timeout.connect(self._on_editing_settled)
+
+        # Settle-detection for the temporary scrub-time downres (see
+        # SCRUB_DOWNRES_FACTOR/_on_video_scrub_slider_changed) -- same
+        # shape as _editing_settle_timer above, its own separate timer
+        # since "was the last scrub tick part of a burst" and "was the
+        # last Stack edit" are unrelated questions that can be true at
+        # once (e.g. scrubbing while Highlight is toggled on a stage).
+        self._scrub_settle_timer = QTimer(self)
+        self._scrub_settle_timer.setSingleShot(True)
+        self._scrub_settle_timer.timeout.connect(self._on_scrub_settled)
+        self._last_scrub_frame_index = None  # which frame to re-decode at full quality once settled
+        self._last_scrub_was_downres = False
 
     def _build_layout(self):
         layout = QVBoxLayout(self)
@@ -997,25 +1029,38 @@ class SampleImagePanel(QWidget):
             self.video_loaded.emit(source.frame_count, source.frame_rate)
         return ok
 
-    def seek_video_frame(self, frame_index):
+    def seek_video_frame(self, frame_index, downres=False):
         """Scrub/step to a specific frame of the currently-open video --
         the public entry point the transport UI (video_playback_
         controller.py / the scrub bar) calls. No-op (returns False) if no
-        video is currently open."""
+        video is currently open. `downres`: see _load_video_frame_core's
+        own docstring -- callers other than the scrub bar itself always
+        want the default full-resolution decode."""
         if self._video_source is None:
             return False
-        return self._load_video_frame_core(frame_index)
+        return self._load_video_frame_core(frame_index, downres=downres)
 
-    def _load_video_frame_core(self, frame_index):
+    def _load_video_frame_core(self, frame_index, downres=False):
         """The video equivalent of _load_image_core -- decodes ONE frame
         from self._video_source and feeds it through the EXACT SAME
         downstream pipeline (_recompute_working_array/
         _recompute_sample_after/_render_wipe) a still image load already
         uses, so grading a parked video frame works identically to
         grading a still -- no separate grading code path exists or is
-        needed."""
+        needed.
+
+        `downres` (see SCRUB_DOWNRES_FACTOR/_on_video_scrub_slider_
+        changed): decodes at half the video's own native resolution
+        instead of full native -- only ever passed True mid-scrub-burst;
+        every other caller (a plain click-to-jump, Step, Set In/Out,
+        session restore) keeps the default full-native decode this
+        method has always done."""
+        max_dimension = None
+        if downres:
+            native_long_side = max(self._video_source.width, self._video_source.height)
+            max_dimension = max(1, native_long_side // SCRUB_DOWNRES_FACTOR)
         try:
-            array = self._video_source.seek_to_frame(frame_index)
+            array = self._video_source.seek_to_frame(frame_index, max_dimension=max_dimension)
         except Exception as e:  # noqa: BLE001 -- surface any decode failure to the user
             QMessageBox.critical(self, "Failed to decode video frame", str(e))
             return False
@@ -1122,6 +1167,26 @@ class SampleImagePanel(QWidget):
 
     def _update_video_play_button_text(self):
         self._video_play_button.setText("⏸" if self._active_transport_controller().is_playing else "▶")
+
+    def activate_record_mode(self):
+        """Public switch to RECORD mode, for a caller outside this panel
+        (MainWindow, when a seek originates from the Timeline view
+        itself -- see its own wiring of TimelinePanel.seek_requested).
+        Clicking the Timeline's ruler should visibly put the Viewer into
+        RECORD, not silently seek the Timeline underneath a still-SOURCE
+        transport (scrub bar/labels gated to the active mode, see
+        _on_timeline_frame_changed's own docstring) -- without this, the
+        Timeline view's own playhead would move while the transport
+        looked frozen, an actual reported "playhead desync." No-op if
+        already in RECORD mode. Same pause-the-side-being-left-first
+        reasoning as _on_viewer_mode_toggled, but only the SOURCE side --
+        this is called immediately before a RECORD-mode seek, which
+        pauses the Timeline controller itself already."""
+        if self._viewer_mode == "record":
+            return
+        self._playback_controller.pause()
+        self._set_viewer_mode("record")
+        self._update_video_play_button_text()
 
     def _on_viewer_mode_toggled(self, checked):
         """The SOURCE/RECORD toggle button itself (per Tom's follow-up:
@@ -1247,14 +1312,42 @@ class SampleImagePanel(QWidget):
         clip (unchanged from before the SOURCE/RECORD toggle existed);
         RECORD seeks the whole Timeline via TimelineController.
         seek_to_record_frame, which pauses it first the same way
-        _playback_controller.pause() does here for the SOURCE case."""
+        _playback_controller.pause() does here for the SOURCE case.
+
+        SCRUB-TIME DOWNRES (see SCRUB_DOWNRES_FACTOR) -- _scrub_settle_
+        timer.isActive() being True means a PREVIOUS call to this method
+        started it and it hasn't fired yet, i.e. this is at least the
+        second tick of an ongoing drag, not an isolated click-to-jump;
+        only that case decodes downres'd. Restarting the timer on every
+        call (regardless of which branch) is what turns "quiet for
+        SCRUB_SETTLE_DEBOUNCE_MS" into the signal that dragging has
+        stopped -- see _on_scrub_settled."""
         if self._suppress_video_scrub_signal:
             return
+        scrub_in_progress = self._scrub_settle_timer.isActive()
+        self._scrub_settle_timer.start(SCRUB_SETTLE_DEBOUNCE_MS)
+        self._last_scrub_frame_index = value
+        self._last_scrub_was_downres = scrub_in_progress
         if self._viewer_mode == "record":
-            self._timeline_controller.seek_to_record_frame(value)
+            self._timeline_controller.seek_to_record_frame(value, downres=scrub_in_progress)
         else:
             self._playback_controller.pause()
-            self.seek_video_frame(value)
+            self.seek_video_frame(value, downres=scrub_in_progress)
+
+    def _on_scrub_settled(self):
+        """Fires once a burst of scrub ticks has gone quiet for SCRUB_
+        SETTLE_DEBOUNCE_MS. If the most recent tick was downres'd,
+        replace it with one final normal-quality decode at the same
+        frame now that dragging has stopped -- a no-op if it wasn't (an
+        isolated click, or nothing scrubbed yet this session)."""
+        if not self._last_scrub_was_downres or self._last_scrub_frame_index is None:
+            return
+        frame_index = self._last_scrub_frame_index
+        self._last_scrub_was_downres = False
+        if self._viewer_mode == "record":
+            self._timeline_controller.seek_to_record_frame(frame_index, downres=False)
+        else:
+            self.seek_video_frame(frame_index, downres=False)
 
     def _on_video_frame_changed(self, frame_index):
         # Realtime playback ticking -- update the slider/timecode WITHOUT

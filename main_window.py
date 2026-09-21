@@ -1208,9 +1208,15 @@ class MainWindow(QMainWindow):
             self.timeline_panel.refresh_playhead)
         # Clicking the Timeline panel's ruler/empty track scrubs the whole
         # Timeline, same "click jumps straight to the cursor" convention
-        # the Record-mode scrub bar already established.
-        self.timeline_panel.seek_requested.connect(
-            self.sample_image._timeline_controller.seek_to_record_frame)
+        # the Record-mode scrub bar already established. Also switches
+        # the Viewer to RECORD first (activate_record_mode) -- without
+        # this, seeking from the Timeline view while SOURCE mode was
+        # showing left the transport's own scrub bar/labels frozen on
+        # their old SOURCE position (gated to the active mode, see
+        # sample_image_panel.py's _on_timeline_frame_changed), while the
+        # Timeline view's own playhead moved -- a visible desync between
+        # the two.
+        self.timeline_panel.seek_requested.connect(self._on_timeline_seek_requested)
 
         # Stills Gallery (Phase 3, Stack Memories panel) -- same "deferred
         # wiring, this panel has no idea SampleImagePanel exists" reasoning
@@ -2635,6 +2641,16 @@ class MainWindow(QMainWindow):
             clip_index = self.timeline_panel.get_selected_clip_index()
             if clip_index is not None:
                 self.sample_image._timeline_controller.seek_to_clip(clip_index)
+
+    def _on_timeline_seek_requested(self, record_frame):
+        """TimelinePanel.seek_requested fired (a click on the Timeline
+        view's own ruler/empty track) -- switches the Viewer to RECORD
+        first (see SampleImagePanel.activate_record_mode's own docstring
+        on why: without it, the Timeline view's playhead would move
+        while the transport's scrub bar/labels stayed frozen on a stale
+        SOURCE position, a visible desync), then performs the seek."""
+        self.sample_image.activate_record_mode()
+        self.sample_image._timeline_controller.seek_to_record_frame(record_frame)
 
     def _update_undo_redo_actions(self):
         # Force both off while Shot mode is active (see stack_panel.py's

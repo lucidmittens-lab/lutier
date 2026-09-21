@@ -403,6 +403,49 @@ def test_seek_to_record_frame_is_a_noop_with_no_clips():
           "Timeline -- OK")
 
 
+def test_frame_changed_listeners_see_the_correct_record_frame_during_the_signal():
+    """Regression test for a real bug: _enter_clip used to emit
+    frame_changed BEFORE its caller updated self._clip_index, so a
+    listener reading current_record_frame() synchronously during that
+    signal (e.g. TimelinePanel's playhead sync) got the NEW frame_in_clip
+    paired with the OLD clip_index -- e.g. seeking to record frame 30 on
+    a Timeline whose selection had left _clip_index at 1 (a later clip)
+    would emit frame_changed while current_record_frame() briefly read
+    80 instead of 30. _enter_clip now sets self._clip_index itself,
+    before frame_changed.emit()."""
+    clip_a = _video_clip(5, name="A")
+    clip_b = _video_clip(5, name="B", color_offset=100)
+    timeline_obj = tl.Timeline(clips=[clip_a, clip_b])
+    panel, controller = _controller(timeline_obj)
+    # Leave stale state pointing at clip B, as a prior selection/seek_to_
+    # clip would (see main_window.py's _on_timeline_clip_selected) --
+    # the exact precondition that exposed the bug.
+    controller.seek_to_clip(1)
+    assert controller._clip_index == 1
+
+    seen_during_signal = []
+    controller.frame_changed.connect(lambda: seen_during_signal.append(controller.current_record_frame()))
+    controller.seek_to_record_frame(3)  # clip A, offset 3 -- NOT clip B's numbering
+    assert seen_during_signal == [3], (
+        "a frame_changed listener must see the correct, already-updated "
+        "record frame, not a stale clip_index paired with the new offset")
+
+    # Same check across an ordinary clip-boundary crossing during playback
+    # (clip_a/clip_b are both 5 frames -- offsets 0..4 -- so 5 ticks past
+    # play()'s own initial parked push are needed to cross into clip B).
+    controller.stop()
+    controller.play()
+    seen_during_signal.clear()  # drop play()'s own initial push
+    for _ in range(5):
+        controller._tick()
+    assert controller._clip_index == 1 and controller._frame_in_clip == 0
+    assert seen_during_signal[-1] == 5, "clip A's own 5 frames precede clip B's offset 0 in record-space"
+    controller.stop()
+    print("TimelineController: frame_changed listeners see the correct "
+          "record frame during the signal itself, at both a seek and a "
+          "clip-boundary crossing -- OK")
+
+
 def test_toggle_flips_between_play_and_pause():
     timeline_obj = tl.Timeline(clips=[_video_clip(10)])
     panel, controller = _controller(timeline_obj)
@@ -441,6 +484,7 @@ if __name__ == "__main__":
     test_a_missing_clip_file_stops_gracefully_instead_of_crashing()
     test_seek_to_clip_repositions_where_the_next_play_resumes()
     test_seek_to_clip_is_a_noop_while_playing()
+    test_frame_changed_listeners_see_the_correct_record_frame_during_the_signal()
     test_toggle_flips_between_play_and_pause()
     test_set_speed_above_one_advances_multiple_frames_per_tick()
     print("\nAll timeline_playback_controller tests passed.")
