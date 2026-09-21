@@ -2643,14 +2643,24 @@ class MainWindow(QMainWindow):
                 self.sample_image._timeline_controller.seek_to_clip(clip_index)
 
     def _on_timeline_seek_requested(self, record_frame):
-        """TimelinePanel.seek_requested fired (a click on the Timeline
-        view's own ruler/empty track) -- switches the Viewer to RECORD
-        first (see SampleImagePanel.activate_record_mode's own docstring
-        on why: without it, the Timeline view's playhead would move
-        while the transport's scrub bar/labels stayed frozen on a stale
-        SOURCE position, a visible desync), then performs the seek."""
+        """TimelinePanel.seek_requested fired -- a click OR a continuous
+        drag on the Timeline view's own ruler/empty track (see
+        TimelineTrackWidget's own mousePressEvent/mouseMoveEvent, which
+        fire this repeatedly while dragging, not just once). Switches
+        the Viewer to RECORD first (see SampleImagePanel.
+        activate_record_mode's own docstring on why: without it, the
+        Timeline view's playhead would move while the transport's scrub
+        bar/labels stayed frozen on a stale SOURCE position, a visible
+        desync), then routes the seek through the transport's own scrub
+        bar (setValue -> _on_video_scrub_slider_changed) rather than
+        calling TimelineController.seek_to_record_frame directly -- this
+        is what gives a Timeline-view drag-scrub the same scrub-time
+        downres treatment (SCRUB_DOWNRES_FACTOR) a drag on the
+        horizontal scrub bar already gets, and keeps that scrub bar's
+        own displayed value in step with wherever the Timeline view's
+        playhead is being dragged to."""
         self.sample_image.activate_record_mode()
-        self.sample_image._timeline_controller.seek_to_record_frame(record_frame)
+        self.sample_image._video_scrub_slider.setValue(record_frame)
 
     def _update_undo_redo_actions(self):
         # Force both off while Shot mode is active (see stack_panel.py's

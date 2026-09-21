@@ -179,7 +179,7 @@ class TimelineTrackWidget(QWidget):
     clip_selected = Signal(object)          # a timeline.TimelineClip, or None
     clip_double_clicked = Signal(object)    # a timeline.TimelineClip -- Rename shortcut, see timeline_panel.py
     clips_reordered = Signal()              # fired after a drag actually changes clip order
-    seek_requested = Signal(int)            # a record-space frame index, from clicking the ruler/empty track
+    seek_requested = Signal(int)            # a record-space frame index, from clicking/dragging the ruler/empty track
     context_menu_requested_for_clip = Signal(object, QPoint)  # (TimelineClip, global QPoint) -- right-click
 
     def __init__(self, timeline=None, parent=None):
@@ -190,6 +190,7 @@ class TimelineTrackWidget(QWidget):
         self._pixels_per_frame = MIN_PIXELS_PER_FRAME
         self._drag_clip_id = None
         self._drag_target_index = None
+        self._scrubbing = False
         self.setMinimumHeight(RULER_HEIGHT + 64)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setMouseTracking(False)
@@ -263,11 +264,19 @@ class TimelineTrackWidget(QWidget):
         # Empty track/ruler space -- a scrub, same "click jumps straight
         # to the cursor" convention video_scrub_slider.py's own
         # mousePressEvent already established for the single-clip case.
+        # Held down (see mouseMoveEvent), this becomes a genuine drag-to-
+        # scrub across the whole Timeline, not just a single-point jump.
+        self._scrubbing = True
         frame = round(x_to_frame(pos.x(), self._pixels_per_frame, track.left()))
         self.seek_requested.emit(max(0, frame))
         event.accept()
 
     def mouseMoveEvent(self, event):
+        if self._scrubbing and (event.buttons() & Qt.MouseButton.LeftButton):
+            track = self._track_rect()
+            frame = round(x_to_frame(event.position().x(), self._pixels_per_frame, track.left()))
+            self.seek_requested.emit(max(0, frame))
+            return
         if self._drag_clip_id is None or not (event.buttons() & Qt.MouseButton.LeftButton):
             return
         track = self._track_rect()
@@ -276,6 +285,10 @@ class TimelineTrackWidget(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event):
+        if self._scrubbing:
+            self._scrubbing = False
+            event.accept()
+            return
         if self._drag_clip_id is None:
             return
         clip_id, target_index = self._drag_clip_id, self._drag_target_index

@@ -235,6 +235,56 @@ def test_clicking_empty_track_space_emits_seek_requested():
           "seek_requested, doesn't select a clip -- OK")
 
 
+def test_dragging_the_ruler_emits_seek_requested_repeatedly():
+    """Regression test: a single mousePress used to emit exactly one
+    seek_requested and then go silent for the rest of the drag (only a
+    clip-reorder drag kept tracking mouseMoveEvent) -- per Tom, "the
+    playhead in the timeline viewer still isnt capable of scrubbing."
+    Pressing on the ruler/empty track and then moving with the button
+    held must keep emitting seek_requested for each new position, not
+    just the initial press."""
+    widget, timeline_obj = _widget([_clip("A", 100)])
+    received = []
+    widget.seek_requested.connect(lambda frame: received.append(frame))
+
+    QTest.mousePress(widget, Qt.MouseButton.LeftButton, pos=QPoint(50, 10))
+    QTest.mouseMove(widget, QPoint(150, 10))
+    QTest.mouseMove(widget, QPoint(250, 10))
+    QTest.mouseRelease(widget, Qt.MouseButton.LeftButton, pos=QPoint(250, 10))
+
+    assert len(received) == 3, f"expected one seek per press/move/move, got {received}"
+    assert received[0] < received[1] < received[2], "each drag step should move further right"
+    print("TimelineTrackWidget: dragging the ruler/empty track emits "
+          "seek_requested continuously, not just once on press -- OK")
+
+
+def test_scrub_drag_does_not_leak_into_a_clip_reorder_drag():
+    """A scrub drag started on empty space must not be reinterpreted as
+    a clip-reorder drag even if the cursor later moves over a clip block
+    -- _scrubbing, set on press, is what keeps mouseMoveEvent on the
+    scrub branch instead of falling through to the reorder branch."""
+    widget, timeline_obj = _widget([_clip("A", 50), _clip("B", 50)])
+    reordered = []
+    widget.clips_reordered.connect(lambda: reordered.append(True))
+    seeks = []
+    widget.seek_requested.connect(lambda frame: seeks.append(frame))
+
+    # Press well past both clips (auto-fit fills the whole width, so
+    # there's no true empty track space -- use the ruler, same as the
+    # other empty-space tests).
+    QTest.mousePress(widget, Qt.MouseButton.LeftButton, pos=QPoint(10, 10))
+    # Drag across into where clip A's own block is, in the track row.
+    clip_a_x = int(frame_to_x(10, widget._pixels_per_frame, 6))
+    QTest.mouseMove(widget, QPoint(clip_a_x, 50))
+    QTest.mouseRelease(widget, Qt.MouseButton.LeftButton, pos=QPoint(clip_a_x, 50))
+
+    assert len(seeks) == 2, "both the press and the move should have scrubbed"
+    assert reordered == [], "a scrub drag must never trigger a reorder"
+    assert widget._drag_clip_id is None
+    print("TimelineTrackWidget: a scrub drag started on empty space "
+          "stays a scrub even if it crosses over a clip block -- OK")
+
+
 def test_double_clicking_a_clip_emits_clip_double_clicked():
     widget, timeline_obj = _widget([_clip("A", 100)])
     received = []
@@ -360,6 +410,8 @@ if __name__ == "__main__":
     test_widget_renders_without_raising_when_empty()
     test_clicking_a_clip_selects_it_and_emits_clip_selected()
     test_clicking_empty_track_space_emits_seek_requested()
+    test_dragging_the_ruler_emits_seek_requested_repeatedly()
+    test_scrub_drag_does_not_leak_into_a_clip_reorder_drag()
     test_double_clicking_a_clip_emits_clip_double_clicked()
     test_dragging_a_clip_reorders_the_timeline()
     test_dragging_back_to_the_same_position_does_not_reorder()
