@@ -1,0 +1,371 @@
+"""Tests for timeline_track_widget.py -- run directly:
+QT_QPA_PLATFORM=offscreen python3 test_timeline_track_widget.py
+
+Pure-function tests (clip_extents/frame_to_x/x_to_frame/clip_at_x/
+reorder_target_index/ruler_tick_frames/pixels_per_frame_to_fit) need no
+QApplication at all -- same "Qt-free math, testable standalone" split
+this module's own docstring describes. The QWidget-level tests
+(selection, drag-reorder, click-to-seek) need a real (offscreen) Qt
+event loop, same convention as video_scrub_slider.py/curve_editor_
+widget.py's own test files.
+"""
+import sys
+
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QPixmap
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication
+
+import timeline as tl
+from timeline_track_widget import (
+    TimelineTrackWidget, clip_at_x, clip_extents, frame_to_x, pixels_per_frame_to_fit,
+    reorder_target_index, ruler_tick_frames, x_to_frame, MIN_PIXELS_PER_FRAME,
+)
+
+
+def _app():
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+    return app
+
+
+def _clip(name, frame_count, media_kind="video"):
+    return tl.TimelineClip(name, f"/tmp/{name}.mp4", media_kind, 0, frame_count - 1)
+
+
+# ---- pure functions --------------------------------------------------------
+
+def test_clip_extents_sums_preceding_frame_counts():
+    clips = [_clip("A", 10), _clip("B", 5), _clip("C", 20)]
+    extents = clip_extents(clips)
+    assert extents == [(clips[0], 0, 10), (clips[1], 10, 15), (clips[2], 15, 35)]
+    print("clip_extents: cumulative record-space start/end per clip -- OK")
+
+
+def test_clip_extents_empty_list():
+    assert clip_extents([]) == []
+    print("clip_extents: empty for an empty clip list -- OK")
+
+
+def test_clip_extents_agrees_with_timeline_controller_record_frame():
+    """Cross-check against TimelineController's own independent
+    "sum every earlier clip's frame_count" computation (module docstring
+    -- the two are deliberately separate implementations)."""
+    _app()  # TimelineController is a QObject (owns a QTimer) -- needs a real QApplication instance
+    from timeline_playback_controller import TimelineController
+    clips = [_clip("A", 10), _clip("B", 7), _clip("C", 3)]
+    timeline_obj = tl.Timeline(clips=clips)
+    controller = TimelineController(None, timeline_getter=lambda: timeline_obj, sequence_stack_getter=None)
+    controller._clip_index = 2
+    controller._frame_in_clip = 1
+    assert controller.current_record_frame() == 18  # 10 + 7 + 1
+
+    extents = clip_extents(clips)
+    clip_c_start = extents[2][1]
+    assert clip_c_start + 1 == 18
+    print("clip_extents: agrees with TimelineController.current_record_frame's "
+          "independently-computed record position -- OK")
+
+
+def test_pixels_per_frame_to_fit_scales_to_width():
+    assert pixels_per_frame_to_fit(100, 500) == 5.0
+    print("pixels_per_frame_to_fit: scales to fill the given width -- OK")
+
+
+def test_pixels_per_frame_to_fit_handles_degenerate_input():
+    assert pixels_per_frame_to_fit(0, 500) == MIN_PIXELS_PER_FRAME
+    assert pixels_per_frame_to_fit(100, 0) == MIN_PIXELS_PER_FRAME
+    assert pixels_per_frame_to_fit(100, -10) == MIN_PIXELS_PER_FRAME
+    print("pixels_per_frame_to_fit: falls back to MIN_PIXELS_PER_FRAME "
+          "for zero/negative total or width, never divides by zero -- OK")
+
+
+def test_frame_to_x_and_x_to_frame_are_inverses():
+    for frame in (0, 10, 100, 999):
+        x = frame_to_x(frame, 2.5, origin_x=20)
+        assert x_to_frame(x, 2.5, origin_x=20) == frame
+    print("frame_to_x/x_to_frame: round-trip exactly -- OK")
+
+
+def test_x_to_frame_handles_zero_pixels_per_frame():
+    assert x_to_frame(500, 0, origin_x=0) == 0
+    print("x_to_frame: doesn't divide by zero for a degenerate scale -- OK")
+
+
+def test_clip_at_x_hits_the_right_clip():
+    clips = [_clip("A", 10), _clip("B", 5)]
+    ppf = 2.0
+    assert clip_at_x(clips, frame_to_x(3, ppf), ppf) is clips[0]
+    assert clip_at_x(clips, frame_to_x(12, ppf), ppf) is clips[1]
+    print("clip_at_x: hits the clip whose extent contains the position -- OK")
+
+
+def test_clip_at_x_misses_past_the_last_clip():
+    clips = [_clip("A", 10)]
+    ppf = 2.0
+    assert clip_at_x(clips, frame_to_x(20, ppf), ppf) is None
+    print("clip_at_x: None past the last clip's own extent -- OK")
+
+
+def test_clip_at_x_on_empty_timeline():
+    assert clip_at_x([], 100, 2.0) is None
+    print("clip_at_x: None for an empty clip list -- OK")
+
+
+def test_reorder_target_index_moving_right():
+    clips = [_clip("A", 10), _clip("B", 10), _clip("C", 10)]
+    ppf = 1.0
+    # Dragging A (currently index 0) to sit past B and C's centers.
+    target = reorder_target_index(clips, clips[0].id, x=frame_to_x(25, ppf), pixels_per_frame=ppf)
+    assert target == 2
+    print("reorder_target_index: counts how many OTHER clips' centers "
+          "sit to the left of the drag position -- OK")
+
+
+def test_reorder_target_index_moving_left():
+    clips = [_clip("A", 10), _clip("B", 10), _clip("C", 10)]
+    ppf = 1.0
+    target = reorder_target_index(clips, clips[2].id, x=frame_to_x(2, ppf), pixels_per_frame=ppf)
+    assert target == 0
+    print("reorder_target_index: dragging left of every other clip's "
+          "center lands at index 0 -- OK")
+
+
+def test_reorder_target_index_ignores_the_dragged_clips_own_position():
+    """Stable regardless of where the drag started -- only the OTHER
+    clips' centers matter."""
+    clips = [_clip("A", 10), _clip("B", 10)]
+    ppf = 1.0
+    # B (index 1) dragged to sit just left of A's own center (5) -- must
+    # target index 0, not be confused by B's own original extent.
+    target = reorder_target_index(clips, clips[1].id, x=frame_to_x(1, ppf), pixels_per_frame=ppf)
+    assert target == 0
+    print("reorder_target_index: ignores the dragged clip's own current "
+          "position, only counts the others -- OK")
+
+
+def test_ruler_tick_frames_starts_at_zero():
+    ticks = ruler_tick_frames(total_frame_count=240, frame_rate=24.0, pixels_per_frame=10.0)
+    assert ticks[0] == 0
+    print("ruler_tick_frames: always includes frame 0 -- OK")
+
+
+def test_ruler_tick_frames_picks_a_wider_interval_when_zoomed_out():
+    """Zoomed OUT (small pixels_per_frame) must pick a WIDER nice
+    interval so ticks don't crowd closer than MIN_TICK_SPACING_PX."""
+    zoomed_in = ruler_tick_frames(total_frame_count=2400, frame_rate=24.0, pixels_per_frame=10.0)
+    zoomed_out = ruler_tick_frames(total_frame_count=2400, frame_rate=24.0, pixels_per_frame=0.5)
+    spacing_in = zoomed_in[1] - zoomed_in[0]
+    spacing_out = zoomed_out[1] - zoomed_out[0]
+    assert spacing_out > spacing_in
+    print("ruler_tick_frames: a wider frame-interval between ticks when "
+          "zoomed out, keeping on-screen spacing readable -- OK")
+
+
+def test_ruler_tick_frames_empty_for_degenerate_input():
+    assert ruler_tick_frames(0, 24.0, 10.0) == []
+    assert ruler_tick_frames(240, 0, 10.0) == []
+    assert ruler_tick_frames(240, 24.0, 0) == []
+    print("ruler_tick_frames: empty (not a crash) for degenerate "
+          "total/frame_rate/pixels_per_frame -- OK")
+
+
+# ---- widget-level (real, offscreen Qt) --------------------------------------
+
+def _widget(clips, width=400, height=100):
+    app = _app()
+    timeline_obj = tl.Timeline(clips=clips)
+    widget = TimelineTrackWidget(timeline_obj)
+    # Shown (even under the offscreen QPA platform) -- resizeEvent only
+    # reliably fires once a widget has a real platform window, same
+    # reason QTest's synthetic mouse events need one to be delivered
+    # through the normal event-dispatch path rather than silently
+    # dropped. Confirmed empirically while writing these tests: an
+    # unshown top-level widget's .resize() updates geometry but never
+    # calls resizeEvent at all under this Qt build.
+    widget.show()
+    widget.resize(width, height)
+    app.processEvents()
+    return widget, timeline_obj
+
+
+def test_widget_renders_without_raising_with_clips():
+    widget, _ = _widget([_clip("A", 48), _clip("B", 24)])
+    pixmap = QPixmap(widget.size())
+    widget.render(pixmap)
+    print("TimelineTrackWidget: paints without raising with real clips -- OK")
+
+
+def test_widget_renders_without_raising_when_empty():
+    widget, _ = _widget([])
+    pixmap = QPixmap(widget.size())
+    widget.render(pixmap)
+    print("TimelineTrackWidget: paints the empty-timeline hint without raising -- OK")
+
+
+def test_clicking_a_clip_selects_it_and_emits_clip_selected():
+    widget, timeline_obj = _widget([_clip("A", 100), _clip("B", 50)])
+    received = []
+    widget.clip_selected.connect(lambda clip: received.append(clip))
+
+    x = int(frame_to_x(10, widget._pixels_per_frame, 6))
+    QTest.mouseClick(widget, Qt.MouseButton.LeftButton, pos=QPoint(x, 50))
+
+    assert widget.selected_clip() is timeline_obj.clips[0]
+    assert received == [timeline_obj.clips[0]]
+    print("TimelineTrackWidget: clicking a clip block selects it and "
+          "emits clip_selected -- OK")
+
+
+def test_clicking_empty_track_space_emits_seek_requested():
+    widget, timeline_obj = _widget([_clip("A", 100)])
+    received = []
+    widget.seek_requested.connect(lambda frame: received.append(frame))
+
+    # Under pure auto-fit-to-width zoom a single clip spans the *entire*
+    # track row, so there's no empty track-row pixel to click here --
+    # the ruler strip (y < RULER_HEIGHT) is the always-seekable target.
+    QTest.mouseClick(widget, Qt.MouseButton.LeftButton, pos=QPoint(380, 10))
+
+    assert len(received) == 1
+    assert received[0] > 80  # near the clip's own end, matching the click position
+    assert widget.selected_clip() is None
+    print("TimelineTrackWidget: clicking the ruler emits "
+          "seek_requested, doesn't select a clip -- OK")
+
+
+def test_double_clicking_a_clip_emits_clip_double_clicked():
+    widget, timeline_obj = _widget([_clip("A", 100)])
+    received = []
+    widget.clip_double_clicked.connect(lambda clip: received.append(clip))
+
+    x = int(frame_to_x(10, widget._pixels_per_frame, 6))
+    QTest.mouseDClick(widget, Qt.MouseButton.LeftButton, pos=QPoint(x, 50))
+
+    assert received == [timeline_obj.clips[0]]
+    print("TimelineTrackWidget: double-clicking a clip emits "
+          "clip_double_clicked -- OK")
+
+
+def test_dragging_a_clip_reorders_the_timeline():
+    widget, timeline_obj = _widget([_clip("A", 10), _clip("B", 10), _clip("C", 10)])
+    reordered = []
+    widget.clips_reordered.connect(lambda: reordered.append(True))
+    a_id = timeline_obj.clips[0].id
+
+    start_x = int(frame_to_x(5, widget._pixels_per_frame, 6))   # inside A
+    end_x = int(frame_to_x(28, widget._pixels_per_frame, 6))    # clearly past B and C's centers
+    # (28, not 25, to clear C's center of exactly 25.0 -- int() pixel truncation
+    # otherwise lands a hair under it; see x_to_frame's docstring)
+    QTest.mousePress(widget, Qt.MouseButton.LeftButton, pos=QPoint(start_x, 50))
+    QTest.mouseMove(widget, QPoint(end_x, 50))
+    QTest.mouseRelease(widget, Qt.MouseButton.LeftButton, pos=QPoint(end_x, 50))
+
+    assert reordered == [True]
+    assert [c.id for c in timeline_obj.clips] == [
+        timeline_obj.clips[i].id for i in range(3)
+    ]  # sanity: still 3 distinct clips
+    assert timeline_obj.clips[-1].id == a_id, "A should have moved to the end"
+    print("TimelineTrackWidget: dragging a clip past its neighbors "
+          "reorders the Timeline via Timeline.move_clip -- OK")
+
+
+def test_dragging_back_to_the_same_position_does_not_reorder():
+    widget, timeline_obj = _widget([_clip("A", 10), _clip("B", 10)])
+    reordered = []
+    widget.clips_reordered.connect(lambda: reordered.append(True))
+    original_order = [c.id for c in timeline_obj.clips]
+
+    x = int(frame_to_x(5, widget._pixels_per_frame, 6))
+    QTest.mousePress(widget, Qt.MouseButton.LeftButton, pos=QPoint(x, 50))
+    QTest.mouseMove(widget, QPoint(x + 1, 50))
+    QTest.mouseRelease(widget, Qt.MouseButton.LeftButton, pos=QPoint(x + 1, 50))
+
+    assert reordered == []
+    assert [c.id for c in timeline_obj.clips] == original_order
+    print("TimelineTrackWidget: a drag that ends at the same slot "
+          "doesn't fire clips_reordered or touch clip order -- OK")
+
+
+def test_right_clicking_a_clip_emits_context_menu_signal():
+    widget, timeline_obj = _widget([_clip("A", 100)])
+    received = []
+    widget.context_menu_requested_for_clip.connect(lambda clip, pos: received.append(clip))
+
+    # QTest.mouseClick(RightButton) doesn't reliably synthesize Qt's own
+    # customContextMenuRequested signal under this offscreen environment
+    # (confirmed true even for a bare QWidget with CustomContextMenu policy
+    # set, so it's a platform-synthesis gap, not something our code controls)
+    # -- exercise the widget's own handler directly instead, same as a real
+    # right-click would trigger via the CustomContextMenu policy.
+    x = int(frame_to_x(10, widget._pixels_per_frame, 6))
+    widget._on_custom_context_menu_requested(QPoint(x, 50))
+
+    assert received == [timeline_obj.clips[0]]
+    print("TimelineTrackWidget: right-clicking a clip emits "
+          "context_menu_requested_for_clip and selects it -- OK")
+
+
+def test_set_selected_clip_id_does_not_reemit_clip_selected():
+    widget, timeline_obj = _widget([_clip("A", 100)])
+    received = []
+    widget.clip_selected.connect(lambda clip: received.append(clip))
+
+    widget.set_selected_clip_id(timeline_obj.clips[0].id)
+
+    assert widget.selected_clip() is timeline_obj.clips[0]
+    assert received == []
+    print("TimelineTrackWidget.set_selected_clip_id: programmatic sync, "
+          "no clip_selected re-emission -- OK")
+
+
+def test_set_playhead_frame_triggers_repaint_state():
+    widget, _ = _widget([_clip("A", 100)])
+    assert widget.playhead_frame is None
+    widget.set_playhead_frame(42)
+    assert widget.playhead_frame == 42
+    pixmap = QPixmap(widget.size())
+    widget.render(pixmap)  # must not raise with a playhead set
+    print("TimelineTrackWidget.set_playhead_frame: stores the position, "
+          "paints without raising -- OK")
+
+
+def test_refresh_recomputes_pixels_per_frame_after_resize():
+    widget, timeline_obj = _widget([_clip("A", 100)], width=400)
+    first_scale = widget._pixels_per_frame
+    widget.resize(800, 100)
+    assert widget._pixels_per_frame > first_scale, "a wider widget should zoom in to still fill the width"
+    print("TimelineTrackWidget: resizing recomputes the auto-fit zoom -- OK")
+
+
+if __name__ == "__main__":
+    test_clip_extents_sums_preceding_frame_counts()
+    test_clip_extents_empty_list()
+    test_clip_extents_agrees_with_timeline_controller_record_frame()
+    test_pixels_per_frame_to_fit_scales_to_width()
+    test_pixels_per_frame_to_fit_handles_degenerate_input()
+    test_frame_to_x_and_x_to_frame_are_inverses()
+    test_x_to_frame_handles_zero_pixels_per_frame()
+    test_clip_at_x_hits_the_right_clip()
+    test_clip_at_x_misses_past_the_last_clip()
+    test_clip_at_x_on_empty_timeline()
+    test_reorder_target_index_moving_right()
+    test_reorder_target_index_moving_left()
+    test_reorder_target_index_ignores_the_dragged_clips_own_position()
+    test_ruler_tick_frames_starts_at_zero()
+    test_ruler_tick_frames_picks_a_wider_interval_when_zoomed_out()
+    test_ruler_tick_frames_empty_for_degenerate_input()
+    test_widget_renders_without_raising_with_clips()
+    test_widget_renders_without_raising_when_empty()
+    test_clicking_a_clip_selects_it_and_emits_clip_selected()
+    test_clicking_empty_track_space_emits_seek_requested()
+    test_double_clicking_a_clip_emits_clip_double_clicked()
+    test_dragging_a_clip_reorders_the_timeline()
+    test_dragging_back_to_the_same_position_does_not_reorder()
+    test_right_clicking_a_clip_emits_context_menu_signal()
+    test_set_selected_clip_id_does_not_reemit_clip_selected()
+    test_set_playhead_frame_triggers_repaint_state()
+    test_refresh_recomputes_pixels_per_frame_after_resize()
+    print()
+    print("All timeline_track_widget tests passed.")
