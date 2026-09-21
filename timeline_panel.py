@@ -36,6 +36,15 @@ that range instead. Still no in-place trim UI for a clip ALREADY on the
 Timeline (per plan, out of scope for this pass) -- marking a range only
 ever happens before a clip is added, on the Source side.
 
+Also holds a minimizable EDL (Edit Decision List) sub-panel below the
+track view, per Tom: "add an EDL expression of the timeline in as a sub
+panel which can be minimized in the timeline view." A plain read-only
+text expression (see edl.py's own docstring on scope -- not a round-
+trippable import/export format), regenerated from self.timeline on every
+_refresh_list -- see _refresh_edl_text. Starts collapsed; the header
+button toggles it, same flat QToolButton convention as the panel's own
+"..." menu button.
+
 NOT VISUALLY VERIFIED IN THIS ENVIRONMENT -- same PySide6/libEGL wall as
 the rest of the GUI layer (see timeline_track_widget.py's own docstring).
 Please run main_window.py and confirm: (1) "Add to Timeline" on a Media
@@ -44,15 +53,23 @@ a clip block to a new position reorders playback order, (3) right-click
 Rename/Remove work and Remove asks before deleting, (4) clicking a clip
 selects it (watch clip_selected fire), (5) clicking the ruler seeks the
 Timeline and moves the playhead line, (6) the playhead line tracks
-playback in real time.
+playback in real time, (7) the EDL sub-panel expands/collapses and its
+text reflects the current clip order/trim.
 """
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QMessageBox, QInputDialog, QToolButton, QMenu,
+    QWidget, QVBoxLayout, QHBoxLayout, QMessageBox, QInputDialog, QToolButton,
+    QMenu, QPlainTextEdit,
 )
 
+import edl as edl_module
 import timeline as tl
 from timeline_track_widget import TimelineTrackWidget
+
+# The EDL sub-panel's own collapsed/expanded max height -- a sub panel,
+# not the main view, so it never grows to dominate the Timeline dock even
+# with a long clip list (the text view scrolls internally instead).
+_EDL_TEXT_MAX_HEIGHT = 160
 
 # A still-kind clip has no native duration of its own -- held for this
 # many seconds at the Timeline's own frame_rate (see timeline.py's
@@ -104,7 +121,34 @@ class TimelinePanel(QWidget):
             self._on_context_menu_requested_for_clip)
         layout.addWidget(self.track_widget, stretch=1)
 
+        self._build_edl_subpanel(layout)
         self._build_menu_button()
+
+    def _build_edl_subpanel(self, layout):
+        header = QHBoxLayout()
+        header.setContentsMargins(4, 2, 4, 2)
+        self.edl_toggle_button = QToolButton()
+        self.edl_toggle_button.setObjectName("panelMenuButton")
+        self.edl_toggle_button.setAutoRaise(True)
+        self.edl_toggle_button.setCheckable(True)
+        self.edl_toggle_button.setChecked(False)  # starts minimized
+        self.edl_toggle_button.setText("▸ EDL")
+        self.edl_toggle_button.toggled.connect(self._on_edl_toggle_toggled)
+        header.addWidget(self.edl_toggle_button)
+        header.addStretch(1)
+        layout.addLayout(header)
+
+        self.edl_text_view = QPlainTextEdit()
+        self.edl_text_view.setObjectName("edlTextView")
+        self.edl_text_view.setReadOnly(True)
+        self.edl_text_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.edl_text_view.setMaximumHeight(_EDL_TEXT_MAX_HEIGHT)
+        self.edl_text_view.setVisible(False)  # starts minimized, matches edl_toggle_button's own state
+        layout.addWidget(self.edl_text_view)
+
+    def _on_edl_toggle_toggled(self, checked):
+        self.edl_text_view.setVisible(checked)
+        self.edl_toggle_button.setText("▾ EDL" if checked else "▸ EDL")
 
     def _build_menu_button(self):
         self.menu_button = QToolButton()
@@ -189,7 +233,11 @@ class TimelinePanel(QWidget):
 
     def _on_clips_reordered(self):
         # Timeline.move_clip has already been applied by the widget itself
-        # (see TimelineTrackWidget.mouseReleaseEvent) -- just propagate.
+        # (see TimelineTrackWidget.mouseReleaseEvent) -- just propagate,
+        # and keep the EDL sub-panel's own text in step with the new order
+        # (this path doesn't go through _refresh_list, which handles that
+        # for every other mutation).
+        self._refresh_edl_text()
         self.timeline_changed.emit()
 
     # ---- add / rename / remove ---------------------------------------------
@@ -303,6 +351,7 @@ class TimelinePanel(QWidget):
         # snapshot, since every caller here already mutated self.timeline
         # .clips BEFORE calling this method.
         self._sync_selected_clip()
+        self._refresh_edl_text()
         self.timeline_changed.emit()
 
     def _sync_selected_clip(self):
@@ -311,6 +360,14 @@ class TimelinePanel(QWidget):
             return
         self._last_selected_clip = current
         self.clip_selected.emit(current)
+
+    def _refresh_edl_text(self):
+        """Regenerates the EDL sub-panel's text from self.timeline (see
+        edl.py) -- called on every mutation (_refresh_list/_on_clips_
+        reordered), not just while the sub-panel happens to be expanded,
+        so it's already current the moment it IS expanded."""
+        self.edl_text_view.setPlainText(
+            edl_module.generate_edl(self.timeline, title=self.timeline.name or "Timeline"))
 
     # ---- session save/load (see session_io.py) -----------------------------
 

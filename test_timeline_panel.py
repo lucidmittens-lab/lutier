@@ -168,6 +168,57 @@ def test_reordering_via_drag_fires_timeline_changed_not_clip_selected():
           "without touching selection -- OK")
 
 
+def test_edl_subpanel_starts_collapsed():
+    panel = _panel()
+    assert not panel.edl_toggle_button.isChecked()
+    # isVisible() would be False here regardless (the panel itself is
+    # never .show()n in these offscreen tests) -- isHidden() reflects
+    # this specific widget's own explicit setVisible() flag, unaffected
+    # by whether any ancestor window was ever shown.
+    assert panel.edl_text_view.isHidden()
+    print("TimelinePanel: the EDL sub-panel starts collapsed -- OK")
+
+
+def test_edl_toggle_button_expands_and_collapses_the_text_view():
+    panel = _panel()
+    panel.edl_toggle_button.setChecked(True)
+    assert not panel.edl_text_view.isHidden()
+    assert panel.edl_toggle_button.text().startswith("▾")
+
+    panel.edl_toggle_button.setChecked(False)
+    assert panel.edl_text_view.isHidden()
+    assert panel.edl_toggle_button.text().startswith("▸")
+    print("TimelinePanel: the EDL toggle button shows/hides the text "
+          "view and flips its own arrow -- OK")
+
+
+def test_edl_text_reflects_the_current_clip_list_even_while_collapsed():
+    panel = _panel()
+    panel.add_clip_with_range("A", "/tmp/a.mp4", "video", 0, 9)
+    panel.add_clip_with_range("B", "/tmp/b.mp4", "video", 0, 4)
+
+    text = panel.edl_text_view.toPlainText()
+    assert "* FROM CLIP NAME: A" in text
+    assert "* FROM CLIP NAME: B" in text
+    print("TimelinePanel: the EDL text view stays current on every "
+          "mutation, even while the sub-panel is collapsed -- OK")
+
+
+def test_edl_text_reflects_a_drag_reorder():
+    panel = _panel()
+    panel.add_clip_with_range("A", "/tmp/a.mp4", "video", 0, 9)
+    panel.add_clip_with_range("B", "/tmp/b.mp4", "video", 0, 4)
+    a_id = panel.timeline.clips[0].id
+
+    panel.timeline.move_clip(a_id, 1)
+    panel._on_clips_reordered()
+
+    text = panel.edl_text_view.toPlainText()
+    assert text.index("* FROM CLIP NAME: B") < text.index("* FROM CLIP NAME: A"), (
+        "the EDL's own event order must follow the reordered Timeline")
+    print("TimelinePanel: the EDL text view reflects a drag-reorder -- OK")
+
+
 def test_refresh_playhead_pulls_from_the_configured_getter():
     panel = _panel()
     panel.add_clip_with_range("Clip", "/tmp/a.mp4", "video", 0, 99)
@@ -190,6 +241,10 @@ if __name__ == "__main__":
     test_removing_the_selected_clip_emits_clip_selected_none()
     test_seek_requested_relays_from_the_track_widget()
     test_reordering_via_drag_fires_timeline_changed_not_clip_selected()
+    test_edl_subpanel_starts_collapsed()
+    test_edl_toggle_button_expands_and_collapses_the_text_view()
+    test_edl_text_reflects_the_current_clip_list_even_while_collapsed()
+    test_edl_text_reflects_a_drag_reorder()
     test_refresh_playhead_pulls_from_the_configured_getter()
     print()
     print("All timeline_panel tests passed.")

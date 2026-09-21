@@ -981,6 +981,17 @@ QLabel#videoTimecodeLabel {{
     font-family: Menlo, Consolas, monospace;
 }}
 
+/* EDL sub-panel text (timeline_panel.py, per Tom: "add an EDL expression
+   of the timeline in as a sub panel") -- monospace so the fixed-width
+   CMX3600 event columns actually line up. */
+QPlainTextEdit#edlTextView {{
+    font-family: Menlo, Consolas, monospace;
+    font-size: 11px;
+    background-color: {_DARK_BASE};
+    color: {_TEXT_PRIMARY};
+    border: 1px solid {_SEPARATOR_DIVIDER};
+}}
+
 /* -- Buttons, all of them ------------------------------------------- */
 /* Flat-at-rest, accent-highlight-on-hover -- same "in-app" treatment as
    dockCloseButton/panelMenuButton/videoTransportButton/
