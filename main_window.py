@@ -1194,6 +1194,24 @@ class MainWindow(QMainWindow):
         self.sample_image.set_sequence_stack_getter(self.stack_panel.get_sequence_stack)
         self.timeline_panel.timeline_changed.connect(self.sample_image.refresh_video_transport_visibility)
 
+        # Timeline track widget playhead + click-to-seek (see
+        # timeline_track_widget.py) -- same pull-based-getter convention
+        # as current_record_frame's other consumers (e.g. the Record
+        # timecode label). frame_changed already fires on every playback
+        # tick AND every explicit seek (see TimelineController's own
+        # docstring), so this single connection covers both "the
+        # playhead moves while playing" and "the playhead jumps when you
+        # click elsewhere."
+        self.timeline_panel.set_record_frame_getter(
+            self.sample_image._timeline_controller.current_record_frame)
+        self.sample_image._timeline_controller.frame_changed.connect(
+            self.timeline_panel.refresh_playhead)
+        # Clicking the Timeline panel's ruler/empty track scrubs the whole
+        # Timeline, same "click jumps straight to the cursor" convention
+        # the Record-mode scrub bar already established.
+        self.timeline_panel.seek_requested.connect(
+            self.sample_image._timeline_controller.seek_to_record_frame)
+
         # Stills Gallery (Phase 3, Stack Memories panel) -- same "deferred
         # wiring, this panel has no idea SampleImagePanel exists" reasoning
         # as Image Library above. set_still_capture_getter feeds

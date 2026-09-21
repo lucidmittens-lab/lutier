@@ -85,7 +85,7 @@ def test_add_clip_with_range_appends_after_existing_clips():
     assert len(panel.timeline.clips) == 2
     assert panel.timeline.clips[0].name == "First"
     assert panel.timeline.clips[1].name == "Second"
-    assert panel.list_widget.currentRow() == 1, "the newly-added clip should be selected"
+    assert panel.get_selected_clip_index() == 1, "the newly-added clip should be selected"
     print("TimelinePanel.add_clip_with_range: appends after existing "
           "clips and selects the new row -- OK")
 
@@ -100,11 +100,96 @@ def test_add_clip_with_range_fires_timeline_changed():
           "(so the Viewer's transport bar shows up) -- OK")
 
 
+def test_clicking_a_clip_block_relays_clip_selected():
+    """The widget's own clip_selected (a real click, not a keep_selection
+    sync) must reach the panel's external clip_selected exactly as-is --
+    see _on_widget_clip_selected."""
+    panel = _panel()
+    panel.add_clip_with_range("First", "/tmp/a.mp4", "video", 0, 9)
+    panel.add_clip_with_range("Second", "/tmp/b.mp4", "video", 0, 9)
+    # add_clip_with_range already selects the newly-added ("Second") clip
+    # via keep_selection -- select "First" to get an actual, real change.
+    received = []
+    panel.clip_selected.connect(lambda clip: received.append(clip))
+
+    panel.track_widget._set_selected(panel.timeline.clips[0])
+
+    assert received == [panel.timeline.clips[0]]
+    print("TimelinePanel: a widget-driven selection relays through "
+          "clip_selected -- OK")
+
+
+def test_removing_the_selected_clip_emits_clip_selected_none():
+    panel = _panel()
+    panel.add_clip_with_range("Clip", "/tmp/a.mp4", "video", 0, 9)
+    panel.track_widget._set_selected(panel.timeline.clips[0])
+    received = []
+    panel.clip_selected.connect(lambda clip: received.append(clip))
+
+    clip = panel.timeline.clips[0]
+    panel.timeline.remove_clip(clip.id)
+    panel._refresh_list()
+
+    assert received == [None]
+    assert panel.get_selected_clip() is None
+    print("TimelinePanel: removing the selected clip clears selection "
+          "and fires clip_selected(None) -- OK")
+
+
+def test_seek_requested_relays_from_the_track_widget():
+    panel = _panel()
+    received = []
+    panel.seek_requested.connect(lambda frame: received.append(frame))
+
+    panel.track_widget.seek_requested.emit(42)
+
+    assert received == [42]
+    print("TimelinePanel: seek_requested relays straight from "
+          "TimelineTrackWidget.seek_requested -- OK")
+
+
+def test_reordering_via_drag_fires_timeline_changed_not_clip_selected():
+    panel = _panel()
+    panel.add_clip_with_range("A", "/tmp/a.mp4", "video", 0, 9)
+    panel.add_clip_with_range("B", "/tmp/b.mp4", "video", 0, 9)
+    a_id = panel.timeline.clips[0].id
+    changed = []
+    selected = []
+    panel.timeline_changed.connect(lambda: changed.append(True))
+    panel.clip_selected.connect(lambda clip: selected.append(clip))
+
+    panel.timeline.move_clip(a_id, 1)
+    panel._on_clips_reordered()
+
+    assert changed == [True]
+    assert selected == [], "a reorder shouldn't touch selection"
+    assert panel.timeline.clips[-1].id == a_id
+    print("TimelinePanel: _on_clips_reordered propagates timeline_changed "
+          "without touching selection -- OK")
+
+
+def test_refresh_playhead_pulls_from_the_configured_getter():
+    panel = _panel()
+    panel.add_clip_with_range("Clip", "/tmp/a.mp4", "video", 0, 99)
+    panel.set_record_frame_getter(lambda: 33)
+
+    panel.refresh_playhead()
+
+    assert panel.track_widget.playhead_frame == 33
+    print("TimelinePanel.refresh_playhead: pulls the current record "
+          "frame from the configured getter into the track widget -- OK")
+
+
 if __name__ == "__main__":
     test_add_clip_from_library_entry_video_uses_the_full_frame_range()
     test_add_clip_from_library_entry_still_uses_the_default_hold_duration()
     test_add_clip_with_range_covers_exactly_the_given_range()
     test_add_clip_with_range_appends_after_existing_clips()
     test_add_clip_with_range_fires_timeline_changed()
+    test_clicking_a_clip_block_relays_clip_selected()
+    test_removing_the_selected_clip_emits_clip_selected_none()
+    test_seek_requested_relays_from_the_track_widget()
+    test_reordering_via_drag_fires_timeline_changed_not_clip_selected()
+    test_refresh_playhead_pulls_from_the_configured_getter()
     print()
     print("All timeline_panel tests passed.")
