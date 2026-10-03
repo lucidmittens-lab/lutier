@@ -152,6 +152,33 @@ def test_save_remembered_workspace_never_raises_on_an_unwritable_path():
           "than raising -- OK")
 
 
+# ---- _default_workspace_dir platform dispatch ------------------------------
+
+def test_default_workspace_dir_dispatches_per_platform(monkeypatch):
+    """_default_workspace_dir() per-platform shape -- see that function's
+    own docstring for why each OS gets a different, idiomatic base dir."""
+    monkeypatch.setattr(wio.sys, "platform", "darwin")
+    assert wio._default_workspace_dir() == (
+        Path.home() / "Library" / "Application Support" / "LUTier")
+
+    monkeypatch.setattr(wio.sys, "platform", "linux")
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    assert wio._default_workspace_dir() == Path.home() / ".config" / "LUTier"
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/tmp/custom-xdg-config")
+    assert wio._default_workspace_dir() == Path("/tmp/custom-xdg-config") / "LUTier"
+
+    monkeypatch.setattr(wio.sys, "platform", "win32")
+    monkeypatch.delenv("APPDATA", raising=False)
+    assert wio._default_workspace_dir() == Path.home() / "AppData" / "Roaming" / "LUTier"
+
+    monkeypatch.setenv("APPDATA", "C:/custom/appdata")
+    assert wio._default_workspace_dir() == Path("C:/custom/appdata") / "LUTier"
+    print("_default_workspace_dir: darwin/linux/windows each resolve to "
+          "their own OS-idiomatic base dir, honoring XDG_CONFIG_HOME/"
+          "APPDATA when set -- OK")
+
+
 if __name__ == "__main__":
     test_save_and_load_workspace_preset_round_trips_exactly()
     test_save_workspace_preset_writes_a_versioned_envelope()

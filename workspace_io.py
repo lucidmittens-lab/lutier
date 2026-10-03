@@ -54,6 +54,8 @@ layout) rather than attempting to apply panels/splitters keys that no
 longer mean anything against a dock-based layout.
 """
 import json
+import os
+import sys
 from pathlib import Path
 
 from atomic_write import atomic_open
@@ -61,16 +63,47 @@ from atomic_write import atomic_open
 WORKSPACE_FORMAT = "lutier-workspace"
 WORKSPACE_FORMAT_VERSION = 2
 
+
+def _default_workspace_dir():
+    """The OS-conventional per-app writable-preferences directory --
+    fixed, not user-chosen (see DEFAULT_WORKSPACE_DIR's own docstring
+    below on what lives here). Per Tom, 2026-10-03: "make it more
+    similar to a typical NLE" / work natively on x86 Linux, not just
+    macOS (see BUILD_ON_LINUX.md) -- this used to be unconditionally
+    the macOS path, which still worked fine functionally on another OS
+    (Path.home() / "Library" / ... is a legal, if un-idiomatic, path
+    anywhere), but wasn't OS-idiomatic there. Now:
+      - macOS: ~/Library/Application Support/LUTier (unchanged, matches
+        the packaged .app's own convention, see BUILD_ON_MAC.md).
+      - Linux: the XDG Base Directory spec's config home
+        ($XDG_CONFIG_HOME, falling back to ~/.config per the spec's own
+        default) / LUTier.
+      - Anything else (Windows, mainly, for completeness -- not a
+        packaged target yet): %APPDATA% if set, else ~/AppData/Roaming,
+        matching that platform's own per-app-data convention.
+    This is a private file LUTier only ever reads/writes to itself,
+    never a path shown to the user, so "resolve to SOME sane writable
+    location" matters far more here than matching every platform's
+    convention exactly."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "LUTier"
+    if sys.platform.startswith("linux"):
+        config_home = os.environ.get("XDG_CONFIG_HOME")
+        base = Path(config_home) if config_home else Path.home() / ".config"
+        return base / "LUTier"
+    app_data = os.environ.get("APPDATA")
+    base = Path(app_data) if app_data else Path.home() / "AppData" / "Roaming"
+    return base / "LUTier"
+
+
 # Fixed, not-user-chosen -- the "remember between launches" file (per
 # Tom), distinct from an exported PRESET (which the user explicitly names
-# and picks a location for via Export/Import Workspace Preset...).
-# ~/Library/Application Support is the macOS-conventional per-app
-# writable-preferences location this app already targets for its packaged
-# .app (see BUILD_ON_MAC.md) -- resolves to an equivalent, if not
-# OS-idiomatic, path on any other platform this happens to run on, which
-# is fine: this is a private file LUTier only ever reads/writes to
-# itself, never a path shown to the user.
-DEFAULT_WORKSPACE_DIR = Path.home() / "Library" / "Application Support" / "LUTier"
+# and picks a location for via Export/Import Workspace Preset...). Also
+# the shared base directory theme_prefs.py/media_cache.py/gpu_shader_
+# cache.py each keep their own sibling file/folder under (see
+# _default_workspace_dir's own docstring on why one shared per-platform
+# resolution function backs all of them).
+DEFAULT_WORKSPACE_DIR = _default_workspace_dir()
 DEFAULT_WORKSPACE_PATH = DEFAULT_WORKSPACE_DIR / "workspace.json"
 
 
