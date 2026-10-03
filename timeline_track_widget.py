@@ -158,15 +158,30 @@ def clip_edge_at_x(clips, x, pixels_per_frame, origin_x=0, grab_px=EDGE_GRAB_PX)
     width regardless of zoom. A block narrower than 2*grab_px skips edge
     hit-testing entirely (its own left/right zones would overlap and
     there's no room to trim it precisely anyway) -- clicking it hits its
-    BODY instead (see clip_at_x), same as before this existed."""
+    BODY instead (see clip_at_x), same as before this existed.
+
+    ONE-SIDED on purpose -- a "left" hit only counts for x AT OR RIGHT OF
+    the boundary (0 <= x - left_x <= grab_px), a "right" hit only for x
+    AT OR LEFT OF it (0 <= right_x - x <= grab_px). Two adjacent clips
+    share a boundary pixel (clip A's own right_x == clip B's own
+    left_x), and an earlier, symmetric (abs(x - boundary) <= grab_px)
+    version of this check matched clip A's right edge FIRST for every
+    position in that shared zone -- clip_extents always visits A before
+    B -- making every clip's own LEFT edge after the first completely
+    unreachable by drag. One-sided zones instead split the shared
+    boundary by which side of it the cursor is on: approaching from the
+    left always grabs the earlier clip's right edge, from the right
+    always grabs the later clip's own left edge -- confirmed as a real,
+    previously-untested bug via a full end-to-end smoke test, not
+    theoretical."""
     for clip, start, end in clip_extents(clips):
         left_x = frame_to_x(start, pixels_per_frame, origin_x)
         right_x = frame_to_x(end, pixels_per_frame, origin_x)
         if right_x - left_x <= 2 * grab_px:
             continue
-        if abs(x - left_x) <= grab_px:
+        if 0 <= x - left_x <= grab_px:
             return clip, "left"
-        if abs(x - right_x) <= grab_px:
+        if 0 <= right_x - x <= grab_px:
             return clip, "right"
     return None
 

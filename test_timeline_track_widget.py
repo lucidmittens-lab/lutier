@@ -170,6 +170,26 @@ def test_clip_edge_at_x_skips_a_block_too_narrow_to_grab_precisely():
           "than 2*grab_px -- OK")
 
 
+def test_clip_edge_at_x_resolves_a_shared_boundary_by_which_side_youre_on():
+    """Regression test for a real bug found via end-to-end smoke
+    testing: an earlier, symmetric (abs(x - boundary) <= grab_px)
+    version of this check always matched the EARLIER clip's right edge
+    for any position near a shared boundary (clip_extents visits A
+    before B, and A's own right_x == B's own left_x), making every
+    clip's own LEFT edge after the first completely unreachable by
+    drag. The fix splits the shared boundary by side: left-of-boundary
+    always grabs A's right edge, right-of-boundary always grabs B's
+    own left edge."""
+    clips = [_clip("A", 100), _clip("B", 100)]  # shared boundary at x=100 (pixels_per_frame=1.0)
+    assert clip_edge_at_x(clips, x=97, pixels_per_frame=1.0) == (clips[0], "right")
+    assert clip_edge_at_x(clips, x=103, pixels_per_frame=1.0) == (clips[1], "left")
+    # Exactly on the shared boundary pixel -- ties go to the earlier clip's right edge.
+    assert clip_edge_at_x(clips, x=100, pixels_per_frame=1.0) == (clips[0], "right")
+    print("clip_edge_at_x: resolves a shared boundary between two "
+          "adjacent clips by which side of it the cursor is on, not "
+          "always the earlier clip -- OK")
+
+
 def test_apply_left_trim_shortens_from_the_front_and_clamps_to_one_frame():
     clip = tl.TimelineClip("A", "/tmp/a.mp4", "video", 10, 49)  # frame_count 40, record start/end given by caller
     # Dragging the left edge 5 frames later (into the clip) -- in_frame moves from 10 to 15.
@@ -797,6 +817,7 @@ if __name__ == "__main__":
     test_clip_edge_at_x_hits_the_left_and_right_boundaries()
     test_clip_edge_at_x_misses_the_middle_of_a_block()
     test_clip_edge_at_x_skips_a_block_too_narrow_to_grab_precisely()
+    test_clip_edge_at_x_resolves_a_shared_boundary_by_which_side_youre_on()
     test_apply_left_trim_shortens_from_the_front_and_clamps_to_one_frame()
     test_apply_right_trim_lengthens_and_clamps_to_one_frame()
     test_zoom_in_increases_pixels_per_frame_and_leaves_auto_fit()
