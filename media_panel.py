@@ -57,6 +57,19 @@ with transport, not a frozen frame) -- "Load as Reference" stays
 disabled for a selected video entry, since Reference has never supported
 video and adding that is out of scope here.
 
+MULTI-SELECT + FILTER (per Tom, 2026-10-03: "make it more similar to a
+typical NLE") -- ExtendedSelection (was SingleSelection): Add to Timeline
+and Delete now act on EVERY selected row (_selected_entries, plural),
+not just the current one -- Load as Source/Load as Reference/Rename stay
+single-row actions (_selected_entry), since none of those make sense for
+more than one entry at once. Right-clicking a row that's already part of
+a multi-selection keeps the whole selection (doesn't collapse to just
+that row) -- see _on_context_menu_requested. A plain QLineEdit above the
+table filters rows by a case-insensitive substring match against name OR
+path (_apply_filter, re-applied after every _refresh_table so it survives
+Import/Rename/Delete) -- a typical media-browser fixture, not a saved/
+named search.
+
 NOT TESTED IN THIS ENVIRONMENT -- same PySide6/libEGL wall as the rest of
 the GUI layer. Please run main_window.py and confirm: (1) Import... on a
 real image/video file adds a row showing its resolution/duration/color
@@ -66,7 +79,9 @@ Resolution/Duration, not lexicographically -- "10:02" must sort after
 "Load as Reference"/"Rename..."/"Delete", each acting on THAT row even
 after sorting has reordered it, (4) Rename/Delete work and ask before
 Delete, (5) an entry survives Save Session -> Open Session on the same
-machine.
+machine, (6) Ctrl/Shift-clicking selects multiple rows and Delete/Add to
+Timeline act on all of them, (7) the filter box actually hides non-
+matching rows live as you type.
 """
 from pathlib import Path
 
@@ -75,6 +90,7 @@ from PySide6.QtGui import QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QAbstractItemView,
     QHeaderView, QMessageBox, QInputDialog, QFileDialog, QToolButton, QMenu,
+    QLineEdit,
 )
 
 from app_logic import load_image_as_array, get_image_native_size
@@ -172,11 +188,23 @@ class MediaPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
 
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("Filter by name or path...")
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.textChanged.connect(self._apply_filter)
+        layout.addWidget(self.filter_edit)
+
         self.table = _MediaTable(0, len(COLUMN_HEADERS))
         self.table.setHorizontalHeaderLabels(COLUMN_HEADERS)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # ExtendedSelection (was SingleSelection, per Tom: "make it more
+        # similar to a typical NLE") -- Ctrl/Shift-click selects multiple
+        # rows; Add to Timeline/Delete act on all of them (_selected_
+        # entries), Load as Source/Reference/Rename stay single-row
+        # (_selected_entry, the CURRENT row) since none of those make
+        # sense for more than one entry at once.
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
         # Drag a row onto the Timeline (per Tom: "make it more similar
@@ -256,11 +284,19 @@ class MediaPanel(QWidget):
         own docstring) -- Load as Source/Load as Reference/Rename/Delete.
         No menu at all when the click lands on empty space below the last
         row (`itemAt` returns None there), same as every other panel's
-        list widget already leaves empty space unclickable."""
+        list widget already leaves empty space unclickable.
+
+        Right-clicking a row that's already part of a multi-selection
+        (ExtendedSelection, see _build_layout) keeps the WHOLE selection
+        -- only collapses to just that one row if it wasn't already
+        selected, same convention most multi-select lists/tables use so
+        a right-click can act on "everything I already picked" rather
+        than silently losing the rest of the selection."""
         item = self.table.itemAt(pos)
         if item is None:
             return
-        self.table.selectRow(item.row())
+        if not self.table.selectionModel().isRowSelected(item.row(), self.table.rootIndex()):
+            self.table.selectRow(item.row())
         menu = QMenu(self.table)
         menu.addAction("Load as Source", self._on_load_as_sample_clicked)
         menu.addAction("Load as Reference", self._on_load_as_reference_clicked)
@@ -287,6 +323,25 @@ class MediaPanel(QWidget):
             return self.library.find(entry_id)
         except KeyError:
             return None
+
+    def _selected_entries(self):
+        """Every currently-selected row's own MediaEntry, in TABLE row
+        order -- backs the actions that make sense across a multi-
+        selection (Add to Timeline, Delete). A row whose own id has
+        gone stale (should not normally happen -- see _entry_id_at_row)
+        is silently skipped rather than raising, same tolerance
+        _selected_entry's own KeyError guard already has."""
+        rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
+        entries = []
+        for row in rows:
+            entry_id = self._entry_id_at_row(row)
+            if entry_id is None:
+                continue
+            try:
+                entries.append(self.library.find(entry_id))
+            except KeyError:
+                continue
+        return entries
 
     def _hover_info_for_item(self, item):
         """Alt+hover info card content (see hover_inspector.py) -- adds
@@ -331,6 +386,29 @@ class MediaPanel(QWidget):
                 if self._entry_id_at_row(row) == keep_selection_id:
                     self.table.selectRow(row)
                     break
+        self._apply_filter()
+
+    def _apply_filter(self, text=None):
+        """Hides every row whose own name/path doesn't contain `text`
+        (case-insensitive, a plain substring match -- not a saved/named
+        search, see module docstring) -- `text=None` (the default) re-
+        reads the filter box itself, which is how _refresh_table keeps
+        an active filter applied across Import/Rename/Delete rebuilding
+        every row from scratch."""
+        text = (text if text is not None else self.filter_edit.text()).strip().lower()
+        for row in range(self.table.rowCount()):
+            if not text:
+                self.table.setRowHidden(row, False)
+                continue
+            entry_id = self._entry_id_at_row(row)
+            entry = None
+            if entry_id is not None:
+                try:
+                    entry = self.library.find(entry_id)
+                except KeyError:
+                    pass
+            haystack = f"{entry.name} {entry.source_path or ''}".lower() if entry is not None else ""
+            self.table.setRowHidden(row, text not in haystack)
 
     def _append_row(self, entry):
         row = self.table.rowCount()
@@ -455,10 +533,13 @@ class MediaPanel(QWidget):
         self.load_as_reference_requested.emit(entry)
 
     def _on_add_to_timeline_clicked(self):
-        entry = self._selected_entry()
-        if entry is None:
-            return
-        self.add_to_timeline_requested.emit(entry)
+        # Every selected row, in table order -- add_to_timeline_requested
+        # is a plain one-entry signal, so a multi-selection just emits it
+        # once per entry; main_window.py's own handler (TimelinePanel.
+        # add_clip_from_library_entry) appends one clip per emission, in
+        # the order received.
+        for entry in self._selected_entries():
+            self.add_to_timeline_requested.emit(entry)
 
     def _on_rename_clicked(self):
         entry = self._selected_entry()
@@ -472,18 +553,22 @@ class MediaPanel(QWidget):
         self._refresh_table(keep_selection_id=entry.id)
 
     def _on_delete_clicked(self):
-        entry = self._selected_entry()
-        if entry is None:
+        entries = self._selected_entries()
+        if not entries:
             return
+        if len(entries) == 1:
+            message = f'Delete "{entries[0].name}" from the library? This can\'t be undone.'
+        else:
+            message = f"Delete {len(entries)} items from the library? This can't be undone."
         reply = QMessageBox.question(
-            self, "Delete Media",
-            f'Delete "{entry.name}" from the library? This can\'t be undone.',
+            self, "Delete Media", message,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        self.library.remove(entry.id)
+        for entry in entries:
+            self.library.remove(entry.id)
         self._refresh_table()
 
     # ---- session save/load (see session_io.py) ---------------------------
