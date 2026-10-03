@@ -115,6 +115,14 @@ class TimelinePanel(QWidget):
     # relayed straight from TimelineTrackWidget's own seek_requested.
     # Wired through main_window.py to TimelineController.seek_to_record_frame.
     seek_requested = Signal(int)
+    # (entry_id, insert_index) -- relayed straight from TimelineTrackWidget's
+    # own media_entry_drop_requested (a Media Library row dragged onto the
+    # Timeline). Wired through main_window.py, which resolves entry_id
+    # against MediaPanel's own library and calls insert_clip_from_
+    # library_entry_at -- this panel has no MediaLibrary reference of its
+    # own, same "the other panel's data stays the other panel's" split
+    # every other cross-panel signal in this app already follows.
+    media_entry_drop_requested = Signal(int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -140,6 +148,7 @@ class TimelinePanel(QWidget):
         self.track_widget.delete_requested.connect(self._on_remove_clicked)
         self.track_widget.split_requested.connect(self.split_at_playhead)
         self.track_widget.seek_requested.connect(self.seek_requested.emit)
+        self.track_widget.media_entry_drop_requested.connect(self.media_entry_drop_requested.emit)
         self.track_widget.context_menu_requested_for_clip.connect(
             self._on_context_menu_requested_for_clip)
         self.track_widget.view_changed.connect(self._refresh_scrollbar)
@@ -359,29 +368,48 @@ class TimelinePanel(QWidget):
 
     def add_clip_from_library_entry(self, entry):
         """Target of MediaPanel's add_to_timeline_requested signal
-        (wired in main_window.py) -- the FULL source range every time
-        (see add_clip_with_range for a caller-chosen sub-range, e.g. a
-        marked Source in/out selection)."""
-        if entry.media_kind == "video":
-            out_frame = max(0, (entry.frame_count or 1) - 1)
-        else:
-            out_frame = max(0, int(round(DEFAULT_STILL_HOLD_SECONDS * self.timeline.frame_rate)) - 1)
+        (wired in main_window.py) -- the FULL source range every time,
+        always appended (see add_clip_with_range for a caller-chosen
+        sub-range, e.g. a marked Source in/out selection, and
+        insert_clip_from_library_entry_at for a caller-chosen
+        POSITION, e.g. a Media Library row dragged onto the Timeline)."""
+        out_frame = self._full_range_out_frame(entry)
         self.add_clip_with_range(
             entry.name, entry.source_path, entry.media_kind, 0, out_frame,
             thumbnail=entry.thumbnail)
 
-    def add_clip_with_range(self, name, source_path, media_kind, in_frame, out_frame, thumbnail=None):
+    def insert_clip_from_library_entry_at(self, entry, index):
+        """Same full-source-range clip construction as add_clip_from_
+        library_entry, but inserted at a specific position rather than
+        always appended -- the target of TimelineTrackWidget.media_
+        entry_drop_requested (via main_window.py, which resolves the
+        signal's own entry_id back to a MediaEntry), per Tom: "make it
+        more similar to a typical NLE" (dragging a clip from the Media
+        Library straight onto the Timeline at a chosen position)."""
+        out_frame = self._full_range_out_frame(entry)
+        self.add_clip_with_range(
+            entry.name, entry.source_path, entry.media_kind, 0, out_frame,
+            thumbnail=entry.thumbnail, index=index)
+
+    def _full_range_out_frame(self, entry):
+        if entry.media_kind == "video":
+            return max(0, (entry.frame_count or 1) - 1)
+        return max(0, int(round(DEFAULT_STILL_HOLD_SECONDS * self.timeline.frame_rate)) - 1)
+
+    def add_clip_with_range(self, name, source_path, media_kind, in_frame, out_frame, thumbnail=None, index=None):
         """Target of SampleImagePanel's add_source_range_to_timeline_
         requested signal (wired in main_window.py, per Tom: "will be
         necessary to be able to mark desired ranges and add to
-        sequence") -- appends a clip covering exactly [in_frame,
-        out_frame] of `source_path`, the marked-range counterpart to
-        add_clip_from_library_entry's always-full-range add. The only
-        two places that ever construct a TimelineClip and append it,
-        sharing this one tail so both stay in sync."""
+        sequence") -- a clip covering exactly [in_frame, out_frame] of
+        `source_path`, the marked-range counterpart to add_clip_from_
+        library_entry's always-full-range add. `index` (default: append
+        at the end, same as before this parameter existed) -- the only
+        place that ever constructs a TimelineClip and adds it, shared by
+        every caller above so they all stay in sync."""
         clip = tl.TimelineClip(name, source_path, media_kind, in_frame, out_frame, thumbnail=thumbnail)
-        self.timeline.add_clip(clip)
-        self._refresh_list(keep_selection=len(self.timeline.clips) - 1)
+        self.timeline.add_clip(clip, index=index)
+        inserted_index = index if index is not None else len(self.timeline.clips) - 1
+        self._refresh_list(keep_selection=inserted_index)
 
     def _on_rename_clicked(self):
         clip = self._selected_clip()

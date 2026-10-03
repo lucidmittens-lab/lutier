@@ -100,6 +100,33 @@ def test_add_clip_with_range_fires_timeline_changed():
           "(so the Viewer's transport bar shows up) -- OK")
 
 
+def test_insert_clip_from_library_entry_at_inserts_at_the_given_index():
+    panel = _panel()
+    panel.add_clip_with_range("A", "/tmp/a.mp4", "video", 0, 9)
+    panel.add_clip_with_range("B", "/tmp/b.mp4", "video", 0, 9)
+    entry = MediaEntry("C", "/tmp/c.mp4", media_kind="video", frame_count=20)
+
+    panel.insert_clip_from_library_entry_at(entry, 1)
+
+    assert [c.name for c in panel.timeline.clips] == ["A", "C", "B"]
+    assert panel.timeline.clips[1].out_frame == 19
+    assert panel.get_selected_clip_index() == 1, "the newly-inserted clip should be selected"
+    print("TimelinePanel.insert_clip_from_library_entry_at: inserts at "
+          "the given index with the full source range, selects it -- OK")
+
+
+def test_media_entry_drop_requested_relays_from_the_track_widget():
+    panel = _panel()
+    received = []
+    panel.media_entry_drop_requested.connect(lambda entry_id, index: received.append((entry_id, index)))
+
+    panel.track_widget.media_entry_drop_requested.emit(42, 1)
+
+    assert received == [(42, 1)]
+    print("TimelinePanel: media_entry_drop_requested relays straight "
+          "from TimelineTrackWidget.media_entry_drop_requested -- OK")
+
+
 def test_clicking_a_clip_block_relays_clip_selected():
     """The widget's own clip_selected (a real click, not a keep_selection
     sync) must reach the panel's external clip_selected exactly as-is --
@@ -338,6 +365,8 @@ if __name__ == "__main__":
     test_add_clip_with_range_covers_exactly_the_given_range()
     test_add_clip_with_range_appends_after_existing_clips()
     test_add_clip_with_range_fires_timeline_changed()
+    test_insert_clip_from_library_entry_at_inserts_at_the_given_index()
+    test_media_entry_drop_requested_relays_from_the_track_widget()
     test_clicking_a_clip_block_relays_clip_selected()
     test_removing_the_selected_clip_emits_clip_selected_none()
     test_seek_requested_relays_from_the_track_widget()

@@ -1217,6 +1217,14 @@ class MainWindow(QMainWindow):
         # Timeline view's own playhead moved -- a visible desync between
         # the two.
         self.timeline_panel.seek_requested.connect(self._on_timeline_seek_requested)
+        # Dragging a Media Library row onto the Timeline (per Tom: "make
+        # it more similar to a typical NLE") -- the Timeline panel has no
+        # MediaLibrary reference of its own (same "the other panel's data
+        # stays the other panel's" split every cross-panel wire in this
+        # method already follows), so this is where the signal's own
+        # entry_id gets resolved back to a real MediaEntry.
+        self.timeline_panel.media_entry_drop_requested.connect(
+            self._on_media_entry_dropped_on_timeline)
 
         # Stills Gallery (Phase 3, Stack Memories panel) -- same "deferred
         # wiring, this panel has no idea SampleImagePanel exists" reasoning
@@ -2661,6 +2669,22 @@ class MainWindow(QMainWindow):
         playhead is being dragged to."""
         self.sample_image.activate_record_mode()
         self.sample_image._video_scrub_slider.setValue(record_frame)
+
+    def _on_media_entry_dropped_on_timeline(self, entry_id, index):
+        """TimelinePanel.media_entry_drop_requested fired -- a Media
+        Library row dragged onto the Timeline view (per Tom: "make it
+        more similar to a typical NLE"). Resolves `entry_id` against
+        MediaPanel's own library (the Timeline panel has no reference to
+        it) and inserts a full-range clip at `index`. Silently a no-op
+        if the entry was removed from the library between the drag
+        starting and landing -- same "stale id, just drop it" tolerance
+        TimelinePanel._selected_clip's own KeyError guards use elsewhere
+        for a vanished row."""
+        try:
+            entry = self.media_panel.library.find(entry_id)
+        except KeyError:
+            return
+        self.timeline_panel.insert_clip_from_library_entry_at(entry, index)
 
     def _update_undo_redo_actions(self):
         # Force both off while Shot mode is active (see stack_panel.py's

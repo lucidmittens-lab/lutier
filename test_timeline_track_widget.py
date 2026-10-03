@@ -11,11 +11,12 @@ widget.py's own test files.
 """
 import sys
 
-from PySide6.QtCore import QPoint, QPointF, Qt
-from PySide6.QtGui import QPixmap, QWheelEvent
+from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt
+from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QPixmap, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
+from media_library import MEDIA_ENTRY_DRAG_MIME_TYPE
 import timeline as tl
 from timeline_track_widget import (
     TimelineTrackWidget, apply_left_trim, apply_right_trim, clip_at_x, clip_edge_at_x,
@@ -646,6 +647,123 @@ def test_s_key_emits_split_requested_regardless_of_selection():
           "of selection -- OK")
 
 
+# ---- drag-and-drop (Media Library row dropped here) ------------------------
+
+def _media_drop_mime(entry_id):
+    mime = QMimeData()
+    mime.setData(MEDIA_ENTRY_DRAG_MIME_TYPE, str(entry_id).encode("utf-8"))
+    return mime
+
+
+def test_drag_enter_accepts_the_media_entry_mime_type():
+    widget, _ = _widget([_clip("A", 100)])
+    # `mime` MUST stay alive as a real local for as long as `event` is in
+    # use -- QDragEnterEvent/QDropEvent only ever hold a raw, non-owning
+    # pointer to the QMimeData passed in (Qt's own C++ API, no parent-
+    # child ownership), so an inline QMimeData() temporary with no
+    # surviving Python reference gets garbage-collected out from under
+    # the event, and event.mimeData() then segfaults on the dangling
+    # pointer -- confirmed empirically while writing these tests.
+    mime = _media_drop_mime(7)
+    event = QDragEnterEvent(
+        QPoint(50, 50), Qt.DropAction.CopyAction, mime,
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+
+    widget.dragEnterEvent(event)
+
+    assert event.isAccepted()
+    print("TimelineTrackWidget.dragEnterEvent: accepts a dragged Media "
+          "Library row -- OK")
+
+
+def test_drag_move_computes_a_drop_preview_index():
+    widget, timeline_obj = _widget([_clip("A", 100), _clip("B", 100)])
+    x = int(frame_to_x(120, widget._pixels_per_frame, widget._origin_x()))  # inside clip B, before its own center (150) -- only A's own center (50) is passed
+    mime = _media_drop_mime(7)  # kept alive -- see test_drag_enter_accepts_the_media_entry_mime_type's own comment
+    event = QDragMoveEvent(
+        QPoint(x, 50), Qt.DropAction.CopyAction, mime,
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+
+    widget.dragMoveEvent(event)
+
+    assert widget._drop_preview_index == 1
+    assert event.isAccepted()
+    print("TimelineTrackWidget.dragMoveEvent: computes an insertion-"
+          "index preview as the drag moves -- OK")
+
+
+def test_drag_leave_clears_the_drop_preview():
+    widget, _ = _widget([_clip("A", 100)])
+    widget._drop_preview_index = 0
+
+    widget.dragLeaveEvent(QDragLeaveEvent())
+
+    assert widget._drop_preview_index is None
+    print("TimelineTrackWidget.dragLeaveEvent: clears the drop preview -- OK")
+
+
+def test_drop_emits_media_entry_drop_requested_with_the_right_index():
+    widget, timeline_obj = _widget([_clip("A", 100), _clip("B", 100)])
+    received = []
+    widget.media_entry_drop_requested.connect(lambda entry_id, index: received.append((entry_id, index)))
+    x = int(frame_to_x(120, widget._pixels_per_frame, widget._origin_x()))  # inside clip B, before its own center -> index 1
+
+    mime = _media_drop_mime(42)  # kept alive -- see test_drag_enter_accepts_the_media_entry_mime_type's own comment
+    move_event = QDragMoveEvent(
+        QPoint(x, 50), Qt.DropAction.CopyAction, mime,
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+    widget.dragMoveEvent(move_event)
+    drop_event = QDropEvent(
+        QPointF(x, 50), Qt.DropAction.CopyAction, mime,
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+    widget.dropEvent(drop_event)
+
+    assert received == [(42, 1)]
+    assert widget._drop_preview_index is None, "the preview must clear once the drop lands"
+    print("TimelineTrackWidget.dropEvent: emits media_entry_drop_"
+          "requested with the entry id and computed insertion index -- OK")
+
+
+def test_drop_on_an_empty_timeline_targets_index_zero():
+    widget, timeline_obj = _widget([])
+    received = []
+    widget.media_entry_drop_requested.connect(lambda entry_id, index: received.append((entry_id, index)))
+
+    mime = _media_drop_mime(5)  # kept alive -- see test_drag_enter_accepts_the_media_entry_mime_type's own comment
+    move_event = QDragMoveEvent(
+        QPoint(50, 50), Qt.DropAction.CopyAction, mime,
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+    widget.dragMoveEvent(move_event)
+    drop_event = QDropEvent(
+        QPointF(50, 50), Qt.DropAction.CopyAction, mime,
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+    widget.dropEvent(drop_event)
+
+    assert received == [(5, 0)]
+    print("TimelineTrackWidget.dropEvent: dropping on an empty Timeline "
+          "targets index 0 -- OK")
+
+
+def test_drop_without_a_prior_drag_move_is_a_noop():
+    """dropEvent reads self._drop_preview_index (set by dragMoveEvent) --
+    a real drag always moves at least once before dropping, but this
+    guards the no-preview case defensively rather than emitting a wrong
+    index."""
+    widget, _ = _widget([_clip("A", 100)])
+    received = []
+    widget.media_entry_drop_requested.connect(lambda entry_id, index: received.append((entry_id, index)))
+
+    mime = _media_drop_mime(5)  # kept alive -- see test_drag_enter_accepts_the_media_entry_mime_type's own comment
+    drop_event = QDropEvent(
+        QPointF(50, 50), Qt.DropAction.CopyAction, mime,
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+    widget.dropEvent(drop_event)
+
+    assert received == []
+    print("TimelineTrackWidget.dropEvent: a drop with no prior "
+          "dragMoveEvent (no preview index) is a no-op -- OK")
+
+
 if __name__ == "__main__":
     test_clip_extents_sums_preceding_frame_counts()
     test_clip_extents_empty_list()
@@ -694,5 +812,11 @@ if __name__ == "__main__":
     test_delete_key_emits_delete_requested_only_with_a_clip_selected()
     test_backspace_also_emits_delete_requested()
     test_s_key_emits_split_requested_regardless_of_selection()
+    test_drag_enter_accepts_the_media_entry_mime_type()
+    test_drag_move_computes_a_drop_preview_index()
+    test_drag_leave_clears_the_drop_preview()
+    test_drop_emits_media_entry_drop_requested_with_the_right_index()
+    test_drop_on_an_empty_timeline_targets_index_zero()
+    test_drop_without_a_prior_drag_move_is_a_noop()
     print()
     print("All timeline_track_widget tests passed.")

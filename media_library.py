@@ -45,6 +45,14 @@ import id_counter
 
 MEDIA_KINDS = ("still", "video")
 
+# The custom QMimeData format a dragged media_panel.py row carries (just
+# the entry's own id, utf-8 encoded) -- shared here (a plain string, no
+# Qt import needed) rather than duplicated/cross-imported between
+# media_panel.py (the drag SOURCE) and timeline_track_widget.py (the drop
+# TARGET), per Tom: "make it more similar to a typical NLE" (dragging a
+# clip from your media bin onto the timeline).
+MEDIA_ENTRY_DRAG_MIME_TYPE = "application/x-lutier-media-entry-id"
+
 next_entry_id = id_counter.make_next_entry_id()
 
 

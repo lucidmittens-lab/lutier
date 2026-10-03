@@ -38,6 +38,14 @@ so this panel's only ingestion path is its own Import... file dialog
 ("we'll make the file browser more robust later" -- per Tom, a folder-
 scan ingestion path is a deliberate follow-up, not attempted here).
 
+OUTGOING drag-and-drop onto the Timeline, though (per Tom, 2026-10-03:
+"make it more similar to a typical NLE") -- this table IS a drag source,
+via _MediaTable's own mimeData() override, carrying the dragged row's
+entry id in a custom MIME type (media_library.MEDIA_ENTRY_DRAG_MIME_
+TYPE). timeline_track_widget.py is the drop target; see that module's
+own docstring for the insertion-index math and main_window.py's wiring
+for how an (entry_id, index) pair turns into an actual TimelineClip.
+
 VIDEO ENTRIES -- Import... accepts video files (same extension set as
 VIDEO_EXTENSIONS below); video metadata (width/height/frame_count/
 frame_rate/duration) comes straight off video_source.VideoSource's own
@@ -62,7 +70,7 @@ machine.
 """
 from pathlib import Path
 
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import QMimeData, Signal, Qt
 from PySide6.QtGui import QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QAbstractItemView,
@@ -70,7 +78,7 @@ from PySide6.QtWidgets import (
 )
 
 from app_logic import load_image_as_array, get_image_native_size
-from media_library import MediaLibrary, MediaEntry
+from media_library import MediaLibrary, MediaEntry, MEDIA_ENTRY_DRAG_MIME_TYPE
 import hover_inspector
 import media_cache
 import thumbnail
@@ -126,6 +134,29 @@ class _NumericItem(QTableWidgetItem):
         return mine < theirs
 
 
+class _MediaTable(QTableWidget):
+    """QTableWidget with Qt's own row-drag machinery repurposed as a
+    drag SOURCE carrying this library's entry id (MEDIA_ENTRY_DRAG_MIME
+    _TYPE) -- the half of "drag a clip from the Media Library onto the
+    Timeline" (per Tom: "make it more similar to a typical NLE") that
+    lives here; see timeline_track_widget.py's own dragEnterEvent/
+    dropEvent for the drop TARGET half. DragOnly (not DragDrop) -- this
+    panel has no internal reorder/drop target of its own, only an
+    outgoing drag."""
+
+    def mimeData(self, items):
+        rows = sorted({item.row() for item in items})
+        if not rows:
+            return None
+        id_item = self.item(rows[0], COLUMN_THUMBNAIL)
+        entry_id = id_item.data(ENTRY_ID_ROLE) if id_item is not None else None
+        if entry_id is None:
+            return None
+        mime = QMimeData()
+        mime.setData(MEDIA_ENTRY_DRAG_MIME_TYPE, str(entry_id).encode("utf-8"))
+        return mime
+
+
 class MediaPanel(QWidget):
     load_as_sample_requested = Signal(object)      # a media_library.MediaEntry
     load_as_reference_requested = Signal(object)   # a media_library.MediaEntry
@@ -141,13 +172,19 @@ class MediaPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
 
-        self.table = QTableWidget(0, len(COLUMN_HEADERS))
+        self.table = _MediaTable(0, len(COLUMN_HEADERS))
         self.table.setHorizontalHeaderLabels(COLUMN_HEADERS)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
+        # Drag a row onto the Timeline (per Tom: "make it more similar
+        # to a typical NLE") -- DragOnly, since this table has no
+        # internal reorder/drop target of its own, only an outgoing
+        # drag (see _MediaTable's own docstring).
+        self.table.setDragEnabled(True)
+        self.table.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
         # Interactive (the default, but set explicitly here) on every
         # column -- Stretch/ResizeToContents (the previous setup for
         # Name/Path/Thumbnail) both make a column's width fixed against

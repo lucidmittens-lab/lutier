@@ -60,6 +60,17 @@ into via _resync_clip_order_from_list_widget) -- this widget only ever
 decides WHICH index to move to (reorder_target_index, a pure function),
 never touches list order itself beyond that one call.
 
+DROP TARGET for a dragged Media Library row (media_panel.py's own
+_MediaTable is the drag SOURCE half, per Tom: "make it more similar to a
+typical NLE") -- accepts media_library.MEDIA_ENTRY_DRAG_MIME_TYPE,
+reusing reorder_target_index UNMODIFIED for the insertion-index math by
+passing dragged_clip_id=None (never matches a real clip id, so every
+clip counts -- exactly "which index would this land at" with nothing to
+exclude). This widget only computes WHERE and emits media_entry_drop_
+requested(entry_id, index); it has no MediaLibrary reference of its own
+to resolve the id, so main_window.py does that (media_panel.library.
+find) and calls TimelinePanel.insert_clip_from_library_entry_at.
+
 NOT VISUALLY VERIFIED IN THIS ENVIRONMENT -- same situation as color_
 wheel_widget.py/curve_editor_widget.py's own docstrings: the underlying
 math and real QWidget/QPainter/QMouseEvent behavior are exercised
@@ -72,6 +83,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 
 import media_cache
 import timecode as tc_module
+from media_library import MEDIA_ENTRY_DRAG_MIME_TYPE
 
 MIN_PIXELS_PER_FRAME = 0.02  # a multi-hour Timeline still gets SOME width per frame, never truly zero
 MAX_PIXELS_PER_FRAME = 200.0  # zooming in further than individual frames being huge blocks isn't useful
@@ -246,6 +258,7 @@ class TimelineTrackWidget(QWidget):
     seek_requested = Signal(int)            # a record-space frame index, from clicking/dragging the ruler/empty track
     context_menu_requested_for_clip = Signal(object, QPoint)  # (TimelineClip, global QPoint) -- right-click
     view_changed = Signal()                 # zoom level and/or scroll position changed -- see module docstring
+    media_entry_drop_requested = Signal(int, int)  # (entry_id, insert_index) -- a Media Library row dropped here
 
     def __init__(self, timeline=None, parent=None):
         super().__init__(parent)
@@ -260,6 +273,7 @@ class TimelineTrackWidget(QWidget):
         self._scrubbing = False
         self._trim_clip_id = None
         self._trim_edge = None  # "left" or "right" while self._trim_clip_id is set
+        self._drop_preview_index = None  # insertion index while a Media Library row is dragged over, see dragMoveEvent
         self.setMinimumHeight(RULER_HEIGHT + 64)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         # Needed for hover-only mouseMoveEvent calls (no button held) --
@@ -267,6 +281,7 @@ class TimelineTrackWidget(QWidget):
         # cursor) tracks the mouse without a drag in progress.
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # Delete/Backspace needs real keyboard focus, see keyPressEvent
+        self.setAcceptDrops(True)  # drop target for a dragged Media Library row, see module docstring
         # customContextMenuRequested, not a contextMenuEvent override --
         # same right-click convention every other panel's list/table in
         # this app already uses (media_panel.py/timeline_panel.py's old
@@ -557,6 +572,38 @@ class TimelineTrackWidget(QWidget):
             return
         super().keyPressEvent(event)
 
+    # ---- drag-and-drop (a Media Library row dropped here) -------------------
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(MEDIA_ENTRY_DRAG_MIME_TYPE):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        if not event.mimeData().hasFormat(MEDIA_ENTRY_DRAG_MIME_TYPE):
+            return
+        self._drop_preview_index = reorder_target_index(
+            self._clips(), None, event.position().x(), self._pixels_per_frame, self._origin_x())
+        self.update()
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event):
+        self._drop_preview_index = None
+        self.update()
+
+    def dropEvent(self, event):
+        data = event.mimeData().data(MEDIA_ENTRY_DRAG_MIME_TYPE)
+        index = self._drop_preview_index
+        self._drop_preview_index = None
+        self.update()
+        if not data or index is None:
+            return
+        try:
+            entry_id = int(bytes(data).decode("utf-8"))
+        except ValueError:
+            return
+        self.media_entry_drop_requested.emit(entry_id, index)
+        event.acceptProposedAction()
+
     def _on_custom_context_menu_requested(self, pos):
         clip = clip_at_x(self._clips(), pos.x(), self._pixels_per_frame, self._origin_x())
         if clip is None:
@@ -603,6 +650,8 @@ class TimelineTrackWidget(QWidget):
         self._paint_ruler(painter, track)
         if not clips:
             self._paint_empty_hint(painter, track)
+            if self._drop_preview_index is not None:
+                self._paint_insertion_marker(painter, track, clips, self._drop_preview_index)
             painter.end()
             return
 
@@ -621,7 +670,9 @@ class TimelineTrackWidget(QWidget):
             self._paint_clip(painter, clip, display_start, display_end)
 
         if self._drag_clip_id is not None and self._drag_target_index is not None:
-            self._paint_insertion_marker(painter, track, clips)
+            self._paint_insertion_marker(painter, track, clips, self._drag_target_index, exclude_id=self._drag_clip_id)
+        elif self._drop_preview_index is not None:
+            self._paint_insertion_marker(painter, track, clips, self._drop_preview_index)
 
         if self.playhead_frame is not None:
             self._paint_playhead(painter, track)
@@ -699,14 +750,20 @@ class TimelineTrackWidget(QWidget):
                 label_rect.adjusted(4, 0, -4, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                 painter.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, int(label_rect.width() - 8)))
 
-    def _paint_insertion_marker(self, painter, track, clips):
+    def _paint_insertion_marker(self, painter, track, clips, target_index, exclude_id=None):
+        """Shared by an internal clip-reorder drag (exclude_id=the clip
+        being dragged, so its OWN current slot doesn't count towards
+        the target) and an external Media Library row being dragged
+        over (exclude_id=None -- nothing to exclude, every clip
+        counts, same as reorder_target_index's own dragged_clip_id=None
+        case, see module docstring)."""
         origin_x = self._origin_x()
-        extents = [(c, s, e) for c, s, e in clip_extents(clips) if c.id != self._drag_clip_id]
-        if self._drag_target_index >= len(extents):
+        extents = [(c, s, e) for c, s, e in clip_extents(clips) if c.id != exclude_id]
+        if target_index >= len(extents):
             x = frame_to_x(
                 extents[-1][2] if extents else 0, self._pixels_per_frame, origin_x)
         else:
-            x = frame_to_x(extents[self._drag_target_index][1], self._pixels_per_frame, origin_x)
+            x = frame_to_x(extents[target_index][1], self._pixels_per_frame, origin_x)
         pen = painter.pen()
         pen.setColor(self.palette().highlight().color())
         pen.setWidth(3)
