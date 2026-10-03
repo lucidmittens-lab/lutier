@@ -347,6 +347,20 @@ def test_split_requested_from_the_track_widget_is_wired_to_split_at_playhead():
           "to split_at_playhead -- OK")
 
 
+def test_populate_menu_has_split_and_clear_actions():
+    from PySide6.QtWidgets import QMenu
+    panel = _panel()
+    menu = QMenu()
+
+    panel.populate_menu(menu)
+
+    texts = [a.text() for a in menu.actions() if not a.isSeparator()]
+    assert texts == ["Split at Playhead", "Clear Timeline"]
+    print("TimelinePanel.populate_menu: exposes Split at Playhead "
+          "alongside Clear Timeline, both standing actions needing no "
+          "selection -- OK")
+
+
 def test_refresh_playhead_pulls_from_the_configured_getter():
     panel = _panel()
     panel.add_clip_with_range("Clip", "/tmp/a.mp4", "video", 0, 99)
@@ -381,6 +395,7 @@ if __name__ == "__main__":
     test_split_at_playhead_splits_and_selects_the_first_half()
     test_split_at_playhead_is_a_noop_with_no_record_frame_getter()
     test_split_requested_from_the_track_widget_is_wired_to_split_at_playhead()
+    test_populate_menu_has_split_and_clear_actions()
     test_refresh_playhead_pulls_from_the_configured_getter()
     print()
     print("All timeline_panel tests passed.")

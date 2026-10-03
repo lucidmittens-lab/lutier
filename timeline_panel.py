@@ -269,8 +269,13 @@ class TimelinePanel(QWidget):
         arrangement every other panel's populate_menu already follows.
         Rename/Remove need a selected clip, so they live on the
         right-click context menu instead (see
-        _on_context_menu_requested_for_clip) -- only the panel-level
-        "Clear Timeline" belongs here."""
+        _on_context_menu_requested_for_clip) -- "Clear Timeline" and
+        "Split at Playhead" (same standing action as the toolbar's own
+        Split button, see split_at_playhead) are the two that belong
+        here, needing only the Timeline's own current state, not a
+        selection."""
+        menu.addAction("Split at Playhead", self.split_at_playhead)
+        menu.addSeparator()
         menu.addAction("Clear Timeline", self._on_clear_clicked)
 
     def _on_context_menu_requested_for_clip(self, clip, global_pos):
