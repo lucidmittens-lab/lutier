@@ -242,6 +242,7 @@ class TimelineTrackWidget(QWidget):
     clips_reordered = Signal()              # fired after a drag actually changes clip order
     clip_trimmed = Signal()                 # fired after a drag-to-trim actually changes a clip's in/out
     delete_requested = Signal()             # Delete/Backspace pressed with a clip selected, see keyPressEvent
+    split_requested = Signal()              # "S" pressed, see keyPressEvent -- splits whatever's under the playhead
     seek_requested = Signal(int)            # a record-space frame index, from clicking/dragging the ruler/empty track
     context_menu_requested_for_clip = Signal(object, QPoint)  # (TimelineClip, global QPoint) -- right-click
     view_changed = Signal()                 # zoom level and/or scroll position changed -- see module docstring
@@ -546,6 +547,13 @@ class TimelineTrackWidget(QWidget):
         # setFocusPolicy), not a window-wide QShortcut.
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.selected_clip_id is not None:
             self.delete_requested.emit()
+            return
+        # "S" (razor/blade tool key in most NLEs) -- splits whichever
+        # clip is under the PLAYHEAD, not necessarily the selected one
+        # (same convention Premiere/Resolve use for this), see
+        # timeline_panel.py's own split_at_playhead.
+        if event.key() == Qt.Key.Key_S:
+            self.split_requested.emit()
             return
         super().keyPressEvent(event)
 

@@ -282,6 +282,44 @@ def test_zoom_buttons_and_scrollbar_are_wired_to_the_track_widget():
           "wired to the track widget in both directions -- OK")
 
 
+def test_split_at_playhead_splits_and_selects_the_first_half():
+    panel = _panel()
+    panel.add_clip_with_range("A", "/tmp/a.mp4", "video", 0, 99)  # 100 frames
+    panel.set_record_frame_getter(lambda: 40)
+
+    panel.split_at_playhead()
+
+    assert len(panel.timeline.clips) == 2
+    assert panel.timeline.clips[0].out_frame == 39
+    assert panel.timeline.clips[1].in_frame == 40
+    assert panel.get_selected_clip() is panel.timeline.clips[0]
+    print("TimelinePanel.split_at_playhead: splits the clip under the "
+          "playhead and selects the first half -- OK")
+
+
+def test_split_at_playhead_is_a_noop_with_no_record_frame_getter():
+    panel = _panel()
+    panel.add_clip_with_range("A", "/tmp/a.mp4", "video", 0, 99)
+
+    panel.split_at_playhead()  # no set_record_frame_getter call at all
+
+    assert len(panel.timeline.clips) == 1
+    print("TimelinePanel.split_at_playhead: a no-op with no record "
+          "frame getter configured -- OK")
+
+
+def test_split_requested_from_the_track_widget_is_wired_to_split_at_playhead():
+    panel = _panel()
+    panel.add_clip_with_range("A", "/tmp/a.mp4", "video", 0, 99)
+    panel.set_record_frame_getter(lambda: 40)
+
+    panel.track_widget.split_requested.emit()
+
+    assert len(panel.timeline.clips) == 2
+    print("TimelinePanel: TimelineTrackWidget.split_requested is wired "
+          "to split_at_playhead -- OK")
+
+
 def test_refresh_playhead_pulls_from_the_configured_getter():
     panel = _panel()
     panel.add_clip_with_range("Clip", "/tmp/a.mp4", "video", 0, 99)
@@ -311,6 +349,9 @@ if __name__ == "__main__":
     test_delete_requested_from_the_track_widget_removes_the_selected_clip()
     test_clip_trimmed_refreshes_edl_text_and_fires_timeline_changed()
     test_zoom_buttons_and_scrollbar_are_wired_to_the_track_widget()
+    test_split_at_playhead_splits_and_selects_the_first_half()
+    test_split_at_playhead_is_a_noop_with_no_record_frame_getter()
+    test_split_requested_from_the_track_widget_is_wired_to_split_at_playhead()
     test_refresh_playhead_pulls_from_the_configured_getter()
     print()
     print("All timeline_panel tests passed.")

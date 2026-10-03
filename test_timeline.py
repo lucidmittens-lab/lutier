@@ -165,6 +165,80 @@ def test_timeline_copy_is_independent_with_the_same_clip_ids():
           "Stacks) -- OK")
 
 
+def test_split_clip_at_record_frame_splits_into_two_adjacent_clips():
+    timeline = Timeline()
+    original = timeline.add_clip(TimelineClip("A", "/a.mov", "video", 10, 109))  # 100 frames, in/out 10..109
+
+    result = timeline.split_clip_at_record_frame(30)
+
+    assert result is not None
+    first, second = result
+    assert [c.id for c in timeline.clips] == [first.id, second.id]
+    assert (first.in_frame, first.out_frame) == (10, 39)
+    assert (second.in_frame, second.out_frame) == (40, 109)
+    assert first.name == original.name == second.name
+    assert first.source_path == original.source_path == second.source_path
+    print("Timeline.split_clip_at_record_frame: splits into two adjacent "
+          "clips at the right source frame boundary -- OK")
+
+
+def test_split_clip_at_record_frame_each_half_gets_an_independent_stack_copy():
+    timeline = Timeline()
+    clip = timeline.add_clip(TimelineClip("A", "/a.mov", "video", 0, 99, stack=_make_stack()))
+
+    first, second = timeline.split_clip_at_record_frame(40)
+
+    assert first.stack is not clip.stack
+    assert second.stack is not first.stack
+    first.stack.add_stage(st.make_cdl_stage(sat=0.5))
+    assert len(second.stack.stages) == 1, "editing one half's Stack must not affect the other's"
+    print("Timeline.split_clip_at_record_frame: each half gets its own "
+          "independent copy of the original Stack -- OK")
+
+
+def test_split_clip_at_record_frame_does_not_touch_other_clips():
+    timeline = Timeline()
+    a = timeline.add_clip(TimelineClip("A", "/a.mov", "video", 0, 49))   # 50 frames, record 0..49
+    b = timeline.add_clip(TimelineClip("B", "/b.mov", "video", 0, 49))   # record 50..99
+    c = timeline.add_clip(TimelineClip("C", "/c.mov", "video", 0, 49))   # record 100..149
+
+    timeline.split_clip_at_record_frame(70)  # inside clip B
+
+    assert timeline.clips[0].id == a.id
+    assert timeline.clips[-1].id == c.id
+    assert len(timeline.clips) == 4
+    print("Timeline.split_clip_at_record_frame: leaves every OTHER "
+          "clip's own position untouched -- OK")
+
+
+def test_split_clip_at_record_frame_is_a_noop_exactly_on_a_clips_own_start():
+    timeline = Timeline()
+    timeline.add_clip(TimelineClip("A", "/a.mov", "video", 0, 49))
+    timeline.add_clip(TimelineClip("B", "/b.mov", "video", 0, 49))
+
+    assert timeline.split_clip_at_record_frame(0) is None   # clip A's own start
+    assert timeline.split_clip_at_record_frame(50) is None  # clip B's own start
+    assert len(timeline.clips) == 2, "neither no-op should have split anything"
+    print("Timeline.split_clip_at_record_frame: a no-op exactly on a "
+          "clip's own start -- nothing to split -- OK")
+
+
+def test_split_clip_at_record_frame_is_a_noop_past_the_end():
+    timeline = Timeline()
+    timeline.add_clip(TimelineClip("A", "/a.mov", "video", 0, 49))
+
+    assert timeline.split_clip_at_record_frame(999) is None
+    print("Timeline.split_clip_at_record_frame: a no-op for a position "
+          "past the Timeline's own end -- OK")
+
+
+def test_split_clip_at_record_frame_is_a_noop_on_an_empty_timeline():
+    timeline = Timeline()
+    assert timeline.split_clip_at_record_frame(0) is None
+    print("Timeline.split_clip_at_record_frame: a no-op on an empty "
+          "Timeline -- OK")
+
+
 def test_timeline_default_frame_rate():
     from timeline import DEFAULT_FRAME_RATE
     timeline = Timeline()
@@ -188,6 +262,12 @@ if __name__ == "__main__":
     test_timeline_move_clip_clamps_out_of_range_index()
     test_timeline_move_clip_unknown_id_raises_keyerror()
     test_timeline_total_frame_count_sums_every_clip()
+    test_split_clip_at_record_frame_splits_into_two_adjacent_clips()
+    test_split_clip_at_record_frame_each_half_gets_an_independent_stack_copy()
+    test_split_clip_at_record_frame_does_not_touch_other_clips()
+    test_split_clip_at_record_frame_is_a_noop_exactly_on_a_clips_own_start()
+    test_split_clip_at_record_frame_is_a_noop_past_the_end()
+    test_split_clip_at_record_frame_is_a_noop_on_an_empty_timeline()
     test_timeline_copy_is_independent_with_the_same_clip_ids()
     test_timeline_default_frame_rate()
     print()

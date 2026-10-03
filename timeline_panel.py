@@ -40,12 +40,15 @@ see TimelineTrackWidget's own module docstring on that mechanism
 clips have no gap concept in this data model (timeline.py's own
 docstring): shortening one clip shifts every later one automatically.
 
-Also holds a zoom/scroll row (QScrollBar + Zoom In/Out/Fit buttons,
-wired straight to the widget's own zoom_in/zoom_out/zoom_to_fit/set_
-scroll_offset_frames -- see _build_scroll_and_zoom_row/_refresh_
-scrollbar) and a minimizable EDL (Edit Decision List) sub-panel below
-the track view, per Tom: "add an EDL expression of the timeline in as a
-sub panel which can be minimized in the timeline view." A plain read-
+Also holds a toolbar row (a Split button -- see split_at_playhead,
+splitting whichever clip the Timeline's current RECORD position sits
+inside, timeline.Timeline.split_clip_at_record_frame's own razor/blade-
+tool cut -- plus a QScrollBar and Zoom In/Out/Fit buttons wired straight
+to the track widget's own zoom_in/zoom_out/zoom_to_fit/set_scroll_
+offset_frames -- see _build_toolbar_row/_refresh_scrollbar) and a
+minimizable EDL (Edit Decision List) sub-panel below the track view, per
+Tom: "add an EDL expression of the timeline in as a sub panel which can
+be minimized in the timeline view." A plain read-
 only text expression (see edl.py's own docstring on scope -- not a
 round-trippable import/export format), regenerated from self.timeline
 on every mutation (_refresh_list/_on_clips_reordered/_on_clip_trimmed)
@@ -135,19 +138,28 @@ class TimelinePanel(QWidget):
         self.track_widget.clips_reordered.connect(self._on_clips_reordered)
         self.track_widget.clip_trimmed.connect(self._on_clip_trimmed)
         self.track_widget.delete_requested.connect(self._on_remove_clicked)
+        self.track_widget.split_requested.connect(self.split_at_playhead)
         self.track_widget.seek_requested.connect(self.seek_requested.emit)
         self.track_widget.context_menu_requested_for_clip.connect(
             self._on_context_menu_requested_for_clip)
         self.track_widget.view_changed.connect(self._refresh_scrollbar)
         layout.addWidget(self.track_widget, stretch=1)
 
-        self._build_scroll_and_zoom_row(layout)
+        self._build_toolbar_row(layout)
         self._build_edl_subpanel(layout)
         self._build_menu_button()
 
-    def _build_scroll_and_zoom_row(self, layout):
+    def _build_toolbar_row(self, layout):
         row = QHBoxLayout()
         row.setContentsMargins(4, 0, 4, 0)
+
+        self.split_button = QToolButton()
+        self.split_button.setObjectName("panelMenuButton")
+        self.split_button.setAutoRaise(True)
+        self.split_button.setText("✂")
+        self.split_button.setToolTip("Split the clip under the playhead into two (S)")
+        self.split_button.clicked.connect(self.split_at_playhead)
+        row.addWidget(self.split_button)
 
         self.timeline_scrollbar = QScrollBar(Qt.Orientation.Horizontal)
         self.timeline_scrollbar.valueChanged.connect(self._on_scrollbar_changed)
@@ -312,6 +324,27 @@ class TimelinePanel(QWidget):
         if self._record_frame_getter is None:
             return
         self.track_widget.set_playhead_frame(self._record_frame_getter())
+
+    def split_at_playhead(self):
+        """Splits whichever clip the Timeline's own current RECORD
+        position sits inside into two adjacent clips -- per Tom: "make
+        it more similar to a typical NLE" (a razor/blade-tool cut), see
+        timeline.Timeline.split_clip_at_record_frame's own docstring on
+        exactly where a split lands/when it's a no-op. Selects the FIRST
+        of the two resulting clips afterward, same "land on something
+        sensible" convention add_clip_with_range's own keep_selection
+        already follows."""
+        if self._record_frame_getter is None:
+            return
+        record_frame = self._record_frame_getter()
+        if record_frame is None:
+            return
+        result = self.timeline.split_clip_at_record_frame(record_frame)
+        if result is None:
+            return
+        first, _second = result
+        index = next(i for i, c in enumerate(self.timeline.clips) if c.id == first.id)
+        self._refresh_list(keep_selection=index)
 
     def _on_clips_reordered(self):
         # Timeline.move_clip has already been applied by the widget itself

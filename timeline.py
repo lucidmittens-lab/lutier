@@ -3,9 +3,15 @@ timeline.py -- a "Continuity Grading Timeline": an ordered list of clips
 (shots) the user builds up from the Image Library to review in cut order,
 each carrying its OWN independent grade (a `stack.Stack`) that composes
 with the app's existing main/global working Stack at playback time (see
-stack.compose_stacks). Per Tom: this is explicitly NOT a full NLE -- no
-transitions, no complex trim editing -- the point is checking a look
-holds together across cuts, not producing an edit.
+stack.compose_stacks). Originally explicitly NOT a full NLE -- no
+transitions, no complex trim editing, the point being to check a look
+holds together across cuts rather than to produce an edit -- Tom revisited
+that scope on 2026-10-03 ("make it more similar to a typical NLE"): clips
+on an already-built Timeline can now be trimmed in place (timeline_track_
+widget.py's own drag-to-trim) and split at the playhead (split_clip_at_
+record_frame, below). Transitions and multi-track/audio are still out of
+scope -- clips remain a single, strictly end-to-end (no gap) sequence, cut
+only.
 
 Mirrors stack_memory.py's own "a named thing that owns its own Stack"
 shape (StackMemory) closely, with one deliberate difference: a
@@ -149,6 +155,49 @@ class Timeline:
         frame_rate (see DEFAULT_FRAME_RATE's own comment on what that
         means for a still-kind clip specifically)."""
         return sum(c.frame_count for c in self.clips)
+
+    def split_clip_at_record_frame(self, record_frame):
+        """Splits whichever clip's own extent contains `record_frame`
+        (a position in the WHOLE Timeline's own numbering -- the same
+        "sum every earlier clip's frame_count" numbering total_frame_
+        count/TimelineController.current_record_frame/timeline_track_
+        widget.clip_extents all independently use) into two adjacent
+        clips at that point -- per Tom: "make it more similar to a
+        typical NLE" (a razor/blade-tool cut). The first keeps [in_frame,
+        split_point - 1], the second [split_point, out_frame]; both are
+        fresh TimelineClip objects sharing the original's name and a
+        COPY of its Stack each (so each half's grade can be edited
+        independently afterward without one edit leaking into the
+        other, same "copy, don't share" convention TimelineClip.copy/
+        Timeline.copy already use) -- replaces the original clip in
+        place with the first half, inserting the second half right
+        after it, so every OTHER clip's own position is unaffected.
+
+        Returns (first_half, second_half) on success, or None if
+        `record_frame` doesn't land strictly inside a clip -- landing
+        exactly on a clip's own first frame (or past the Timeline's own
+        end) has nothing to split, same as a zero-length half being
+        meaningless."""
+        running = 0
+        for index, clip in enumerate(self.clips):
+            if running <= record_frame < running + clip.frame_count:
+                offset = record_frame - running
+                if offset <= 0:
+                    return None
+                split_point = clip.in_frame + offset
+                first = TimelineClip(
+                    clip.name, clip.source_path, clip.media_kind,
+                    clip.in_frame, split_point - 1,
+                    stack=clip.stack.copy(), thumbnail=clip.thumbnail)
+                second = TimelineClip(
+                    clip.name, clip.source_path, clip.media_kind,
+                    split_point, clip.out_frame,
+                    stack=clip.stack.copy(), thumbnail=clip.thumbnail)
+                self.clips[index] = first
+                self.clips.insert(index + 1, second)
+                return first, second
+            running += clip.frame_count
+        return None
 
     def copy(self):
         return Timeline(clips=[c.copy() for c in self.clips], name=self.name,

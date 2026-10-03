@@ -631,6 +631,21 @@ def test_backspace_also_emits_delete_requested():
     print("TimelineTrackWidget: Backspace also emits delete_requested -- OK")
 
 
+def test_s_key_emits_split_requested_regardless_of_selection():
+    """Unlike Delete, splitting acts on whatever's under the PLAYHEAD,
+    not the selection -- "S" must fire split_requested even with
+    nothing selected at all."""
+    widget, timeline_obj = _widget([_clip("A", 100)])
+    received = []
+    widget.split_requested.connect(lambda: received.append(True))
+
+    QTest.keyClick(widget, Qt.Key.Key_S)
+
+    assert received == [True]
+    print("TimelineTrackWidget: \"S\" emits split_requested regardless "
+          "of selection -- OK")
+
+
 if __name__ == "__main__":
     test_clip_extents_sums_preceding_frame_counts()
     test_clip_extents_empty_list()
@@ -678,5 +693,6 @@ if __name__ == "__main__":
     test_trimming_one_clip_ripples_every_later_clips_record_position()
     test_delete_key_emits_delete_requested_only_with_a_clip_selected()
     test_backspace_also_emits_delete_requested()
+    test_s_key_emits_split_requested_regardless_of_selection()
     print()
     print("All timeline_track_widget tests passed.")
