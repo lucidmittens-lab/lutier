@@ -219,6 +219,69 @@ def test_edl_text_reflects_a_drag_reorder():
     print("TimelinePanel: the EDL text view reflects a drag-reorder -- OK")
 
 
+def test_delete_requested_from_the_track_widget_removes_the_selected_clip():
+    """TimelineTrackWidget.delete_requested is wired straight to _on_
+    remove_clicked (see _build_layout) -- same confirm-and-remove path
+    as the context menu's own Remove action, just reachable from the
+    keyboard too (Delete/Backspace while the track view has focus).
+    Plain manual monkeypatch (no pytest fixture) so this also runs
+    correctly from the __main__ block below, not just under pytest."""
+    from PySide6.QtWidgets import QMessageBox
+    original_question = QMessageBox.question
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    try:
+        panel = _panel()
+        panel.add_clip_with_range("A", "/tmp/a.mp4", "video", 0, 9)
+        panel.track_widget._set_selected(panel.timeline.clips[0])
+
+        panel.track_widget.delete_requested.emit()
+    finally:
+        QMessageBox.question = original_question
+
+    assert panel.timeline.clips == []
+    print("TimelinePanel: TimelineTrackWidget.delete_requested removes "
+          "the selected clip via the same confirm-and-remove path -- OK")
+
+
+def test_clip_trimmed_refreshes_edl_text_and_fires_timeline_changed():
+    panel = _panel()
+    panel.add_clip_with_range("A", "/tmp/a.mp4", "video", 0, 99)
+    before_text = panel.edl_text_view.toPlainText()
+    panel.timeline.clips[0].out_frame = 49  # simulate what the widget's own drag-to-trim already did
+    changed = []
+    panel.timeline_changed.connect(lambda: changed.append(True))
+
+    panel.track_widget.clip_trimmed.emit()
+
+    assert changed == [True]
+    assert panel.edl_text_view.toPlainText() != before_text, "the EDL text must regenerate to reflect the new trim"
+    print("TimelinePanel: clip_trimmed refreshes the EDL text and fires "
+          "timeline_changed -- OK")
+
+
+def test_zoom_buttons_and_scrollbar_are_wired_to_the_track_widget():
+    panel = _panel()
+    panel.add_clip_with_range("A", "/tmp/a.mp4", "video", 0, 999)
+    panel.track_widget.resize(200, 100)
+
+    panel.zoom_in_button.click()
+    assert not panel.track_widget.is_zoomed_to_fit()
+    assert panel.timeline_scrollbar.maximum() > 0, "zoomed in on a long clip in a narrow widget should overflow"
+
+    panel.timeline_scrollbar.setValue(panel.timeline_scrollbar.maximum())
+    # QScrollBar's own range is integer; max_scroll_frames() is a float
+    # (sub-frame-precise auto-fit math) -- round rather than compare
+    # exactly, same "int range, float underlying value" gap _refresh_
+    # scrollbar's own round() calls already accept.
+    assert round(panel.track_widget.scroll_offset_frames()) == panel.timeline_scrollbar.maximum()
+
+    panel.zoom_fit_button.click()
+    assert panel.track_widget.is_zoomed_to_fit()
+    assert panel.timeline_scrollbar.maximum() == 0
+    print("TimelinePanel: zoom in/fit buttons and the scrollbar are "
+          "wired to the track widget in both directions -- OK")
+
+
 def test_refresh_playhead_pulls_from_the_configured_getter():
     panel = _panel()
     panel.add_clip_with_range("Clip", "/tmp/a.mp4", "video", 0, 99)
@@ -245,6 +308,9 @@ if __name__ == "__main__":
     test_edl_toggle_button_expands_and_collapses_the_text_view()
     test_edl_text_reflects_the_current_clip_list_even_while_collapsed()
     test_edl_text_reflects_a_drag_reorder()
+    test_delete_requested_from_the_track_widget_removes_the_selected_clip()
+    test_clip_trimmed_refreshes_edl_text_and_fires_timeline_changed()
+    test_zoom_buttons_and_scrollbar_are_wired_to_the_track_widget()
     test_refresh_playhead_pulls_from_the_configured_getter()
     print()
     print("All timeline_panel tests passed.")

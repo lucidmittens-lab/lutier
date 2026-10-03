@@ -11,15 +11,16 @@ widget.py's own test files.
 """
 import sys
 
-from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtGui import QPixmap, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 import timeline as tl
 from timeline_track_widget import (
-    TimelineTrackWidget, clip_at_x, clip_extents, frame_to_x, pixels_per_frame_to_fit,
-    reorder_target_index, ruler_tick_frames, x_to_frame, MIN_PIXELS_PER_FRAME,
+    TimelineTrackWidget, apply_left_trim, apply_right_trim, clip_at_x, clip_edge_at_x,
+    clip_extents, frame_to_x, pixels_per_frame_to_fit, reorder_target_index,
+    ruler_tick_frames, x_to_frame, MIN_PIXELS_PER_FRAME, MAX_PIXELS_PER_FRAME,
 )
 
 
@@ -143,6 +144,52 @@ def test_reorder_target_index_ignores_the_dragged_clips_own_position():
     assert target == 0
     print("reorder_target_index: ignores the dragged clip's own current "
           "position, only counts the others -- OK")
+
+
+def test_clip_edge_at_x_hits_the_left_and_right_boundaries():
+    clips = [_clip("A", 100)]
+    ppf = 2.0  # block spans x=[0, 200), well over 2*EDGE_GRAB_PX wide
+    assert clip_edge_at_x(clips, x=1, pixels_per_frame=ppf) == (clips[0], "left")
+    assert clip_edge_at_x(clips, x=199, pixels_per_frame=ppf) == (clips[0], "right")
+    print("clip_edge_at_x: hits a clip's own left/right boundary within "
+          "the grab zone -- OK")
+
+
+def test_clip_edge_at_x_misses_the_middle_of_a_block():
+    clips = [_clip("A", 100)]
+    assert clip_edge_at_x(clips, x=100, pixels_per_frame=2.0) is None
+    print("clip_edge_at_x: None for a position in the middle of a block, "
+          "well past either grab zone -- OK")
+
+
+def test_clip_edge_at_x_skips_a_block_too_narrow_to_grab_precisely():
+    clips = [_clip("A", 1)]  # a 1-frame clip is unambiguously narrower than 2*EDGE_GRAB_PX at any sane zoom
+    assert clip_edge_at_x(clips, x=0, pixels_per_frame=1.0) is None
+    print("clip_edge_at_x: skips edge hit-testing for a block narrower "
+          "than 2*grab_px -- OK")
+
+
+def test_apply_left_trim_shortens_from_the_front_and_clamps_to_one_frame():
+    clip = tl.TimelineClip("A", "/tmp/a.mp4", "video", 10, 49)  # frame_count 40, record start/end given by caller
+    # Dragging the left edge 5 frames later (into the clip) -- in_frame moves from 10 to 15.
+    assert apply_left_trim(clip, start=0, frame=5) == 15
+    # Dragging far past the clip's own out_frame clamps to leave exactly 1 frame.
+    assert apply_left_trim(clip, start=0, frame=999) == clip.out_frame - 1
+    # Dragging left of the clip's own record-space start clamps at 0, never negative.
+    assert apply_left_trim(clip, start=0, frame=-999) == 0
+    print("apply_left_trim: shortens from the front, clamps to >=0 and "
+          "to leave at least 1 frame -- OK")
+
+
+def test_apply_right_trim_lengthens_and_clamps_to_one_frame():
+    clip = tl.TimelineClip("A", "/tmp/a.mp4", "video", 10, 49)  # frame_count 40
+    # end (exclusive) is 40 in record-space terms for this standalone test (start=0).
+    # Dragging the right edge 5 frames further out extends out_frame from 49 to 54.
+    assert apply_right_trim(clip, end=40, frame=45) == 54
+    # Dragging far left of the clip's own in_frame clamps to leave exactly 1 frame.
+    assert apply_right_trim(clip, end=40, frame=-999) == clip.in_frame
+    print("apply_right_trim: lengthens/shortens from the back, clamps to "
+          "leave at least 1 frame -- OK")
 
 
 def test_ruler_tick_frames_starts_at_zero():
@@ -389,6 +436,201 @@ def test_refresh_recomputes_pixels_per_frame_after_resize():
     print("TimelineTrackWidget: resizing recomputes the auto-fit zoom -- OK")
 
 
+# ---- zoom / scroll ----------------------------------------------------------
+
+def test_zoom_in_increases_pixels_per_frame_and_leaves_auto_fit():
+    widget, _ = _widget([_clip("A", 1000)])
+    assert widget.is_zoomed_to_fit()
+    fit_scale = widget._pixels_per_frame
+
+    widget.zoom_in()
+
+    assert not widget.is_zoomed_to_fit()
+    assert widget._pixels_per_frame > fit_scale
+    print("TimelineTrackWidget.zoom_in: increases pixels_per_frame and "
+          "switches out of auto-fit -- OK")
+
+
+def test_zoom_to_fit_clears_manual_zoom_and_scroll():
+    widget, _ = _widget([_clip("A", 1000)])
+    widget.zoom_in()
+    widget.set_scroll_offset_frames(50)
+    assert widget._scroll_offset_frames > 0
+
+    widget.zoom_to_fit()
+
+    assert widget.is_zoomed_to_fit()
+    assert widget._scroll_offset_frames == 0
+    print("TimelineTrackWidget.zoom_to_fit: clears manual zoom and "
+          "resets scroll back to 0 -- OK")
+
+
+def test_zoom_is_clamped_to_min_and_max():
+    widget, _ = _widget([_clip("A", 1000)])
+    widget.set_zoom_pixels_per_frame(10 ** 9)
+    assert widget._pixels_per_frame == MAX_PIXELS_PER_FRAME
+    widget.set_zoom_pixels_per_frame(-5)
+    assert widget._pixels_per_frame == MIN_PIXELS_PER_FRAME
+    print("TimelineTrackWidget.set_zoom_pixels_per_frame: clamps into "
+          "[MIN_PIXELS_PER_FRAME, MAX_PIXELS_PER_FRAME] -- OK")
+
+
+def test_scroll_offset_is_clamped_to_max_scroll_frames():
+    widget, _ = _widget([_clip("A", 1000)], width=400)
+    widget.set_zoom_pixels_per_frame(5.0)  # 1000 frames * 5px = 5000px, way over the 400px-wide track
+    max_scroll = widget.max_scroll_frames()
+    assert max_scroll > 0, "test setup: zoomed-in content must actually overflow the track width"
+
+    widget.set_scroll_offset_frames(max_scroll + 500)
+    assert widget._scroll_offset_frames == max_scroll
+
+    widget.set_scroll_offset_frames(-500)
+    assert widget._scroll_offset_frames == 0
+    print("TimelineTrackWidget.set_scroll_offset_frames: clamps into "
+          "[0, max_scroll_frames()] -- OK")
+
+
+def test_zoom_to_fit_never_has_a_positive_max_scroll():
+    """Auto-fit mode, by construction, always fits the whole Timeline in
+    the track's own width -- there should never be anything to scroll."""
+    widget, _ = _widget([_clip("A", 1000)])
+    assert widget.max_scroll_frames() == 0
+    print("TimelineTrackWidget: auto-fit mode never has anything to "
+          "scroll -- OK")
+
+
+def test_zoom_in_keeps_the_anchored_frame_under_the_cursor():
+    widget, _ = _widget([_clip("A", 1000)], width=400)
+    anchor_x = 100.0
+    origin_x = widget._origin_x()
+    anchored_frame = x_to_frame(anchor_x, widget._pixels_per_frame, origin_x)
+
+    widget.zoom_in(anchor_x=anchor_x)
+
+    new_origin_x = widget._origin_x()
+    new_frame_under_cursor = x_to_frame(anchor_x, widget._pixels_per_frame, new_origin_x)
+    assert abs(new_frame_under_cursor - anchored_frame) < 1.0, (
+        f"expected ~{anchored_frame} to stay under the cursor, got {new_frame_under_cursor}")
+    print("TimelineTrackWidget.zoom_in: with an anchor_x, keeps that "
+          "frame under the cursor after zooming -- OK")
+
+
+def test_wheel_with_ctrl_zooms_without_ctrl_scrolls():
+    widget, _ = _widget([_clip("A", 1000)], width=400)
+    fit_scale = widget._pixels_per_frame
+
+    ctrl_wheel = QWheelEvent(
+        QPointF(100, 50), QPointF(100, 50), QPoint(0, 0), QPoint(0, 120),
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.ControlModifier,
+        Qt.ScrollPhase.NoScrollPhase, False)
+    widget.wheelEvent(ctrl_wheel)
+    assert widget._pixels_per_frame > fit_scale
+    assert not widget.is_zoomed_to_fit()
+
+    widget.zoom_to_fit()
+    widget.set_zoom_pixels_per_frame(5.0)  # force overflow so there's something to scroll
+    before_scroll = widget._scroll_offset_frames
+    # Negative delta here (unlike ctrl_wheel above) so the resulting
+    # scroll direction moves AWAY from 0, the lower clamp bound --
+    # starting already at 0, the other sign would clamp right back to
+    # 0 and look like no scroll happened at all.
+    plain_wheel = QWheelEvent(
+        QPointF(100, 50), QPointF(100, 50), QPoint(0, 0), QPoint(0, -120),
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase, False)
+    widget.wheelEvent(plain_wheel)
+    assert widget._scroll_offset_frames != before_scroll
+    print("TimelineTrackWidget.wheelEvent: Ctrl+wheel zooms, a plain "
+          "wheel scrolls -- OK")
+
+
+# ---- trim / delete ----------------------------------------------------------
+
+def test_dragging_a_clips_left_edge_trims_its_in_frame():
+    widget, timeline_obj = _widget([_clip("A", 100), _clip("B", 100)])
+    clip_a = timeline_obj.clips[0]
+    trimmed = []
+    widget.clip_trimmed.connect(lambda: trimmed.append(True))
+
+    left_edge_x = int(frame_to_x(0, widget._pixels_per_frame, widget._origin_x()))
+    QTest.mousePress(widget, Qt.MouseButton.LeftButton, pos=QPoint(left_edge_x, 50))
+    drag_to_x = int(frame_to_x(20, widget._pixels_per_frame, widget._origin_x()))
+    QTest.mouseMove(widget, QPoint(drag_to_x, 50))
+    QTest.mouseRelease(widget, Qt.MouseButton.LeftButton, pos=QPoint(drag_to_x, 50))
+
+    assert trimmed, "dragging the left edge should fire clip_trimmed"
+    assert clip_a.in_frame == 20
+    assert clip_a.out_frame == 99, "trimming the left edge must not touch out_frame"
+    print("TimelineTrackWidget: dragging a clip's left edge trims its "
+          "in_frame -- OK")
+
+
+def test_dragging_a_clips_right_edge_trims_its_out_frame():
+    widget, timeline_obj = _widget([_clip("A", 100), _clip("B", 100)])
+    clip_a = timeline_obj.clips[0]
+    trimmed = []
+    widget.clip_trimmed.connect(lambda: trimmed.append(True))
+
+    right_edge_x = int(frame_to_x(100, widget._pixels_per_frame, widget._origin_x())) - 1
+    QTest.mousePress(widget, Qt.MouseButton.LeftButton, pos=QPoint(right_edge_x, 50))
+    drag_to_x = int(frame_to_x(80, widget._pixels_per_frame, widget._origin_x()))
+    QTest.mouseMove(widget, QPoint(drag_to_x, 50))
+    QTest.mouseRelease(widget, Qt.MouseButton.LeftButton, pos=QPoint(drag_to_x, 50))
+
+    assert trimmed, "dragging the right edge should fire clip_trimmed"
+    assert clip_a.out_frame == 79
+    assert clip_a.in_frame == 0, "trimming the right edge must not touch in_frame"
+    print("TimelineTrackWidget: dragging a clip's right edge trims its "
+          "out_frame -- OK")
+
+
+def test_trimming_one_clip_ripples_every_later_clips_record_position():
+    """No gap concept in this data model (timeline.py's own docstring)
+    -- shortening clip A must shift clip B's own record-space start to
+    match, with no separate ripple step."""
+    widget, timeline_obj = _widget([_clip("A", 100), _clip("B", 100)])
+    clip_a = timeline_obj.clips[0]
+
+    right_edge_x = int(frame_to_x(100, widget._pixels_per_frame, widget._origin_x())) - 1
+    QTest.mousePress(widget, Qt.MouseButton.LeftButton, pos=QPoint(right_edge_x, 50))
+    drag_to_x = int(frame_to_x(50, widget._pixels_per_frame, widget._origin_x()))
+    QTest.mouseMove(widget, QPoint(drag_to_x, 50))
+    QTest.mouseRelease(widget, Qt.MouseButton.LeftButton, pos=QPoint(drag_to_x, 50))
+
+    assert clip_a.frame_count == 50
+    extents = clip_extents(timeline_obj.clips)
+    assert extents[1][1] == 50, "clip B's own record-space start must ripple to match A's new (shorter) length"
+    print("TimelineTrackWidget: trimming one clip ripples every later "
+          "clip's own record-space position -- OK")
+
+
+def test_delete_key_emits_delete_requested_only_with_a_clip_selected():
+    widget, timeline_obj = _widget([_clip("A", 100)])
+    received = []
+    widget.delete_requested.connect(lambda: received.append(True))
+
+    QTest.keyClick(widget, Qt.Key.Key_Delete)
+    assert received == [], "no clip selected yet -- Delete should be a no-op"
+
+    widget._set_selected(timeline_obj.clips[0])
+    QTest.keyClick(widget, Qt.Key.Key_Delete)
+    assert received == [True]
+    print("TimelineTrackWidget: Delete emits delete_requested only when "
+          "a clip is selected -- OK")
+
+
+def test_backspace_also_emits_delete_requested():
+    widget, timeline_obj = _widget([_clip("A", 100)])
+    widget._set_selected(timeline_obj.clips[0])
+    received = []
+    widget.delete_requested.connect(lambda: received.append(True))
+
+    QTest.keyClick(widget, Qt.Key.Key_Backspace)
+
+    assert received == [True]
+    print("TimelineTrackWidget: Backspace also emits delete_requested -- OK")
+
+
 if __name__ == "__main__":
     test_clip_extents_sums_preceding_frame_counts()
     test_clip_extents_empty_list()
@@ -419,5 +661,22 @@ if __name__ == "__main__":
     test_set_selected_clip_id_does_not_reemit_clip_selected()
     test_set_playhead_frame_triggers_repaint_state()
     test_refresh_recomputes_pixels_per_frame_after_resize()
+    test_clip_edge_at_x_hits_the_left_and_right_boundaries()
+    test_clip_edge_at_x_misses_the_middle_of_a_block()
+    test_clip_edge_at_x_skips_a_block_too_narrow_to_grab_precisely()
+    test_apply_left_trim_shortens_from_the_front_and_clamps_to_one_frame()
+    test_apply_right_trim_lengthens_and_clamps_to_one_frame()
+    test_zoom_in_increases_pixels_per_frame_and_leaves_auto_fit()
+    test_zoom_to_fit_clears_manual_zoom_and_scroll()
+    test_zoom_is_clamped_to_min_and_max()
+    test_scroll_offset_is_clamped_to_max_scroll_frames()
+    test_zoom_to_fit_never_has_a_positive_max_scroll()
+    test_zoom_in_keeps_the_anchored_frame_under_the_cursor()
+    test_wheel_with_ctrl_zooms_without_ctrl_scrolls()
+    test_dragging_a_clips_left_edge_trims_its_in_frame()
+    test_dragging_a_clips_right_edge_trims_its_out_frame()
+    test_trimming_one_clip_ripples_every_later_clips_record_position()
+    test_delete_key_emits_delete_requested_only_with_a_clip_selected()
+    test_backspace_also_emits_delete_requested()
     print()
     print("All timeline_track_widget tests passed.")

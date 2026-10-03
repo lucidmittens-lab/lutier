@@ -32,18 +32,32 @@ duration at this Timeline's own frame_rate (still) -- these are its
 working defaults until trimmed. A clip added from a marked Source
 in/out selection (add_clip_with_range, per Tom: "will be necessary to
 be able to mark desired ranges and add to sequence") covers exactly
-that range instead. Still no in-place trim UI for a clip ALREADY on the
-Timeline (per plan, out of scope for this pass) -- marking a range only
-ever happens before a clip is added, on the Source side.
+that range instead. A clip ALREADY on the Timeline can also be re-
+trimmed in place now (per Tom, 2026-10-03: "make it more similar to a
+typical NLE") by dragging its own left/right edge in the track view --
+see TimelineTrackWidget's own module docstring on that mechanism
+(clip_trimmed, relayed here to _on_clip_trimmed) -- a RIPPLE trim, since
+clips have no gap concept in this data model (timeline.py's own
+docstring): shortening one clip shifts every later one automatically.
 
-Also holds a minimizable EDL (Edit Decision List) sub-panel below the
-track view, per Tom: "add an EDL expression of the timeline in as a sub
-panel which can be minimized in the timeline view." A plain read-only
-text expression (see edl.py's own docstring on scope -- not a round-
-trippable import/export format), regenerated from self.timeline on every
-_refresh_list -- see _refresh_edl_text. Starts collapsed; the header
-button toggles it, same flat QToolButton convention as the panel's own
-"..." menu button.
+Also holds a zoom/scroll row (QScrollBar + Zoom In/Out/Fit buttons,
+wired straight to the widget's own zoom_in/zoom_out/zoom_to_fit/set_
+scroll_offset_frames -- see _build_scroll_and_zoom_row/_refresh_
+scrollbar) and a minimizable EDL (Edit Decision List) sub-panel below
+the track view, per Tom: "add an EDL expression of the timeline in as a
+sub panel which can be minimized in the timeline view." A plain read-
+only text expression (see edl.py's own docstring on scope -- not a
+round-trippable import/export format), regenerated from self.timeline
+on every mutation (_refresh_list/_on_clips_reordered/_on_clip_trimmed)
+-- see _refresh_edl_text. Starts collapsed; the header button toggles
+it, same flat QToolButton convention as the panel's own "..." menu
+button.
+
+Delete/Backspace (while the track view has keyboard focus, see
+TimelineTrackWidget.keyPressEvent) removes the selected clip, routed
+through the exact same confirm-and-remove path as the context menu's
+own Remove action (_on_remove_clicked) -- no separate "are you sure"
+dialog variant to keep in sync.
 
 NOT VISUALLY VERIFIED IN THIS ENVIRONMENT -- same PySide6/libEGL wall as
 the rest of the GUI layer (see timeline_track_widget.py's own docstring).
@@ -54,12 +68,15 @@ Rename/Remove work and Remove asks before deleting, (4) clicking a clip
 selects it (watch clip_selected fire), (5) clicking the ruler seeks the
 Timeline and moves the playhead line, (6) the playhead line tracks
 playback in real time, (7) the EDL sub-panel expands/collapses and its
-text reflects the current clip order/trim.
+text reflects the current clip order/trim, (8) dragging a clip's own
+edge trims it and ripples later clips, (9) the zoom buttons/scrollbar/
+Ctrl+scroll all actually zoom and scroll the track view, (10) Delete
+with a clip selected removes it.
 """
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QMessageBox, QInputDialog, QToolButton,
-    QMenu, QPlainTextEdit,
+    QMenu, QPlainTextEdit, QScrollBar,
 )
 
 import edl as edl_module
@@ -116,13 +133,78 @@ class TimelinePanel(QWidget):
         self.track_widget = TimelineTrackWidget(self.timeline)
         self.track_widget.clip_selected.connect(self._on_widget_clip_selected)
         self.track_widget.clips_reordered.connect(self._on_clips_reordered)
+        self.track_widget.clip_trimmed.connect(self._on_clip_trimmed)
+        self.track_widget.delete_requested.connect(self._on_remove_clicked)
         self.track_widget.seek_requested.connect(self.seek_requested.emit)
         self.track_widget.context_menu_requested_for_clip.connect(
             self._on_context_menu_requested_for_clip)
+        self.track_widget.view_changed.connect(self._refresh_scrollbar)
         layout.addWidget(self.track_widget, stretch=1)
 
+        self._build_scroll_and_zoom_row(layout)
         self._build_edl_subpanel(layout)
         self._build_menu_button()
+
+    def _build_scroll_and_zoom_row(self, layout):
+        row = QHBoxLayout()
+        row.setContentsMargins(4, 0, 4, 0)
+
+        self.timeline_scrollbar = QScrollBar(Qt.Orientation.Horizontal)
+        self.timeline_scrollbar.valueChanged.connect(self._on_scrollbar_changed)
+        row.addWidget(self.timeline_scrollbar, stretch=1)
+
+        self.zoom_out_button = QToolButton()
+        self.zoom_out_button.setObjectName("panelMenuButton")
+        self.zoom_out_button.setAutoRaise(True)
+        self.zoom_out_button.setText("−")
+        self.zoom_out_button.setToolTip("Zoom out (Ctrl+scroll also works)")
+        self.zoom_out_button.clicked.connect(self.track_widget.zoom_out)
+        row.addWidget(self.zoom_out_button)
+
+        self.zoom_fit_button = QToolButton()
+        self.zoom_fit_button.setObjectName("panelMenuButton")
+        self.zoom_fit_button.setAutoRaise(True)
+        self.zoom_fit_button.setText("Fit")
+        self.zoom_fit_button.setToolTip("Zoom to fit the whole Timeline")
+        self.zoom_fit_button.clicked.connect(self.track_widget.zoom_to_fit)
+        row.addWidget(self.zoom_fit_button)
+
+        self.zoom_in_button = QToolButton()
+        self.zoom_in_button.setObjectName("panelMenuButton")
+        self.zoom_in_button.setAutoRaise(True)
+        self.zoom_in_button.setText("+")
+        self.zoom_in_button.setToolTip("Zoom in (Ctrl+scroll also works)")
+        self.zoom_in_button.clicked.connect(self.track_widget.zoom_in)
+        row.addWidget(self.zoom_in_button)
+
+        layout.addLayout(row)
+        self._refresh_scrollbar()
+
+    def _refresh_scrollbar(self):
+        """Called on every TimelineTrackWidget.view_changed (zoom/scroll/
+        resize/auto-fit recompute, see that signal's own docstring) --
+        keeps the scrollbar's range/page-step/value/enabled state in
+        step with the widget's own current view."""
+        max_scroll = self.track_widget.max_scroll_frames()
+        visible = self.track_widget.visible_frame_count()
+        self.timeline_scrollbar.blockSignals(True)
+        self.timeline_scrollbar.setRange(0, round(max_scroll))
+        self.timeline_scrollbar.setPageStep(max(1, round(visible)))
+        self.timeline_scrollbar.setValue(round(self.track_widget.scroll_offset_frames()))
+        self.timeline_scrollbar.setEnabled(max_scroll > 0)
+        self.timeline_scrollbar.blockSignals(False)
+
+    def _on_scrollbar_changed(self, value):
+        self.track_widget.set_scroll_offset_frames(value)
+
+    def _on_clip_trimmed(self):
+        # Timeline.TimelineClip's own in_frame/out_frame have already
+        # been mutated in place by the widget itself (see
+        # TimelineTrackWidget._apply_trim_drag) -- just keep the EDL
+        # sub-panel's text and the outside world in step, same as
+        # _on_clips_reordered.
+        self._refresh_edl_text()
+        self.timeline_changed.emit()
 
     def _build_edl_subpanel(self, layout):
         header = QHBoxLayout()

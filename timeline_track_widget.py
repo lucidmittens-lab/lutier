@@ -29,13 +29,24 @@ a timeline.Timeline; see this module's own test file for a cross-check
 that the two independently-implemented "record position" computations
 agree).
 
-AUTO-FIT ZOOM ONLY, FOR NOW -- pixels_per_frame is recomputed from the
-widget's own current width whenever the Timeline's total_frame_count or
-the widget's size changes (see refresh/resizeEvent), so the whole
-Timeline always fits in view with no manual zoom control. A real
-zoom/scroll (for a Timeline too long to read anything at full-width
-fit) is explicitly deferred -- this is groundwork, not the finished
-feature.
+ZOOM/SCROLL (per Tom, 2026-10-03: "make it more similar to a typical
+NLE") -- pixels_per_frame is either auto-fit (the original, still-default
+behavior: recomputed from the widget's own current width whenever the
+Timeline's total_frame_count or the widget's size changes, so the whole
+Timeline fits in view) or a manually-set zoom level (self._zoom_pixels_
+per_frame, set via set_zoom_pixels_per_frame/zoom_in/zoom_out and cleared
+back to auto-fit via zoom_to_fit) -- see refresh()'s own docstring.
+Zoomed in, self._scroll_offset_frames (a record-space frame offset, not
+pixels, so it stays meaningful across a zoom change) shifts what's
+visible; _origin_x() is the ONE place that folds BOTH the track's left
+margin and the current scroll offset into a pixel origin, and every
+frame_to_x/x_to_frame call in this module goes through it rather than
+track.left() directly, so scrolling doesn't need its own parallel set of
+hit-testing/painting code paths. TimelinePanel owns the actual zoom
+in/out/fit buttons and a QScrollBar wired to this widget's own
+visible_frame_count/max_scroll_frames/set_scroll_offset_frames -- this
+widget only exposes the mechanism, not the chrome. Ctrl+wheel zooms
+(keeping the frame under the cursor stationary); a plain wheel scrolls.
 
 SELECTION mirrors timeline_panel.TimelinePanel.clip_selected's own shape
 exactly (Signal(object), a TimelineClip or None) so that panel's
@@ -63,12 +74,15 @@ import media_cache
 import timecode as tc_module
 
 MIN_PIXELS_PER_FRAME = 0.02  # a multi-hour Timeline still gets SOME width per frame, never truly zero
+MAX_PIXELS_PER_FRAME = 200.0  # zooming in further than individual frames being huge blocks isn't useful
+ZOOM_STEP_FACTOR = 1.25  # each zoom_in()/zoom_out()/wheel-notch step, see those methods' own docstrings
 RULER_HEIGHT = 20
 TRACK_MARGIN = 6
 MIN_TICK_SPACING_PX = 56  # ruler ticks never crowd closer than this
 THUMBNAIL_LABEL_MIN_WIDTH = 40  # blocks narrower than this show no text, just color/thumbnail
 THUMBNAIL_MIN_WIDTH = 14  # blocks narrower than this show no thumbnail either, just a flat block
 THUMBNAIL_ICON_WIDTH = 34  # a small fixed-size icon at the block's left edge, not stretched across it
+EDGE_GRAB_PX = 6  # how close to a clip's own boundary a click/hover counts as grabbing its trim handle
 
 _NICE_TICK_SECONDS = (
     1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400,
@@ -124,6 +138,53 @@ def clip_at_x(clips, x, pixels_per_frame, origin_x=0):
     return None
 
 
+def clip_edge_at_x(clips, x, pixels_per_frame, origin_x=0, grab_px=EDGE_GRAB_PX):
+    """(clip, "left"|"right") if pixel position `x` is within `grab_px`
+    of that clip's own boundary, else None -- the hit-test behind drag-
+    to-trim (per Tom: "make it more similar to a typical NLE"). The grab
+    zone is in PIXELS, not frames, so it stays a constant, grabbable
+    width regardless of zoom. A block narrower than 2*grab_px skips edge
+    hit-testing entirely (its own left/right zones would overlap and
+    there's no room to trim it precisely anyway) -- clicking it hits its
+    BODY instead (see clip_at_x), same as before this existed."""
+    for clip, start, end in clip_extents(clips):
+        left_x = frame_to_x(start, pixels_per_frame, origin_x)
+        right_x = frame_to_x(end, pixels_per_frame, origin_x)
+        if right_x - left_x <= 2 * grab_px:
+            continue
+        if abs(x - left_x) <= grab_px:
+            return clip, "left"
+        if abs(x - right_x) <= grab_px:
+            return clip, "right"
+    return None
+
+
+def apply_left_trim(clip, start, frame):
+    """The clamped new in_frame for dragging `clip`'s LEFT edge so its
+    own record-space start lands at `frame` (e.g. from x_to_frame) --
+    `start` is this clip's own CURRENT record-space start (from clip_
+    extents, computed fresh by the caller on every drag step, since
+    preceding clips' own frame_counts -- the only thing that could move
+    `start` -- never change during a single clip's own trim). Clamped to
+    [0, clip.out_frame - 1] so the clip never inverts or vanishes (always
+    at least 1 frame left)."""
+    offset = clip.in_frame - start
+    return max(0, min(round(frame) + offset, clip.out_frame - 1))
+
+
+def apply_right_trim(clip, end, frame):
+    """Same as apply_left_trim, for the RIGHT edge -- `end` is this
+    clip's own CURRENT record-space EXCLUSIVE end (clip_extents' own
+    convention) and `frame` is the NEW exclusive end the cursor landed
+    on (both in the same units frame_to_x/x_to_frame use for a clip's
+    own end -- one past its last frame), so both get the same "-1"
+    treatment converting an exclusive end into its own last frame's
+    record-space position before the fixed start<->source offset is
+    applied. Clamped to >= clip.in_frame (at least 1 frame)."""
+    offset = clip.out_frame - (end - 1)
+    return max(clip.in_frame, round(frame) - 1 + offset)
+
+
 def reorder_target_index(clips, dragged_clip_id, x, pixels_per_frame, origin_x=0):
     """Which index `dragged_clip_id` should move to, given the OTHER
     clips' current on-screen positions and where the drag currently is
@@ -172,15 +233,18 @@ def ruler_tick_frames(total_frame_count, frame_rate, pixels_per_frame):
 
 class TimelineTrackWidget(QWidget):
     """`timeline`: a timeline.Timeline, set via set_timeline (or the
-    constructor). Auto-fits to the widget's own current width on every
-    set_timeline/refresh/resize -- see pixels_per_frame_to_fit's own
-    docstring."""
+    constructor). Auto-fits to the widget's own current width by default
+    -- see pixels_per_frame_to_fit's own docstring and this module's own
+    docstring on the zoom/scroll mechanism."""
 
     clip_selected = Signal(object)          # a timeline.TimelineClip, or None
     clip_double_clicked = Signal(object)    # a timeline.TimelineClip -- Rename shortcut, see timeline_panel.py
     clips_reordered = Signal()              # fired after a drag actually changes clip order
+    clip_trimmed = Signal()                 # fired after a drag-to-trim actually changes a clip's in/out
+    delete_requested = Signal()             # Delete/Backspace pressed with a clip selected, see keyPressEvent
     seek_requested = Signal(int)            # a record-space frame index, from clicking/dragging the ruler/empty track
     context_menu_requested_for_clip = Signal(object, QPoint)  # (TimelineClip, global QPoint) -- right-click
+    view_changed = Signal()                 # zoom level and/or scroll position changed -- see module docstring
 
     def __init__(self, timeline=None, parent=None):
         super().__init__(parent)
@@ -188,12 +252,20 @@ class TimelineTrackWidget(QWidget):
         self.selected_clip_id = None
         self.playhead_frame = None
         self._pixels_per_frame = MIN_PIXELS_PER_FRAME
+        self._zoom_pixels_per_frame = None  # None == auto-fit, see module docstring
+        self._scroll_offset_frames = 0.0
         self._drag_clip_id = None
         self._drag_target_index = None
         self._scrubbing = False
+        self._trim_clip_id = None
+        self._trim_edge = None  # "left" or "right" while self._trim_clip_id is set
         self.setMinimumHeight(RULER_HEIGHT + 64)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setMouseTracking(False)
+        # Needed for hover-only mouseMoveEvent calls (no button held) --
+        # that's how the trim-handle resize cursor (see _update_hover_
+        # cursor) tracks the mouse without a drag in progress.
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # Delete/Backspace needs real keyboard focus, see keyPressEvent
         # customContextMenuRequested, not a contextMenuEvent override --
         # same right-click convention every other panel's list/table in
         # this app already uses (media_panel.py/timeline_panel.py's old
@@ -207,12 +279,19 @@ class TimelineTrackWidget(QWidget):
         self.refresh()
 
     def refresh(self):
-        """Recomputes the auto-fit zoom level and repaints -- call after
-        anything changes the Timeline's own clip list/frame_rate, or
-        this widget's selection/playhead."""
+        """Recomputes pixels_per_frame (auto-fit, or the current manual
+        zoom level -- see set_zoom_pixels_per_frame/zoom_to_fit), re-
+        clamps the scroll offset against the new content size, and
+        repaints. Call after anything changes the Timeline's own clip
+        list/frame_rate, or this widget's selection/playhead."""
         total = self.timeline.total_frame_count() if self.timeline else 0
-        self._pixels_per_frame = pixels_per_frame_to_fit(total, self._track_width())
+        if self._zoom_pixels_per_frame is None:
+            self._pixels_per_frame = pixels_per_frame_to_fit(total, self._track_width())
+        else:
+            self._pixels_per_frame = self._zoom_pixels_per_frame
+        self._clamp_scroll()
         self.update()
+        self.view_changed.emit()
 
     def set_playhead_frame(self, frame):
         if frame == self.playhead_frame:
@@ -227,6 +306,87 @@ class TimelineTrackWidget(QWidget):
         super().resizeEvent(event)
         self.refresh()
 
+    # ---- zoom / scroll ------------------------------------------------------
+
+    def visible_frame_count(self):
+        """How many record-space frames currently fit across the track's
+        own width at the current zoom -- TimelinePanel uses this (and
+        max_scroll_frames) to size its scrollbar's page step/range."""
+        return self._track_width() / self._pixels_per_frame if self._pixels_per_frame > 0 else 0.0
+
+    def max_scroll_frames(self):
+        total = self.timeline.total_frame_count() if self.timeline else 0
+        return max(0.0, total - self.visible_frame_count())
+
+    def scroll_offset_frames(self):
+        return self._scroll_offset_frames
+
+    def _clamp_scroll(self):
+        self._scroll_offset_frames = max(0.0, min(self._scroll_offset_frames, self.max_scroll_frames()))
+
+    def set_scroll_offset_frames(self, frames):
+        clamped = max(0.0, min(frames, self.max_scroll_frames()))
+        if clamped != self._scroll_offset_frames:
+            self._scroll_offset_frames = clamped
+            self.update()
+            self.view_changed.emit()
+
+    def set_zoom_pixels_per_frame(self, pixels_per_frame, anchor_x=None):
+        """Switches to a manual zoom level -- `anchor_x` (a local pixel
+        x, e.g. the cursor position), if given, keeps whatever frame was
+        under that pixel BEFORE the zoom change still under it
+        afterward (the usual "zoom to cursor" feel); omitted, the left
+        edge of the current view stays put instead."""
+        old_ppf = self._pixels_per_frame
+        anchor_frame = x_to_frame(anchor_x, old_ppf, self._origin_x()) if anchor_x is not None else None
+        self._zoom_pixels_per_frame = max(MIN_PIXELS_PER_FRAME, min(pixels_per_frame, MAX_PIXELS_PER_FRAME))
+        self._pixels_per_frame = self._zoom_pixels_per_frame
+        if anchor_frame is not None:
+            track = self._track_rect()
+            target_origin_x = anchor_x - anchor_frame * self._pixels_per_frame
+            self._scroll_offset_frames = (track.left() - target_origin_x) / self._pixels_per_frame
+        self._clamp_scroll()
+        self.update()
+        self.view_changed.emit()
+
+    def zoom_in(self, anchor_x=None):
+        self.set_zoom_pixels_per_frame(self._pixels_per_frame * ZOOM_STEP_FACTOR, anchor_x)
+
+    def zoom_out(self, anchor_x=None):
+        self.set_zoom_pixels_per_frame(self._pixels_per_frame / ZOOM_STEP_FACTOR, anchor_x)
+
+    def zoom_to_fit(self):
+        """Back to auto-fit mode (see refresh's own docstring) -- the
+        original, still-default behavior."""
+        self._zoom_pixels_per_frame = None
+        self._scroll_offset_frames = 0.0
+        self.refresh()
+
+    def is_zoomed_to_fit(self):
+        return self._zoom_pixels_per_frame is None
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if delta == 0:
+            event.ignore()
+            return
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # Ctrl+wheel zooms, keeping the frame under the cursor still
+            # under it afterward -- same convention most NLE timelines
+            # already use for this gesture.
+            if delta > 0:
+                self.zoom_in(anchor_x=event.position().x())
+            else:
+                self.zoom_out(anchor_x=event.position().x())
+        else:
+            # Plain wheel -- horizontal scroll. NOT VISUALLY VERIFIED
+            # (module docstring) -- the exact direction/feel may want a
+            # tweak once seen on a real display/trackpad.
+            frames_per_notch = max(1.0, self.visible_frame_count() * 0.1)
+            direction = -1 if delta > 0 else 1
+            self.set_scroll_offset_frames(self._scroll_offset_frames + direction * frames_per_notch)
+        event.accept()
+
     # ---- hit testing / geometry -------------------------------------------
 
     def _clips(self):
@@ -235,26 +395,46 @@ class TimelineTrackWidget(QWidget):
     def _track_rect(self):
         return QRect(TRACK_MARGIN, RULER_HEIGHT, self._track_width(), max(0, self.height() - RULER_HEIGHT))
 
+    def _origin_x(self):
+        """The pixel x that record-space frame 0 maps to -- folds the
+        track's own left margin together with the current scroll offset
+        (module docstring) into the one value every frame_to_x/x_to_frame
+        call in this class should use as origin_x, instead of track.
+        left() directly."""
+        return self._track_rect().left() - self._scroll_offset_frames * self._pixels_per_frame
+
     def _clip_rect(self, start_frame, end_frame):
         track = self._track_rect()
-        x0 = frame_to_x(start_frame, self._pixels_per_frame, track.left())
-        x1 = frame_to_x(end_frame, self._pixels_per_frame, track.left())
+        origin_x = self._origin_x()
+        x0 = frame_to_x(start_frame, self._pixels_per_frame, origin_x)
+        x1 = frame_to_x(end_frame, self._pixels_per_frame, origin_x)
         return QRectF(x0, track.top(), max(1.0, x1 - x0), track.height())
 
     # ---- mouse interaction --------------------------------------------------
 
     def mousePressEvent(self, event):
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
         if event.button() != Qt.MouseButton.LeftButton:
             return
         pos = event.position()
-        track = self._track_rect()
+        origin_x = self._origin_x()
         # The ruler strip is always a scrub target, regardless of what's
         # under it in the track row below -- under pure auto-fit-to-width
         # zoom, clips can span the entire track width, leaving no "empty"
         # track-row pixel to click for a seek at all.
+        edge_hit = None
         clip = None
         if pos.y() >= RULER_HEIGHT:
-            clip = clip_at_x(self._clips(), pos.x(), self._pixels_per_frame, track.left())
+            edge_hit = clip_edge_at_x(self._clips(), pos.x(), self._pixels_per_frame, origin_x)
+            if edge_hit is None:
+                clip = clip_at_x(self._clips(), pos.x(), self._pixels_per_frame, origin_x)
+        if edge_hit is not None:
+            clip, edge = edge_hit
+            self._set_selected(clip)
+            self._trim_clip_id = clip.id
+            self._trim_edge = edge
+            event.accept()
+            return
         if clip is not None:
             self._set_selected(clip)
             self._drag_clip_id = clip.id
@@ -267,24 +447,71 @@ class TimelineTrackWidget(QWidget):
         # Held down (see mouseMoveEvent), this becomes a genuine drag-to-
         # scrub across the whole Timeline, not just a single-point jump.
         self._scrubbing = True
-        frame = round(x_to_frame(pos.x(), self._pixels_per_frame, track.left()))
+        frame = round(x_to_frame(pos.x(), self._pixels_per_frame, origin_x))
         self.seek_requested.emit(max(0, frame))
         event.accept()
 
     def mouseMoveEvent(self, event):
-        if self._scrubbing and (event.buttons() & Qt.MouseButton.LeftButton):
-            track = self._track_rect()
-            frame = round(x_to_frame(event.position().x(), self._pixels_per_frame, track.left()))
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            # No button held -- a hover, not a drag (setMouseTracking(True)
+            # is what makes this fire at all). Only ever updates the trim-
+            # handle resize cursor, see module docstring.
+            self._update_hover_cursor(event.position())
+            return
+        origin_x = self._origin_x()
+        if self._trim_clip_id is not None:
+            self._apply_trim_drag(event.position().x(), origin_x)
+            return
+        if self._scrubbing:
+            frame = round(x_to_frame(event.position().x(), self._pixels_per_frame, origin_x))
             self.seek_requested.emit(max(0, frame))
             return
-        if self._drag_clip_id is None or not (event.buttons() & Qt.MouseButton.LeftButton):
+        if self._drag_clip_id is None:
             return
-        track = self._track_rect()
         self._drag_target_index = reorder_target_index(
-            self._clips(), self._drag_clip_id, event.position().x(), self._pixels_per_frame, track.left())
+            self._clips(), self._drag_clip_id, event.position().x(), self._pixels_per_frame, origin_x)
         self.update()
 
+    def _update_hover_cursor(self, pos):
+        origin_x = self._origin_x()
+        if pos.y() >= RULER_HEIGHT and clip_edge_at_x(self._clips(), pos.x(), self._pixels_per_frame, origin_x):
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
+        else:
+            self.unsetCursor()
+
+    def _apply_trim_drag(self, x, origin_x):
+        """Drag-to-trim (per Tom: "make it more similar to a typical
+        NLE") -- a RIPPLE trim: since clips sit strictly end-to-end with
+        no gap concept (timeline.py's own model), shortening/lengthening
+        one clip automatically shifts every later clip's own record-
+        space position, with no separate ripple step needed."""
+        clip = next((c for c in self._clips() if c.id == self._trim_clip_id), None)
+        if clip is None:
+            return
+        frame = x_to_frame(x, self._pixels_per_frame, origin_x)
+        for candidate, start, end in clip_extents(self._clips()):
+            if candidate.id != self._trim_clip_id:
+                continue
+            if self._trim_edge == "left":
+                new_in = apply_left_trim(clip, start, frame)
+                if new_in != clip.in_frame:
+                    clip.in_frame = new_in
+                    self.refresh()
+                    self.clip_trimmed.emit()
+            else:
+                new_out = apply_right_trim(clip, end, frame)
+                if new_out != clip.out_frame:
+                    clip.out_frame = new_out
+                    self.refresh()
+                    self.clip_trimmed.emit()
+            return
+
     def mouseReleaseEvent(self, event):
+        if self._trim_clip_id is not None:
+            self._trim_clip_id = None
+            self._trim_edge = None
+            event.accept()
+            return
         if self._scrubbing:
             self._scrubbing = False
             event.accept()
@@ -307,14 +534,23 @@ class TimelineTrackWidget(QWidget):
     def mouseDoubleClickEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
             return
-        track = self._track_rect()
-        clip = clip_at_x(self._clips(), event.position().x(), self._pixels_per_frame, track.left())
+        clip = clip_at_x(self._clips(), event.position().x(), self._pixels_per_frame, self._origin_x())
         if clip is not None:
             self.clip_double_clicked.emit(clip)
 
+    def keyPressEvent(self, event):
+        # Delete/Backspace removes the selected clip -- same focus-
+        # scoped convention as stack_panel.py's _StackListWidget (only
+        # fires while THIS widget actually has keyboard focus, see
+        # mousePressEvent's own setFocus call and __init__'s
+        # setFocusPolicy), not a window-wide QShortcut.
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.selected_clip_id is not None:
+            self.delete_requested.emit()
+            return
+        super().keyPressEvent(event)
+
     def _on_custom_context_menu_requested(self, pos):
-        track = self._track_rect()
-        clip = clip_at_x(self._clips(), pos.x(), self._pixels_per_frame, track.left())
+        clip = clip_at_x(self._clips(), pos.x(), self._pixels_per_frame, self._origin_x())
         if clip is None:
             return
         self._set_selected(clip)
@@ -391,8 +627,9 @@ class TimelineTrackWidget(QWidget):
         font = QFont()
         font.setPixelSize(9)
         painter.setFont(font)
+        origin_x = self._origin_x()
         for frame in ruler_tick_frames(total, frame_rate, self._pixels_per_frame):
-            x = frame_to_x(frame, self._pixels_per_frame, track.left())
+            x = frame_to_x(frame, self._pixels_per_frame, origin_x)
             painter.drawLine(int(x), RULER_HEIGHT - 5, int(x), RULER_HEIGHT)
             label = tc_module.frames_to_timecode(frame, frame_rate) if frame_rate else str(frame)
             painter.drawText(int(x) + 2, RULER_HEIGHT - 6, label)
@@ -455,12 +692,13 @@ class TimelineTrackWidget(QWidget):
                 painter.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, int(label_rect.width() - 8)))
 
     def _paint_insertion_marker(self, painter, track, clips):
+        origin_x = self._origin_x()
         extents = [(c, s, e) for c, s, e in clip_extents(clips) if c.id != self._drag_clip_id]
         if self._drag_target_index >= len(extents):
             x = frame_to_x(
-                extents[-1][2] if extents else 0, self._pixels_per_frame, track.left())
+                extents[-1][2] if extents else 0, self._pixels_per_frame, origin_x)
         else:
-            x = frame_to_x(extents[self._drag_target_index][1], self._pixels_per_frame, track.left())
+            x = frame_to_x(extents[self._drag_target_index][1], self._pixels_per_frame, origin_x)
         pen = painter.pen()
         pen.setColor(self.palette().highlight().color())
         pen.setWidth(3)
@@ -468,7 +706,7 @@ class TimelineTrackWidget(QWidget):
         painter.drawLine(int(x), track.top(), int(x), track.bottom())
 
     def _paint_playhead(self, painter, track):
-        x = frame_to_x(self.playhead_frame, self._pixels_per_frame, track.left())
+        x = frame_to_x(self.playhead_frame, self._pixels_per_frame, self._origin_x())
         pen = painter.pen()
         pen.setColor(QColor(255, 255, 255, 235))
         pen.setWidth(2)
