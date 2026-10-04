@@ -31,7 +31,7 @@ _build_default_dock_layout, also reachable any time via Workspace >
     |   left)  |                            |    Scopes    |
     +----------+----------------------------+--------------+
     |  Media   |    Stack -- the stage list |    Graph     |
-    |Libraries |    (center, main area)    |  (bottom      |
+    |Libraries |                           |  (bottom      |
     +----------+                           |   right)      |
     |   LUT    |                           |              |
     | Library  |                           |              |
@@ -39,7 +39,11 @@ _build_default_dock_layout, also reachable any time via Workspace >
     | Galleries|                           |              |
     | (bottom  |                           |              |
     |   left)  |                           |              |
-    +----------+---------------------------+--------------+
+    +----------+----------------------------+--------------+
+    |          |          Timeline          |              |
+    |          |    (bottom center -- the   |              |
+    |          |    widest column, per Tom) |              |
+    +----------+----------------------------+--------------+
 
 Browser, Media Libraries, LUT Library, and Galleries are four separate
 panels (per Tom) -- "Files" is the filesystem LUT browser
@@ -917,14 +921,22 @@ class MainWindow(QMainWindow):
         self.splitDockWidget(self.sample_image_frame, self.stack_params_frame, Qt.Orientation.Horizontal)
 
         # left column: Browser / Media Libraries / LUT Library /
-        # Galleries / Timeline, top to bottom.
+        # Galleries, top to bottom.
         self.splitDockWidget(self.browser_frame, self.image_library_frame, Qt.Orientation.Vertical)
         self.splitDockWidget(self.image_library_frame, self.lut_library_frame, Qt.Orientation.Vertical)
         self.splitDockWidget(self.lut_library_frame, self.stack_memories_frame, Qt.Orientation.Vertical)
-        self.splitDockWidget(self.stack_memories_frame, self.timeline_frame, Qt.Orientation.Vertical)
 
-        # center column: Viewer / Stack, top to bottom.
+        # center column: Viewer / Stack / Timeline, top to bottom -- per
+        # Tom, "put timeline bottom center so it has more real estate":
+        # the center column is the widest of the three (700px vs. 260px
+        # for the side columns in the proportions below), and previously
+        # unused space at the bottom of it, so the Timeline moved here
+        # from the bottom of the left column gets both a much wider track
+        # view (more clips/more zoom visible without scrolling) and its
+        # own dedicated vertical space instead of competing for height
+        # with three other left-column panels.
         self.splitDockWidget(self.sample_image_frame, self.stack_frame, Qt.Orientation.Vertical)
+        self.splitDockWidget(self.stack_frame, self.timeline_frame, Qt.Orientation.Vertical)
 
         # right column: Parameters / Scopes / Graph, top to bottom.
         self.splitDockWidget(self.stack_params_frame, self.scopes_frame, Qt.Orientation.Vertical)
@@ -938,11 +950,11 @@ class MainWindow(QMainWindow):
             [260, 700, 340], Qt.Orientation.Horizontal)
         self.resizeDocks(
             [self.browser_frame, self.image_library_frame, self.lut_library_frame,
-             self.stack_memories_frame, self.timeline_frame],
-            [260, 160, 160, 160, 160], Qt.Orientation.Vertical)
+             self.stack_memories_frame],
+            [260, 210, 210, 210], Qt.Orientation.Vertical)
         self.resizeDocks(
-            [self.sample_image_frame, self.stack_frame],
-            [260, 540], Qt.Orientation.Vertical)
+            [self.sample_image_frame, self.stack_frame, self.timeline_frame],
+            [260, 340, 300], Qt.Orientation.Vertical)
         self.resizeDocks(
             [self.stack_params_frame, self.scopes_frame, self.viewer_3d_frame],
             [300, 350, 350], Qt.Orientation.Vertical)
