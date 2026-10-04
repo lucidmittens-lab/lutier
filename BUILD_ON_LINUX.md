@@ -77,25 +77,41 @@ populate the 3D view and info panel, drag/rotate, Controls
 Export Still from the Sample Image panel, and a pass through the
 Timeline/Media Library NLE features. Report anything that breaks.
 
-## 2. What's confirmed vs. not yet
+## 2. GUI/GL smoke-testing without a real GPU
 
-**Confirmed, this environment (sandboxed, no real GPU or display):**
-imports cleanly, the full non-GPU test suite passes with the same 8
-pre-existing/known failures as always (`test_airplay_output_sink.py` --
-real-PyObjC/macOS-only, expected to fail here; `test_theme_prefs.py`'s
-one root-permission-dependent test), all of PySide6's bundled Qt `.so`
-files resolve their direct link-time dependencies against this system's
-packages with nothing missing.
+`QT_QPA_PLATFORM=offscreen` (this repo's standing fast-test-suite
+convention -- see every `test_*.py`'s own docstring) is genuine
+rasterization for plain widgets, but its `QOpenGLContext` is a stub: a
+`QOpenGLWidget` (the 3D LUT viewer, GPU shader stages) fails outright
+(`QOpenGLContext.create() failed.`) under it, regardless of GPU hardware.
 
-**Not confirmed here, needs a real machine with an actual GPU and
-display (yours):** anything involving a real rendered window --
-`QOpenGLWidget` (the 3D LUT viewer, GPU shader stages) can't even create
-a GL context under this sandbox's offscreen-only setup
-(`QOpenGLContext.create() failed.`), so none of that path has been
-exercised on Linux yet. This is exactly the gap you running a build on
-your own PC closes -- please run through the 3D viewer, GPU-accelerated
-stack stages, and playback specifically, since those are the parts I
-literally cannot verify from here regardless of distro.
+A real OpenGL context *can* be created with no GPU at all, though,
+via a virtual X display (`Xvfb`) plus Mesa's software rasterizer
+(`llvmpipe`):
+
+```
+Xvfb :99 -screen 0 1920x1080x24 &
+DISPLAY=:99 LIBGL_ALWAYS_SOFTWARE=1 python3 main_window.py
+```
+
+Confirmed 2026-10-04: this gets a real, valid OpenGL 4.5 context and the
+3D viewer's lattice actually renders (software, not hardware --
+correctness/color-accuracy still needs real hardware, see below, but
+layout/interaction/"does it render at all" is now verifiable without
+leaving the sandbox). Claude Code web sessions on this repo set this up
+automatically via `.claude/hooks/session-start.sh` (`DISPLAY`/
+`LIBGL_ALWAYS_SOFTWARE` land in the session environment on startup) --
+anything that doesn't explicitly set `QT_QPA_PLATFORM=offscreen` now gets
+a real display by default instead of crashing for lack of one; the
+existing offscreen pytest suite is unaffected since it always sets
+`QT_QPA_PLATFORM` explicitly, which overrides display auto-detection.
+
+**Still genuinely needs a real machine with real GPU hardware (yours):**
+pixel-accurate color output, actual render *speed*/performance judgment,
+and anything input-device-dependent (real mouse/trackpad feel dragging
+the 3D view, scrubbing playback). Software-rendered llvmpipe proves the
+GUI *works*, not that it's fast or color-correct -- that's still
+specifically what running a build on your own PC is for.
 
 ## 3. A real distributable build (PyInstaller/AppImage)
 
