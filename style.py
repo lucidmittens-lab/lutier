@@ -1426,13 +1426,8 @@ QMainWindow::separator {{
    (same convention QToolButton#videoTransportButton:checked and
    QFrame#stackStageRow[stageSelected="true"] already use), not a
    special alarm color. SOURCE is the quiet, unchecked default. */
-QFrame#viewerModeFrame[viewerMode="record"] {{
-    border: 2px solid palette(highlight);
-    border-radius: 4px;
-}}
-QFrame#viewerModeFrame[viewerMode="source"] {{
-    border: 2px solid transparent;
-    border-radius: 4px;
+QFrame#viewerModeFrame {{
+    border: none;  /* no mode border any more (Tom, 2026-10-05) */
 }}
 /* #viewerModeBadge is a checkable QToolButton, not a QLabel -- its own
    RECORD/SOURCE look comes from the native :checked pseudo-state

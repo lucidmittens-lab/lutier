@@ -176,9 +176,10 @@ Both viewers: **J/K/L** shuttle (L or J again for 2×/4×/8×, K stops, K
 held + J/L steps a frame), Space play/pause, ←/→ one frame. Click a
 timecode, type and press Enter to jump: a full timecode, a partial one
 (replaces the right-hand digits — `1000` is 10s 00f), or `+`/`-` an
-offset (`+200` is two seconds on). Record's badge switches between
-**CLIP** (grade a single image or clip, no timeline needed) and
-**TIMELINE**.
+offset (`+200` is two seconds on). Record follows what you're doing:
+it shows the **timeline** whenever you work with one (select or seek a
+clip, play, load a timeline) and a **single clip** after "Grade in
+Record" on a Media Library item (grading without a timeline).
 
 **Source:** `source_viewer.py`, `transport_logic.py`,
 `transport_icons.py`; edits are `timeline.py`'s

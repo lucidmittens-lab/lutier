@@ -512,8 +512,8 @@ class SampleImagePanel(QWidget):
         self._viewer_mode_frame = QFrame()
         self._viewer_mode_frame.setObjectName("viewerModeFrame")
         viewer_mode_layout = QVBoxLayout(self._viewer_mode_frame)
-        viewer_mode_layout.setContentsMargins(2, 2, 2, 2)
-        viewer_mode_layout.setSpacing(2)
+        viewer_mode_layout.setContentsMargins(0, 0, 0, 0)
+        viewer_mode_layout.setSpacing(0)
 
         self._viewer_mode_badge = QToolButton()
         self._viewer_mode_badge.setObjectName("viewerModeBadge")
@@ -529,6 +529,12 @@ class SampleImagePanel(QWidget):
             "on whichever one this is currently set to.")
         self._viewer_mode_badge.toggled.connect(self._on_viewer_mode_toggled)
         viewer_mode_layout.addWidget(self._viewer_mode_badge, alignment=Qt.AlignmentFlag.AlignLeft)
+        # Hidden (Tom, 2026-10-05: "get rid of the timeline / clip border +
+        # indicator in the record viewer") -- the mode now follows what you
+        # do: timeline work -> TIMELINE, "Grade in Record" -> CLIP (see
+        # activate_record_mode / activate_clip_mode). Kept as the internal
+        # toggle those (and tests) drive.
+        self._viewer_mode_badge.setVisible(False)
 
         self.compare = WipeCompareWidget()
         viewer_mode_layout.addWidget(self.compare, stretch=1)
@@ -1372,7 +1378,22 @@ class SampleImagePanel(QWidget):
             self._video_scrub_slider.setValue(record_frame)
             self._suppress_video_scrub_signal = False
 
+    def activate_clip_mode(self):
+        """Switch Record to CLIP mode (grading one clip, no timeline) --
+        "Grade in Record". Counterpart of activate_record_mode."""
+        if self._viewer_mode == "source":
+            return
+        self._timeline_controller.pause()
+        self._set_viewer_mode("source")
+        self._update_video_play_button_text()
+
     def _on_video_play_pause_clicked(self):
+        # Nothing loaded to play in CLIP mode but a timeline with clips:
+        # play the timeline (the mode follows what there is to play).
+        timeline_obj = self._timeline_getter() if self._timeline_getter else None
+        if (self._viewer_mode == "source" and self._video_source is None
+                and timeline_obj is not None and timeline_obj.clips):
+            self.activate_record_mode()
         self._active_transport_controller().toggle()
         self._update_video_play_button_text()
 
@@ -1711,6 +1732,7 @@ class SampleImagePanel(QWidget):
         entry routes to load_video (full transport bar, not a frozen
         still); a STILL entry routes to load_image, which decodes at
         native resolution itself."""
+        self.activate_clip_mode()
         if entry.is_video:
             self.load_video(entry.source_path)
         else:

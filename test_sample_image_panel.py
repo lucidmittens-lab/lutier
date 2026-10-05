@@ -1484,6 +1484,23 @@ def test_video_sample_session_state_round_trips_through_json():
           "real JSON round trip and reopens correctly -- OK")
 
 
+def test_record_mode_follows_what_you_do_and_has_no_badge():
+    """Tom, 2026-10-05: no CLIP/TIMELINE border or indicator on Record --
+    the mode follows the action instead."""
+    panel = _panel_with_timeline_clip()
+    assert panel._viewer_mode_badge.isHidden()
+    # Nothing loaded in CLIP mode, but a timeline with clips: Play plays it.
+    panel.clear()
+    assert panel._viewer_mode == "source"
+    panel._on_video_play_pause_clicked()
+    assert panel._viewer_mode == "record" and panel._timeline_controller.is_playing
+    panel._timeline_controller.pause()
+    # "Grade in Record" goes back to CLIP.
+    panel.activate_clip_mode()
+    assert panel._viewer_mode == "source"
+    print("SampleImagePanel: mode follows the action, no badge shown -- OK")
+
+
 if __name__ == "__main__":
     test_sample_loads_at_native_resolution_not_a_capped_preview_size()
     test_isolated_single_edit_on_gpu_ineligible_stack_renders_at_full_resolution()

@@ -3032,6 +3032,7 @@ class MainWindow(QMainWindow):
             self._restoring_stack_history = False
         self._update_undo_redo_actions()
         if clip is not None:
+            self.sample_image.activate_record_mode()
             if clip.media_kind == "video":
                 self.sample_image.load_video(clip.source_path)
             else:
@@ -3100,6 +3101,7 @@ class MainWindow(QMainWindow):
                                thumbnail=spec.get("thumbnail"))
         record_frame = self.sample_image._timeline_controller.current_record_frame() or 0
         self.timeline_panel.apply_edit(mode, clip, record_frame)
+        self.sample_image.activate_record_mode()
 
     def match_frame(self):
         """Match Frame (F): load the clip under Record's playhead into the
@@ -3133,6 +3135,8 @@ class MainWindow(QMainWindow):
         self.sample_image._timeline_controller.stop()
         self.stack_panel.notify_selected_clip_changed(None)
         self.timeline_panel.load_timeline(timeline)
+        if timeline is not None:
+            self.sample_image.activate_record_mode()
 
     def _on_library_timeline_renamed(self, timeline):
         if timeline is self.timeline_panel.get_timeline():
