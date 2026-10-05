@@ -102,13 +102,21 @@ import video_source
 import timecode
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".exr")
-VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".avi", ".m4v")
+# .mxf: camera-original ProRes/DNxHR (e.g. ARRI ALEXA Mini LF ProRes 4444)
+# -- PyAV/ffmpeg decodes it like any other container; it just wasn't listed.
+VIDEO_EXTENSIONS = (".mp4", ".mov", ".mxf", ".mkv", ".avi", ".m4v")
 
+
+def _globs(extensions):
+    return " ".join("*" + ext for ext in extensions)
+
+
+# Built from the tuples above so the dialog filter and the is-it-a-video
+# check can't drift apart again (they're both what .mxf was missing from).
 IMAGE_FILE_FILTER = (
-    "Media files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.exr "
-    "*.mp4 *.mov *.mkv *.avi *.m4v)"
-    ";;Image files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.exr)"
-    ";;Video files (*.mp4 *.mov *.mkv *.avi *.m4v)"
+    f"Media files ({_globs(IMAGE_EXTENSIONS + VIDEO_EXTENSIONS)})"
+    f";;Image files ({_globs(IMAGE_EXTENSIONS)})"
+    f";;Video files ({_globs(VIDEO_EXTENSIONS)})"
     ";;All files (*)"
 )
 

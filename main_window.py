@@ -340,8 +340,24 @@ _UNDO_DEBOUNCE_MS = 400
 # get_workspace_state()'s old hand-rolled shape -- gone now that shape
 # itself is gone (see this module's docstring, WORKSPACE PERSISTENCE).
 DEFAULT_WORKSPACE_STATE = {
+    # The un-maximized size -- the app itself launches MAXIMIZED unless
+    # a remembered workspace says otherwise (per Tom, 2026-10-05: "full
+    # screen by default with a comfy amount of space per panel").
     "window_size": [1200, 800],
 }
+
+# Default column widths as FRACTIONS of the window's real width (Browser
+# column / Viewer column / Parameters-Scopes-Graph column). Fractions,
+# not pixels, because they're applied after the window reaches its final
+# maximized size -- fixed pixels applied at the 1200px construction size
+# left a maximized window's extra width wherever Qt happened to put it.
+# The right column is deliberately narrow (per Tom: "make the graph,
+# params and scopes more narrow by default").
+_DEFAULT_COLUMN_FRACTIONS = (0.16, 0.60, 0.24)
+# Same idea down each column, top to bottom.
+_DEFAULT_LEFT_FRACTIONS = (0.31, 0.23, 0.23, 0.23)      # Browser / Media Libraries / LUT Library / Galleries
+_DEFAULT_CENTER_FRACTIONS = (0.52, 0.24, 0.24)          # Viewer / Stack / Timeline
+_DEFAULT_RIGHT_FRACTIONS = (0.30, 0.32, 0.38)           # Parameters / Scopes / Graph
 
 
 class _PanelDockWidget(QDockWidget):
@@ -942,22 +958,83 @@ class MainWindow(QMainWindow):
         self.splitDockWidget(self.stack_params_frame, self.scopes_frame, Qt.Orientation.Vertical)
         self.splitDockWidget(self.scopes_frame, self.viewer_3d_frame, Qt.Orientation.Vertical)
 
-        # Same proportions the old splitters' setSizes() calls used --
-        # resizeDocks is the QMainWindow-dock equivalent, taking a list of
-        # docks sharing one axis and the sizes to give them along it.
-        self.resizeDocks(
-            [self.browser_frame, self.sample_image_frame, self.stack_params_frame],
-            [260, 700, 340], Qt.Orientation.Horizontal)
-        self.resizeDocks(
-            [self.browser_frame, self.image_library_frame, self.lut_library_frame,
-             self.stack_memories_frame],
-            [260, 210, 210, 210], Qt.Orientation.Vertical)
-        self.resizeDocks(
-            [self.sample_image_frame, self.stack_frame, self.timeline_frame],
-            [260, 340, 300], Qt.Orientation.Vertical)
-        self.resizeDocks(
-            [self.stack_params_frame, self.scopes_frame, self.viewer_3d_frame],
-            [300, 350, 350], Qt.Orientation.Vertical)
+        self._apply_default_dock_proportions()
+
+    def _apply_default_dock_proportions(self):
+        """Size the default columns (and each column's panels) to the
+        _DEFAULT_*_FRACTIONS of the window's CURRENT size. Called from _build_default_dock_layout
+        and again from resizeEvent while the window is still settling
+        into its launch size (see show_on_launch)."""
+        width, height = max(1, self.width()), max(1, self.height())
+
+        def fit(docks, fractions, total, orientation):
+            self.resizeDocks(docks, [round(total * f) for f in fractions], orientation)
+
+        fit([self.browser_frame, self.sample_image_frame, self.stack_params_frame],
+            _DEFAULT_COLUMN_FRACTIONS, width, Qt.Orientation.Horizontal)
+        fit([self.browser_frame, self.image_library_frame, self.lut_library_frame,
+             self.stack_memories_frame], _DEFAULT_LEFT_FRACTIONS, height, Qt.Orientation.Vertical)
+        fit([self.sample_image_frame, self.stack_frame, self.timeline_frame],
+            _DEFAULT_CENTER_FRACTIONS, height, Qt.Orientation.Vertical)
+        fit([self.stack_params_frame, self.scopes_frame, self.viewer_3d_frame],
+            _DEFAULT_RIGHT_FRACTIONS, height, Qt.Orientation.Vertical)
+
+    def show_on_launch(self):
+        """window.show() for app startup: maximized unless a remembered
+        workspace was explicitly saved un-maximized. When the default
+        layout is in use (no remembered dock state), the column widths
+        are re-applied on every resize for the first second -- a
+        maximize is asynchronous (the window manager decides when the
+        final geometry arrives), so a single deferred call could still
+        see the pre-maximize width.
+
+        The maximize is re-requested shortly after mapping if it didn't
+        stick: GNOME/mutter under XWayland silently drops a maximize set
+        before the window is mapped -- reproduced with a bare
+        QMainWindow.showMaximized() (2026-10-05, Rocky 10.2), which comes
+        back WindowNoState at its 1200x800 construction size. A request
+        ~100ms after mapping works there; on other platforms the first
+        showMaximized() already sticks and the retries are no-ops."""
+        if self._launch_maximized:
+            self.showMaximized()
+            for delay_ms in (150, 500):
+                QTimer.singleShot(delay_ms, self._ensure_launch_maximized)
+        else:
+            self.show()
+        if self._using_default_dock_layout:
+            self._settling_default_layout = True
+            QTimer.singleShot(1000, self._finish_launch_settling)
+
+    def _ensure_launch_maximized(self):
+        if not self.isMaximized():
+            self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
+
+    def _finish_launch_settling(self):
+        self._settling_default_layout = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if getattr(self, "_settling_default_layout", False):
+            self._apply_default_dock_proportions()
+        if getattr(self, "_pending_dock_state_b64", None) and self._has_reached_maximized_size():
+            # Deferred one tick so the dock area has taken the new size.
+            QTimer.singleShot(0, self._apply_pending_dock_state)
+
+    def _has_reached_maximized_size(self):
+        """By actual geometry, not isMaximized(): that flag already reads
+        True from showMaximized()'s pre-map request while the window is
+        still at its construction size (and GNOME/XWayland then drops the
+        request -- see show_on_launch)."""
+        screen = self.screen()
+        if screen is None:
+            return self.isMaximized()
+        return self.width() >= 0.9 * screen.availableGeometry().width()
+
+    def _apply_pending_dock_state(self):
+        dock_state_b64, self._pending_dock_state_b64 = (
+            getattr(self, "_pending_dock_state_b64", None), None)
+        if dock_state_b64:
+            self._apply_dock_state(dock_state_b64)
 
     def _build_layout(self):
         # No central widget -- every panel is a QDockWidget (see
@@ -2180,8 +2257,12 @@ class MainWindow(QMainWindow):
         saveState() returns a QByteArray -- base64-encoded to a plain str
         so the result stays JSON-serializable, same as every other value
         workspace_io.py's json.dumps already needs to handle."""
+        # normalGeometry() so un-maximizing after a relaunch goes back to
+        # the user's own size, not a screen-sized "normal" window.
+        size = self.normalGeometry().size() if self.isMaximized() else self.size()
         return {
-            "window_size": [self.width(), self.height()],
+            "window_size": [size.width(), size.height()],
+            "maximized": self.isMaximized(),
             "dock_state_b64": base64.b64encode(bytes(self.saveState())).decode("ascii"),
         }
 
@@ -2218,6 +2299,15 @@ class MainWindow(QMainWindow):
         floating-restore loop could, so this migration keeps the same
         discipline rather than assuming saveState()/restoreState() are
         somehow immune to the timing risk #33 diagnosed."""
+        # Absent key (no remembered workspace, or one saved before this
+        # key existed) means maximized -- the default launch state.
+        self._launch_maximized = bool((workspace or {}).get("maximized", True))
+        self._using_default_dock_layout = not (workspace or {}).get("dock_state_b64")
+        if self.isVisible():  # an imported preset, applied to a live window
+            if self._launch_maximized:
+                self.showMaximized()
+            else:
+                self.showNormal()
         window_size = (workspace or {}).get("window_size")
         if window_size and len(window_size) == 2:
             try:
@@ -2227,7 +2317,17 @@ class MainWindow(QMainWindow):
 
         dock_state_b64 = (workspace or {}).get("dock_state_b64")
         if dock_state_b64:
-            QTimer.singleShot(0, lambda: self._apply_dock_state(dock_state_b64))
+            if self._launch_maximized and not self.isMaximized():
+                # Restore only once the window is at its maximized size:
+                # restoreState() at the 1200x800 construction size, then
+                # maximizing, let Qt spread the extra width unevenly --
+                # a layout saved at 16/60/24 came back ~23/47/30. The
+                # timer is a fallback for a window manager that never
+                # maximizes (show_on_launch's own retries notwithstanding).
+                self._pending_dock_state_b64 = dock_state_b64
+                QTimer.singleShot(1500, self._apply_pending_dock_state)
+            else:
+                QTimer.singleShot(0, lambda: self._apply_dock_state(dock_state_b64))
 
     def _apply_dock_state(self, dock_state_b64):
         """The actual restoreState() call load_workspace_state defers by
@@ -2292,9 +2392,12 @@ class MainWindow(QMainWindow):
         self._dock_all_floating_panels()
         for _action_attr, _label, frame_attr, _default_visible in PANEL_TOGGLES:
             getattr(self, frame_attr).setVisible(True)
+        self.resize(*DEFAULT_WORKSPACE_STATE["window_size"])
+        self.showMaximized()
         self._build_default_dock_layout()
         self._snapshot_all_docked_state()
-        self.resize(*DEFAULT_WORKSPACE_STATE["window_size"])
+        self._settling_default_layout = True
+        QTimer.singleShot(1000, self._finish_launch_settling)
 
     def _export_workspace_preset(self):
         """Workspace menu "Export Workspace Preset..." (per Tom) -- saves
@@ -3470,7 +3573,7 @@ def build_window(app):
     app.setPalette(build_dark_palette())
     app.setStyleSheet(STYLESHEET)
     window = MainWindow()
-    window.show()
+    window.show_on_launch()
     return window
 
 
