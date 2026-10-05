@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication, QMenu
 
 import timeline as tl
 from media_library import MediaEntry, MEDIA_ENTRY_DRAG_MIME_TYPE
+import media_panel
 from media_panel import MediaPanel, COLUMN_NAME, COLUMN_THUMBNAIL, COLUMN_KEYS, COLUMNS
 
 
@@ -515,6 +516,110 @@ def test_new_timeline_names_are_unique_and_use_the_project_rate():
           "edit rate -- OK")
 
 
+import tempfile
+import os
+from PIL import Image
+import numpy as np
+from test_media_probe import _write_prores_mov
+from PySide6.QtCore import QMimeData, QUrl, QPointF
+from PySide6.QtGui import QDropEvent
+
+def test_import_paths_imports_media_and_ignores_other_files():
+    _app()
+    panel = MediaPanel()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        png_path = os.path.join(temp_dir, "test.png")
+        Image.fromarray(np.full((4, 6, 3), 128, dtype=np.uint8)).save(png_path)
+        mov_path = os.path.join(temp_dir, "test.mov")
+        _write_prores_mov(mov_path)
+        txt_path = os.path.join(temp_dir, "notes.txt")
+        with open(txt_path, "w") as f:
+            f.write("This is a test file.")
+        paths = [png_path, mov_path, txt_path]
+        entries = panel.import_paths(paths)
+        assert len(entries) == 2
+        assert entries[0].name == "test"
+        assert entries[1].name == "test"
+        assert entries[1].media_kind == "video"
+    print("test_import_paths_imports_media_and_ignores_other_files -- OK")
+
+def test_import_paths_reports_all_failures_in_one_warning():
+    _app()
+    panel = MediaPanel()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        png_path = os.path.join(temp_dir, "good.png")
+        Image.fromarray(np.full((4, 6, 3), 128, dtype=np.uint8)).save(png_path)
+        broken_png1_path = os.path.join(temp_dir, "broken1.png")
+        with open(broken_png1_path, "wb") as f:
+            f.write(b"not an image")
+        broken_png2_path = os.path.join(temp_dir, "broken2.png")
+        with open(broken_png2_path, "wb") as f:
+            f.write(b"not an image")
+        paths = [png_path, broken_png1_path, broken_png2_path]
+        failures = []
+        original_warning = media_panel.QMessageBox.warning
+        def mock_warning(*args, **kwargs):
+            failures.append(args[2])
+        media_panel.QMessageBox.warning = mock_warning
+        try:
+            entries = panel.import_paths(paths)
+            assert len(entries) == 1
+            assert len(failures) == 1
+            assert "broken1.png" in failures[0]
+            assert "broken2.png" in failures[0]
+        finally:
+            media_panel.QMessageBox.warning = original_warning
+    print("test_import_paths_reports_all_failures_in_one_warning -- OK")
+
+def test_import_paths_into_another_library_leaves_the_current_one_alone():
+    _app()
+    panel = MediaPanel()
+    panel.pool.add_library("Selects")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        png_path = os.path.join(temp_dir, "test.png")
+        Image.fromarray(np.full((4, 6, 3), 128, dtype=np.uint8)).save(png_path)
+        entries = panel.import_paths([png_path], library=panel.pool.libraries[1])
+        assert len(entries) == 1
+        assert len(panel.library.entries) == 0
+        assert len(panel.pool.libraries[1].entries) == 1
+    print("test_import_paths_into_another_library_leaves_the_current_one_alone -- OK")
+
+def test_dropping_files_on_the_table_imports_into_the_current_library():
+    _app()
+    panel = MediaPanel()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        png_path = os.path.join(temp_dir, "test.png")
+        Image.fromarray(np.full((4, 6, 3), 128, dtype=np.uint8)).save(png_path)
+        txt_path = os.path.join(temp_dir, "notes.txt")
+        with open(txt_path, "w") as f:
+            f.write("This is a test file.")
+        paths = [png_path, txt_path]
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(p) for p in paths])
+        event = QDropEvent(QPointF(panel.table.viewport().rect().center()), Qt.DropAction.CopyAction, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        panel.table.dropEvent(event)
+        assert len(panel.library.entries) == 1
+    print("test_dropping_files_on_the_table_imports_into_the_current_library -- OK")
+
+def test_dropping_files_on_a_library_imports_into_that_library():
+    _app()
+    panel = MediaPanel()
+    panel.pool.add_library("Selects")
+    panel._refresh_library_list()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        png_path = os.path.join(temp_dir, "test.png")
+        Image.fromarray(np.full((4, 6, 3), 128, dtype=np.uint8)).save(png_path)
+        item = panel.library_list.item(1)
+        point = panel.library_list.visualItemRect(item).center()
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(png_path)])
+        event = QDropEvent(point, Qt.DropAction.CopyAction, mime, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        panel.library_list.dropEvent(event)
+        assert len(panel.pool.libraries[0].entries) == 0
+        assert len(panel.pool.libraries[1].entries) == 1
+    print("test_dropping_files_on_a_library_imports_into_that_library -- OK")
+
+
 if __name__ == "__main__":
     test_hover_info_includes_start_and_end_timecode_for_video()
     test_hover_info_omits_timecode_for_a_still()
@@ -543,5 +648,10 @@ if __name__ == "__main__":
     test_library_side_panel_switches_the_target_library()
     test_timelines_show_as_rows_and_open_on_double_click()
     test_new_timeline_names_are_unique_and_use_the_project_rate()
+    test_import_paths_imports_media_and_ignores_other_files()
+    test_import_paths_reports_all_failures_in_one_warning()
+    test_import_paths_into_another_library_leaves_the_current_one_alone()
+    test_dropping_files_on_the_table_imports_into_the_current_library()
+    test_dropping_files_on_a_library_imports_into_that_library()
     print()
     print("All media_panel tests passed.")

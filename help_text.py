@@ -51,30 +51,50 @@ end for the full set of layout/window features shared across every panel.
 
 ## Browser
 
-Point it at a folder; it lists LUT files (`.cube`, `.clf`, `.spi1d`,
-`.spi3d`, `.spimtx`, `.csp`) and ASC CDL files (`.cc`, `.cdl`, `.ccc`)
-together, CDL ones tagged `[CDL]`. Double-click a LUT to add it to the
-Stack; double-click a CDL to import it into the Gallery. Drag either
-kind onto its matching Library/Gallery panel, or drag a LUT onto the
-Stack directly.
+A file-system browser: a folder tree on top (**Choose Root...** picks the
+top folder, **↑** goes up a level) and, below it, the recognized files in
+the selected folder — media (stills and video), LUTs (`.cube`, `.clf`,
+`.spi1d`, `.spi3d`, `.spimtx`, `.csp`) and ASC CDLs (`.cc`, `.cdl`,
+`.ccc`) — with Name, Type, Size and Modified columns. Tick **Include
+subfolders** to list everything under the selected folder (a Folder
+column then shows where each file lives; hidden folders are skipped and
+very large trees stop at 5,000 files). Narrow the list with the type menu
+(All / Media / LUTs & CDLs) or the search box (wildcards ok).
 
-**Source:** `browser_panel.py` (file listing/drag-drop); LUT file
-reading is `app_logic.load_lut_any_format` (dispatches to
-`colour-science`'s own per-format readers).
+Select several files and drag them onto the Media Libraries table (or
+onto a library in its side list) to import them. Double-click a media
+file to import it into the current library, a LUT to add it to the
+Stack, a CDL to import it into the Gallery. A single LUT or CDL can
+still be dragged onto the Stack or its Library/Gallery panel.
+
+**Source:** `browser_panel.py`; LUT file reading is
+`app_logic.load_lut_any_format`.
 
 ## Media Libraries
 
-A sortable, columned table of still AND video files catalogued by
-reference — click a column header (Name/Kind/Resolution/Duration/Color
-Space/Path) to sort. Import a file, then double-click a row (or
-right-click it for "Load as Source"/"Load as Reference"/"Rename..."/
-"Delete") to load it as the Viewer's Source or Reference image (video
-only supports Source, not Reference). Entries are catalogued by path and
-header metadata only, never a decoded copy of the file's pixel data —
-moving or deleting the source file after import breaks that entry.
+A session holds any number of named **libraries**, listed in the side
+panel on the left (right-click it for New / Rename / Delete; each shows
+how many items it holds). The selected library is what the table shows
+and where imports, drops and New Timeline land; drop files onto another
+library in the list to import straight into it.
 
-**Source:** `media_panel.py`; entries are `media_library.py`'s
-`MediaEntry`/`MediaLibrary`.
+The table lists the library's still and video files, catalogued by
+reference, and its **timelines**. Right-click the column header to
+choose columns (timecode, codec, bit depth, audio, camera, file size,
+...), drag headers to reorder, click one to sort. Double-click media to
+load it as the Viewer's Source (right-click for Load as Reference / Add
+to Timeline / Rename / Delete; video only supports Source). Entries are
+catalogued by path and header metadata only — moving or deleting the
+source file after import breaks that entry.
+
+Double-click a timeline (or right-click → Load Timeline) to open it in
+the Timeline panel; the loaded one is marked ▶. Unload it from the same
+menu or the Timeline panel's ⏏ button — it stays in its library. **☰ →
+New Timeline** makes an empty one at the project's edit rate; adding a
+clip with no timeline loaded makes one automatically.
+
+**Source:** `media_panel.py`; `media_library.py`'s `MediaPool` /
+`MediaLibrary` / `MediaEntry`; header metadata from `media_probe.py`.
 
 ## LUT Library
 
@@ -362,9 +382,10 @@ silently showing a stale preview.
 
 **Source:** `stack.py`'s `_run_stages` (structural split/merge handling,
 not a color operation itself — the operators inside each branch are each
-still dispatched through `_apply_stage_to_array` as usual). Not yet
-GPU-accelerated — any Stack containing a fork falls back to CPU
-(`stack.apply_stack_to_image_array`) entirely.
+still dispatched through `_apply_stage_to_array` as usual). Forks render
+on the GPU (`gpu_stack_renderer.py`, fork merge via
+`gpu_fork_merge_shader.py`) as long as every stage in the Stack is
+GPU-eligible; nested forks aren't supported anywhere.
 
 ### Grid size and domain
 

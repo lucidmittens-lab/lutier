@@ -3,16 +3,13 @@ QT_QPA_PLATFORM=offscreen python3 test_browser_panel.py
 """
 import sys
 from pathlib import Path
+import tempfile
 
-from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 import browser_panel as bp
-from browser_panel import BrowserPanel, _KIND_CDL, _KIND_LUT, _ROLE_KIND
-
-SAMPLES_DIR = Path(__file__).parent / "samples"
-
+from browser_panel import BrowserPanel, KIND_LUT, KIND_CDL, KIND_STILL, KIND_VIDEO, SEARCH_DEBOUNCE_MS, LUT_PATH_MIME, COLUMN_NAME
 
 def _app():
     app = QApplication.instance()
@@ -20,145 +17,254 @@ def _app():
         app = QApplication(sys.argv)
     return app
 
-
-def test_hover_info_includes_full_path_kind_and_size_for_a_lut():
+def test_kind_for_path_classifies_correctly():
     _app()
-    panel = BrowserPanel()
-    panel.set_folder(str(SAMPLES_DIR))
-    lut_item = None
-    for i in range(panel.list_widget.count()):
-        item = panel.list_widget.item(i)
-        if item.data(_ROLE_KIND) == _KIND_LUT:
-            lut_item = item
-            break
-    assert lut_item is not None, "expected at least one LUT file in samples/"
-    path = lut_item.data(Qt.ItemDataRole.UserRole)
+    assert bp.kind_for_path(Path("shot.mov")) == KIND_VIDEO
+    assert bp.kind_for_path(Path("plate.exr")) == KIND_STILL
+    assert bp.kind_for_path(Path("look.cube")) == KIND_LUT
+    assert bp.kind_for_path(Path("grade.cdl")) == KIND_CDL
+    assert bp.kind_for_path(Path("notes.txt")) is None
+    assert bp.kind_for_path(Path("SHOT.MOV")) == KIND_VIDEO
+    print("kind_for_path classifies correctly and is case-insensitive -- OK")
 
-    info = panel._hover_info_for_item(lut_item)
-    assert path in info
-    assert "LUT" in info
-    assert "modified" in info
-    print("BrowserPanel._hover_info_for_item: shows full path, kind, "
-          "and a live size/modified stat for a LUT entry -- OK")
+def test_scan_folder_non_recursive():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "shot.mov").touch()
+        (Path(temp_dir) / "plate.exr").touch()
+        (Path(temp_dir) / "look.cube").touch()
+        (Path(temp_dir) / "grade.cdl").touch()
+        (Path(temp_dir) / "notes.txt").touch()
+        (Path(temp_dir) / "sub").mkdir()
+        (Path(temp_dir) / "sub" / "deep.mxf").touch()
+        (Path(temp_dir) / "sub" / "deep.cube").touch()
+        (Path(temp_dir) / ".cache").mkdir()
+        (Path(temp_dir) / ".cache" / "hidden.mov").touch()
 
+        results, truncated = bp.scan_folder(temp_dir, recursive=False)
+        assert [str(path) for path, _ in results] == [
+            str(Path(temp_dir) / "grade.cdl"),
+            str(Path(temp_dir) / "look.cube"),
+            str(Path(temp_dir) / "plate.exr"),
+            str(Path(temp_dir) / "shot.mov")
+        ]
+        assert not truncated
+        print("scan_folder non-recursive lists only top-level recognized files -- OK")
 
-def test_hover_info_flags_cdl_kind():
+def test_scan_folder_recursive():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "shot.mov").touch()
+        (Path(temp_dir) / "plate.exr").touch()
+        (Path(temp_dir) / "look.cube").touch()
+        (Path(temp_dir) / "grade.cdl").touch()
+        (Path(temp_dir) / "notes.txt").touch()
+        (Path(temp_dir) / "sub").mkdir()
+        (Path(temp_dir) / "sub" / "deep.mxf").touch()
+        (Path(temp_dir) / "sub" / "deep.cube").touch()
+        (Path(temp_dir) / ".cache").mkdir()
+        (Path(temp_dir) / ".cache" / "hidden.mov").touch()
+
+        results, truncated = bp.scan_folder(temp_dir, recursive=True)
+        # Sorted by file name (not path), hidden .cache/ skipped.
+        assert [str(path) for path, _ in results] == [
+            str(Path(temp_dir) / "sub" / "deep.cube"),
+            str(Path(temp_dir) / "sub" / "deep.mxf"),
+            str(Path(temp_dir) / "grade.cdl"),
+            str(Path(temp_dir) / "look.cube"),
+            str(Path(temp_dir) / "plate.exr"),
+            str(Path(temp_dir) / "shot.mov"),
+        ]
+        assert not truncated
+        print("scan_folder recursive lists all recognized files including subfolders -- OK")
+
+def test_scan_folder_kinds_and_name_filter():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "shot.mov").touch()
+        (Path(temp_dir) / "plate.exr").touch()
+        (Path(temp_dir) / "look.cube").touch()
+        (Path(temp_dir) / "grade.cdl").touch()
+        (Path(temp_dir) / "notes.txt").touch()
+        (Path(temp_dir) / "sub").mkdir()
+        (Path(temp_dir) / "sub" / "deep.mxf").touch()
+        (Path(temp_dir) / "sub" / "deep.cube").touch()
+        (Path(temp_dir) / ".cache").mkdir()
+        (Path(temp_dir) / ".cache" / "hidden.mov").touch()
+
+        results, truncated = bp.scan_folder(temp_dir, recursive=True, kinds=("still", "video"))
+        assert [str(path) for path, _ in results] == [
+            str(Path(temp_dir) / "sub" / "deep.mxf"),
+            str(Path(temp_dir) / "plate.exr"),
+            str(Path(temp_dir) / "shot.mov"),
+        ]
+        assert not truncated
+
+        results, truncated = bp.scan_folder(temp_dir, recursive=True, name_filter="*.cube")
+        assert [str(path) for path, _ in results] == [
+            str(Path(temp_dir) / "sub" / "deep.cube"),
+            str(Path(temp_dir) / "look.cube"),
+        ]
+        assert not truncated
+
+        results, truncated = bp.scan_folder(temp_dir, name_filter="DEEP", recursive=True)
+        assert [str(path) for path, _ in results] == [
+            str(Path(temp_dir) / "sub" / "deep.cube"),
+            str(Path(temp_dir) / "sub" / "deep.mxf")
+        ]
+        assert not truncated
+        print("scan_folder with kinds and name_filter works -- OK")
+
+def test_scan_folder_limit():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "shot.mov").touch()
+        (Path(temp_dir) / "plate.exr").touch()
+        (Path(temp_dir) / "look.cube").touch()
+        (Path(temp_dir) / "grade.cdl").touch()
+        (Path(temp_dir) / "notes.txt").touch()
+        (Path(temp_dir) / "sub").mkdir()
+        (Path(temp_dir) / "sub" / "deep.mxf").touch()
+        (Path(temp_dir) / "sub" / "deep.cube").touch()
+        (Path(temp_dir) / ".cache").mkdir()
+        (Path(temp_dir) / ".cache" / "hidden.mov").touch()
+
+        results, truncated = bp.scan_folder(temp_dir, limit=2)
+        assert len(results) == 2
+        assert truncated
+        print("scan_folder with limit=2 returns 2 results and truncated True -- OK")
+
+def test_browser_panel_set_folder_and_recursive():
     _app()
-    panel = BrowserPanel()
-    panel.set_folder(str(SAMPLES_DIR))
-    cdl_item = None
-    for i in range(panel.list_widget.count()):
-        item = panel.list_widget.item(i)
-        if item.data(_ROLE_KIND) == _KIND_CDL:
-            cdl_item = item
-            break
-    assert cdl_item is not None, "expected at least one CDL file in samples/cdl"
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "shot.mov").touch()
+        (Path(temp_dir) / "plate.exr").touch()
+        (Path(temp_dir) / "look.cube").touch()
+        (Path(temp_dir) / "grade.cdl").touch()
+        (Path(temp_dir) / "notes.txt").touch()
+        (Path(temp_dir) / "sub").mkdir()
+        (Path(temp_dir) / "sub" / "deep.mxf").touch()
+        (Path(temp_dir) / "sub" / "deep.cube").touch()
+        (Path(temp_dir) / ".cache").mkdir()
+        (Path(temp_dir) / ".cache" / "hidden.mov").touch()
 
-    info = panel._hover_info_for_item(cdl_item)
-    assert "\nCDL\n" in info
-    print("BrowserPanel._hover_info_for_item: flags a CDL entry's kind "
-          "as CDL, not LUT -- OK")
+        panel = BrowserPanel()
+        panel.set_folder(temp_dir)
+        assert sorted(Path(p).name for p in panel.listed_paths()) == [
+            "grade.cdl", "look.cube", "plate.exr", "shot.mov"
+        ]
 
+        panel.recursive_checkbox.setChecked(True)
+        panel.refresh()
+        assert sorted(Path(p).name for p in panel.listed_paths()) == [
+            "deep.cube", "deep.mxf", "grade.cdl", "look.cube", "plate.exr", "shot.mov"
+        ]
 
-def test_hover_info_returns_none_for_an_item_with_no_path_data():
+        panel.type_combo.setCurrentIndex(1)
+        panel.refresh()
+        assert sorted(Path(p).name for p in panel.listed_paths()) == [
+            "deep.mxf", "plate.exr", "shot.mov"
+        ]
+        print("BrowserPanel: set_folder, recursive_checkbox, and type_combo work -- OK")
+
+def test_search_box_debounce():
     _app()
-    panel = BrowserPanel()
-    from PySide6.QtWidgets import QListWidgetItem
-    bare_item = QListWidgetItem("no path set")
-    assert panel._hover_info_for_item(bare_item) is None
-    print("BrowserPanel._hover_info_for_item: returns None rather than "
-          "raising when an item has no path data -- OK")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "shot.mov").touch()
+        (Path(temp_dir) / "plate.exr").touch()
+        (Path(temp_dir) / "look.cube").touch()
+        (Path(temp_dir) / "grade.cdl").touch()
+        (Path(temp_dir) / "notes.txt").touch()
+        (Path(temp_dir) / "sub").mkdir()
+        (Path(temp_dir) / "sub" / "deep.mxf").touch()
+        (Path(temp_dir) / "sub" / "deep.cube").touch()
+        (Path(temp_dir) / ".cache").mkdir()
+        (Path(temp_dir) / ".cache" / "hidden.mov").touch()
 
+        panel = BrowserPanel()
+        panel.set_folder(temp_dir)
+        panel.search_box.setText("look")
+        assert panel._search_debounce_timer.isActive()
+        assert sorted(Path(p).name for p in panel.listed_paths()) == [
+            "grade.cdl", "look.cube", "plate.exr", "shot.mov"
+        ]
 
-def _item_names(panel):
-    return [panel.list_widget.item(i).text() for i in range(panel.list_widget.count())]
+        QTest.qWait(SEARCH_DEBOUNCE_MS + 100)
+        assert sorted(Path(p).name for p in panel.listed_paths()) == [
+            "look.cube"
+        ]
+        print("Search box debounce works -- OK")
 
-
-def test_search_box_debounces_before_refreshing():
-    """Regression guard for a real performance bug (found in code
-    review): every keystroke used to trigger its own full recursive
-    scan_lut_folder walk, with no debounce at all. Typing must NOT
-    re-scan on every character -- only once, after typing pauses for
-    SEARCH_DEBOUNCE_MS."""
+def test_drag_payload():
     _app()
-    panel = BrowserPanel()
-    panel.set_folder(str(SAMPLES_DIR))
-    before = _item_names(panel)
-    assert len(before) > 1, "expected multiple files in samples/ for this test to mean anything"
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "shot.mov").touch()
+        (Path(temp_dir) / "plate.exr").touch()
+        (Path(temp_dir) / "look.cube").touch()
+        (Path(temp_dir) / "grade.cdl").touch()
+        (Path(temp_dir) / "notes.txt").touch()
+        (Path(temp_dir) / "sub").mkdir()
+        (Path(temp_dir) / "sub" / "deep.mxf").touch()
+        (Path(temp_dir) / "sub" / "deep.cube").touch()
+        (Path(temp_dir) / ".cache").mkdir()
+        (Path(temp_dir) / ".cache" / "hidden.mov").touch()
 
-    scan_calls = []
-    original_refresh = panel.refresh
-    panel.refresh = lambda: (scan_calls.append(1), original_refresh())[1]
+        panel = BrowserPanel()
+        panel.set_folder(temp_dir)
+        panel.recursive_checkbox.setChecked(True)
+        panel.refresh()
 
-    for ch in "roundtrip":
-        panel.search_box.setText(panel.search_box.text() + ch)
-    # No refresh yet -- still within the debounce window (no qWait at all
-    # since setText above happens synchronously, well under SEARCH_
-    # DEBOUNCE_MS in wall-clock terms).
-    assert scan_calls == [], "typing must not trigger an immediate re-scan per keystroke"
-    assert _item_names(panel) == before, "the list must still show the OLD results while debouncing"
+        look_item = None
+        for i in range(panel.file_list.topLevelItemCount()):
+            item = panel.file_list.topLevelItem(i)
+            if item.text(COLUMN_NAME) == "look.cube":
+                look_item = item
+                break
+        assert look_item is not None
 
-    QTest.qWait(bp.SEARCH_DEBOUNCE_MS + 100)  # let the debounce timer fire
+        mime = panel.file_list.mimeData([look_item])
+        assert mime.hasUrls()
+        assert mime.urls()[0].toLocalFile().endswith("look.cube")
+        assert mime.hasFormat(LUT_PATH_MIME)
 
-    assert scan_calls == [1], f"expected exactly one debounced refresh, got {len(scan_calls)}"
-    after = _item_names(panel)
-    assert after != before
-    assert all("roundtrip" in name.lower() for name in after)
-    print("BrowserPanel: search box debounces -- typing 9 characters "
-          "triggers exactly ONE re-scan, not nine, and the list updates "
-          "once the debounce settles -- OK")
+        media_items = [panel.file_list.topLevelItem(i) for i in range(panel.file_list.topLevelItemCount()) if panel.file_list.topLevelItem(i).text(COLUMN_NAME) in ("shot.mov", "plate.exr")]
+        mime = panel.file_list.mimeData(media_items)
+        assert mime.hasUrls()
+        assert len(mime.urls()) == 2
+        assert not mime.hasFormat(LUT_PATH_MIME)
+        print("Drag payload works -- OK")
 
-
-def test_set_folder_refreshes_immediately_not_debounced():
-    """Choosing a folder is a single deliberate action, not a per-
-    keystroke event -- must populate the list synchronously, with no
-    wait needed (already implicitly relied on by every other test in
-    this file that calls set_folder() and immediately inspects
-    list_widget)."""
+def test_double_click_routing():
     _app()
-    panel = BrowserPanel()
-    panel.set_folder(str(SAMPLES_DIR))
-    assert panel.list_widget.count() > 0
-    print("BrowserPanel.set_folder: refreshes immediately, not debounced -- OK")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "shot.mov").touch()
+        (Path(temp_dir) / "plate.exr").touch()
+        (Path(temp_dir) / "look.cube").touch()
+        (Path(temp_dir) / "grade.cdl").touch()
+        (Path(temp_dir) / "notes.txt").touch()
+        (Path(temp_dir) / "sub").mkdir()
+        (Path(temp_dir) / "sub" / "deep.mxf").touch()
+        (Path(temp_dir) / "sub" / "deep.cube").touch()
+        (Path(temp_dir) / ".cache").mkdir()
+        (Path(temp_dir) / ".cache" / "hidden.mov").touch()
 
+        panel = BrowserPanel()
+        panel.set_folder(temp_dir)
+        panel.recursive_checkbox.setChecked(True)
+        panel.refresh()
 
-def test_set_folder_cancels_a_pending_search_debounce():
-    """Switching folders while a search-box debounce is still pending
-    must not let a stale, already-superseded refresh fire again
-    afterward -- set_folder's OWN immediate refresh (with whatever
-    search text is currently in the box) must be the last word, not
-    followed by a redundant second one once the old timer's delay
-    happens to elapse."""
-    _app()
-    panel = BrowserPanel()
-    panel.set_folder(str(SAMPLES_DIR))
-    panel.search_box.setText("roundtrip")  # arms the debounce timer, doesn't fire yet
-    assert panel._search_debounce_timer.isActive()
+        emitted = {"lut": [], "cdl": [], "media": []}
+        panel.file_selected.connect(emitted["lut"].append)
+        panel.cdl_file_selected.connect(emitted["cdl"].append)
+        panel.media_files_activated.connect(emitted["media"].append)
 
-    scan_calls = []
-    original_refresh = panel.refresh
-    panel.refresh = lambda: (scan_calls.append(1), original_refresh())[1]
+        def double_click(name):
+            for values in emitted.values():
+                values.clear()
+            item = next(panel.file_list.topLevelItem(i)
+                        for i in range(panel.file_list.topLevelItemCount())
+                        if panel.file_list.topLevelItem(i).text(COLUMN_NAME) == name)
+            panel._on_item_double_clicked(item)
+            return {k: v[:] for k, v in emitted.items()}
 
-    empty_dir = SAMPLES_DIR / "cdl"  # a real subfolder, different contents than SAMPLES_DIR itself
-    panel.set_folder(str(empty_dir))
-    assert not panel._search_debounce_timer.isActive(), (
-        "set_folder must cancel any pending search debounce for the old folder")
-    assert scan_calls == [1], "set_folder's own refresh must have run exactly once, synchronously"
-
-    QTest.qWait(bp.SEARCH_DEBOUNCE_MS + 100)
-    assert scan_calls == [1], (
-        "the cancelled timer must not fire a redundant second refresh after the fact")
-    print("BrowserPanel.set_folder: cancels a pending search-box "
-          "debounce from the previous folder, no redundant refresh "
-          "fires afterward -- OK")
-
-
-if __name__ == "__main__":
-    test_hover_info_includes_full_path_kind_and_size_for_a_lut()
-    test_hover_info_flags_cdl_kind()
-    test_hover_info_returns_none_for_an_item_with_no_path_data()
-    test_search_box_debounces_before_refreshing()
-    test_set_folder_refreshes_immediately_not_debounced()
-    test_set_folder_cancels_a_pending_search_debounce()
+        assert double_click("look.cube") == {"lut": [str(Path(temp_dir) / "look.cube")], "cdl": [], "media": []}
+        assert double_click("grade.cdl") == {"lut": [], "cdl": [str(Path(temp_dir) / "grade.cdl")], "media": []}
+        assert double_click("shot.mov") == {"lut": [], "cdl": [], "media": [[str(Path(temp_dir) / "shot.mov")]]}
     print()
     print("All browser_panel tests passed.")

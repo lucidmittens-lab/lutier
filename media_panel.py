@@ -107,10 +107,8 @@ import thumbnail
 import video_source
 import timecode
 
-IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".exr")
-# .mxf: camera-original ProRes/DNxHR (e.g. ARRI ALEXA Mini LF ProRes 4444)
-# -- PyAV/ffmpeg decodes it like any other container; it just wasn't listed.
-VIDEO_EXTENSIONS = (".mp4", ".mov", ".mxf", ".mkv", ".avi", ".m4v")
+# Shared with the Browser, which lists these as media (see browser_panel.py).
+from browser_panel import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS  # noqa: E402
 
 
 def _globs(extensions):
@@ -346,6 +344,51 @@ class _NumericItem(QTableWidgetItem):
         return mine < theirs
 
 
+def _dropped_media_paths(event, source_to_ignore=None):
+    """Local media file paths in a drag (file URLs from the Browser or
+    the desktop file manager), or [] -- also [] for a drag that started
+    in `source_to_ignore` (a table's own outgoing row drag)."""
+    if event.source() is source_to_ignore and source_to_ignore is not None:
+        return []
+    mime = event.mimeData()
+    if not mime.hasUrls():
+        return []
+    paths = [u.toLocalFile() for u in mime.urls() if u.isLocalFile()]
+    return [p for p in paths if Path(p).suffix.lower() in IMAGE_EXTENSIONS + VIDEO_EXTENSIONS]
+
+
+class _LibraryList(QListWidget):
+    """The side panel's library list -- also a drop target: media files
+    dropped on a library are imported into THAT library."""
+    files_dropped = Signal(list, object)  # (paths, library item or None)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+
+    def dragEnterEvent(self, event):
+        if _dropped_media_paths(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if _dropped_media_paths(event) and self.itemAt(event.position().toPoint()) is not None:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        paths = _dropped_media_paths(event)
+        item = self.itemAt(event.position().toPoint())
+        if paths and item is not None:
+            event.acceptProposedAction()
+            self.files_dropped.emit(paths, item)
+        else:
+            event.ignore()
+
+
 class _MediaTable(QTableWidget):
     """QTableWidget with Qt's own row-drag machinery repurposed as a
     drag SOURCE carrying this library's entry id (MEDIA_ENTRY_DRAG_MIME
@@ -355,6 +398,31 @@ class _MediaTable(QTableWidget):
     dropEvent for the drop TARGET half. DragOnly (not DragDrop) -- this
     panel has no internal reorder/drop target of its own, only an
     outgoing drag."""
+
+    files_dropped = Signal(list)
+
+    # Drop target for media files from outside (the Browser, the desktop
+    # file manager) -- imported into the current library. Its own row
+    # drags (to the Timeline) are ignored here.
+    def dragEnterEvent(self, event):
+        if _dropped_media_paths(event, self):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if _dropped_media_paths(event, self):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        paths = _dropped_media_paths(event, self)
+        if paths:
+            event.acceptProposedAction()
+            self.files_dropped.emit(paths)
+        else:
+            event.ignore()
 
     def mimeData(self, items):
         rows = sorted({item.row() for item in items})
@@ -404,7 +472,8 @@ class MediaPanel(QWidget):
 
         # Side panel: the session's libraries (Tom, 2026-10-05: "a side
         # panel to select the target library").
-        self.library_list = QListWidget()
+        self.library_list = _LibraryList()
+        self.library_list.files_dropped.connect(self._on_files_dropped_on_library)
         self.library_list.setObjectName("mediaLibraryList")
         self.library_list.currentItemChanged.connect(self._on_library_selected)
         self.library_list.itemDoubleClicked.connect(lambda _item: self._on_rename_library_clicked())
@@ -444,6 +513,10 @@ class MediaPanel(QWidget):
         # drag (see _MediaTable's own docstring).
         self.table.setDragEnabled(True)
         self.table.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+        # DragOnly turns drops off; files from the Browser/file manager are
+        # accepted by _MediaTable's own drop handlers.
+        self.table.setAcceptDrops(True)
+        self.table.files_dropped.connect(lambda paths: self.import_paths(paths))
         # Interactive (the default, but set explicitly here) on every
         # column -- Stretch/ResizeToContents (the previous setup for
         # Name/Path/Thumbnail) both make a column's width fixed against
@@ -760,20 +833,50 @@ class MediaPanel(QWidget):
         self.import_from_path(path)
 
     def import_from_path(self, path):
-        """Catalogs `path` by reference: header-only metadata (dimensions
-        for a still, stream metadata for video) plus a one-time thumbnail
-        decode -- never a full raster decode kept around afterward (see
-        module/media_library.py docstrings). Dispatches to a still or
-        video import based on `path`'s extension (see
-        VIDEO_EXTENSIONS/module docstring)."""
-        if Path(path).suffix.lower() in VIDEO_EXTENSIONS:
-            self._import_video_from_path(path)
-            return
+        """Catalogs `path` into the current library by reference:
+        header-only metadata plus a one-time thumbnail decode -- never a
+        full raster decode kept around afterward (see module/
+        media_library.py docstrings). Reports a failure in a dialog."""
         try:
-            width, height = get_image_native_size(path)
-        except Exception as e:  # noqa: BLE001 -- surface any header-read failure to the user
-            QMessageBox.critical(self, "Failed to import image", str(e))
-            return
+            entry = self._build_entry(path)
+        except Exception as e:  # noqa: BLE001 -- surface any read failure to the user
+            kind = "video" if Path(path).suffix.lower() in VIDEO_EXTENSIONS else "image"
+            QMessageBox.critical(self, f"Failed to import {kind}", str(e))
+            return None
+        self.library.add_entry(entry)
+        self._refresh_table(keep_selection_id=entry.id)
+        return entry
+
+    def import_paths(self, paths, library=None):
+        """Import several files at once into `library` (default: the
+        current one) -- Browser drags/double-clicks and file-manager
+        drops. Files that aren't media are ignored; files that fail to
+        read are listed in ONE warning at the end rather than a dialog
+        each. Returns the new entries."""
+        library = library or self.library
+        media = [p for p in paths if Path(p).suffix.lower() in IMAGE_EXTENSIONS + VIDEO_EXTENSIONS]
+        entries, failures = [], []
+        for path in media:
+            try:
+                entries.append(library.add_entry(self._build_entry(path)))
+            except Exception as e:  # noqa: BLE001 -- one bad file shouldn't stop the rest
+                failures.append(f"{Path(path).name}: {e}")
+        if library is self.library:
+            self._refresh_table(keep_selection_id=entries[-1].id if entries else None)
+        else:
+            self._refresh_library_counts()
+        if failures:
+            QMessageBox.warning(
+                self, "Some files weren't imported",
+                f"Imported {len(entries)} of {len(media)}.\n\n" + "\n".join(failures))
+        return entries
+
+    def _build_entry(self, path):
+        """A MediaEntry for `path` (still or video by extension); raises
+        if the file can't be read."""
+        if Path(path).suffix.lower() in VIDEO_EXTENSIONS:
+            return self._build_video_entry(path)
+        width, height = get_image_native_size(path)
         name = Path(path).stem
         thumb_descriptor = None
         try:
@@ -782,24 +885,17 @@ class MediaPanel(QWidget):
                 f"media-library-{name}", thumbnail.make_thumbnail_png_bytes(array))
         except Exception:  # noqa: BLE001 -- a thumbnail failure shouldn't block cataloging the file
             pass
-        entry = MediaEntry(
+        return MediaEntry(
             name, str(path), source_filename=Path(path).name,
             media_kind="still", width=width, height=height,
             thumbnail=thumb_descriptor, metadata=_probe_or_empty(path, is_video=False))
-        self.library.add_entry(entry)
-        self._refresh_table(keep_selection_id=entry.id)
 
-    def _import_video_from_path(self, path):
+    def _build_video_entry(self, path):
         """Opens `path` just long enough to read its stream metadata (no
         frame decode needed for that, see video_source.VideoSource) and
-        decode ONE frame for the thumbnail -- always closed again before
-        returning, whether or not the import succeeds, and that one frame
-        is never kept on the entry."""
-        try:
-            source = video_source.VideoSource(path)
-        except Exception as e:  # noqa: BLE001 -- surface any open failure to the user
-            QMessageBox.critical(self, "Failed to import video", str(e))
-            return
+        decode ONE frame for the thumbnail -- always closed again, and
+        that one frame is never kept on the entry."""
+        source = video_source.VideoSource(path)
         try:
             width, height = source.width, source.height
             frame_count, frame_rate, duration = source.frame_count, source.frame_rate, source.duration
@@ -811,14 +907,12 @@ class MediaPanel(QWidget):
         if first_frame is not None:
             thumb_descriptor = media_cache.store_thumbnail(
                 f"media-library-{name}", thumbnail.make_thumbnail_png_bytes(first_frame))
-        entry = MediaEntry(
+        return MediaEntry(
             name, str(path), source_filename=Path(path).name,
             media_kind="video", width=width, height=height,
             frame_count=frame_count, frame_rate=frame_rate,
             duration=duration, thumbnail=thumb_descriptor,
             metadata=_probe_or_empty(path, is_video=True))
-        self.library.add_entry(entry)
-        self._refresh_table(keep_selection_id=entry.id)
 
     # ---- load as sample/reference / rename / delete ----------------------
 
@@ -994,6 +1088,13 @@ class MediaPanel(QWidget):
         self.library = library
         self._refresh_library_list()
         self._refresh_table()
+
+    def _on_files_dropped_on_library(self, paths, item):
+        try:
+            library = self.pool.find_library(item.data(LIBRARY_ID_ROLE))
+        except KeyError:
+            return
+        self.import_paths(paths, library=library)
 
     def _on_library_context_menu(self, pos):
         menu = QMenu(self.library_list)

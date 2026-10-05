@@ -1236,6 +1236,8 @@ class MainWindow(QMainWindow):
         # LUT files do) -- same import_cdl_from_path() the "..." menu's
         # mono "Import..." action and drag-and-drop both already use.
         self.browser.cdl_file_selected.connect(self.stack_memories_panel.import_cdl_from_path)
+        # Media double-clicked in the Browser -> the current Media Library.
+        self.browser.media_files_activated.connect(self.media_panel.import_paths)
         # corner_widget=self.stack_memories_panel.menu_button -- same "..."
         # header-menu treatment as LUT Library above.
         self._make_dock(
