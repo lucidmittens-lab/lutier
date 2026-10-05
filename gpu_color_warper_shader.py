@@ -63,12 +63,14 @@ _UNIFORM_CHROMA_DROPOFF = "uCwChromaDropoff"
 # because GLSL's pow() is undefined for a negative base (unlike numpy's
 # cbrt, which returns the real root, needed here since an out-of-gamut
 # color's LMS components can go negative).
-_WARP_GLSL = f"""
-float cwCbrtSafe(float x) {{
+# The color-math helpers on their own -- also used by the Keyer's GPU
+# qualifier (gpu_matte_shaders.py), which reads OKLCh but never warps.
+OKLAB_HELPERS_GLSL = """
+float cwCbrtSafe(float x) {
     return sign(x) * pow(abs(x), 1.0 / 3.0);
-}}
+}
 
-vec3 cwLinearToOklab(vec3 rgb) {{
+vec3 cwLinearToOklab(vec3 rgb) {
     float l = dot(rgb, vec3(0.4122214708, 0.5363325363, 0.0514459929));
     float m = dot(rgb, vec3(0.2119034982, 0.6806995451, 0.1073969566));
     float s = dot(rgb, vec3(0.0883024619, 0.2817188376, 0.6299787005));
@@ -79,9 +81,9 @@ vec3 cwLinearToOklab(vec3 rgb) {{
     float a = dot(vec3(l_, m_, s_), vec3(1.9779984951, -2.4285922050, 0.4505937099));
     float b = dot(vec3(l_, m_, s_), vec3(0.0259040371, 0.7827717662, -0.8086757660));
     return vec3(L, a, b);
-}}
+}
 
-vec3 cwOklabToLinear(vec3 lab) {{
+vec3 cwOklabToLinear(vec3 lab) {
     float l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
     float m_ = lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z;
     float s_ = lab.x - 0.0894841775 * lab.y - 1.2914855480 * lab.z;
@@ -92,18 +94,20 @@ vec3 cwOklabToLinear(vec3 lab) {{
     float g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
     float b = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
     return vec3(r, g, b);
-}}
+}
 
-float cwAngularDelta(float h0, float h1) {{
+float cwAngularDelta(float h0, float h1) {
     return mod(h1 - h0 + 180.0, 360.0) - 180.0;
-}}
+}
 
-float cwFalloffWeight(float dd, float wake, float dropoff) {{
+float cwFalloffWeight(float dd, float wake, float dropoff) {
     float n = 1.0 + dropoff * 7.0;
     float sigma = max(wake, 1e-6);
     return exp(-0.5 * pow(abs(dd) / sigma, 2.0 * n));
-}}
+}
+"""
 
+_WARP_GLSL = OKLAB_HELPERS_GLSL + f"""
 uniform int {_UNIFORM_POINT_COUNT};
 uniform vec2 {_UNIFORM_POINT_ANCHOR}[{MAX_POINTS}];
 uniform vec2 {_UNIFORM_POINT_TARGET}[{MAX_POINTS}];

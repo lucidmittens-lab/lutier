@@ -149,12 +149,13 @@ Python bookkeeping keyed by stage id, not per-branch image state; the one
 accepted nuance is that the qualifier only ever sampled whichever
 branch's own image actually produced it).
 
-GPU note: every MATTE_PRODUCING_KINDS kind is deliberately left out of
-gpu_stack_renderer.GPU_ELIGIBLE_KINDS, so any stack containing an enabled
-matte-producing stage already falls back to this module's own CPU path
-in full (the same all-or-nothing rule that module already applies to
-every other GPU-ineligible kind/condition) -- matte gating therefore
-never needs (and doesn't have) a GPU implementation to stay correct.
+GPU note: "keyer", "matte_shape" and "matte_combine", and the matte
+gating itself, render on the GPU too (gpu_matte_shaders.py, verified
+against this module's math). "segment_mask" -- a flood fill -- stays
+CPU-only, so a stack using it falls back to this module's CPU path in
+full (gpu_stack_renderer's all-or-nothing eligibility rule), as does a
+fork whose branches share a matte in an order the GPU would render
+differently (see is_stack_gpu_eligible).
 
 Same rule as every other backend module in this app: no PySide6 import
 here, fully testable without a display.
@@ -188,13 +189,10 @@ STAGE_KINDS = ("lut", "printer_lights", "aces_drt", "custom_drt", "cdl", "colors
 
 # Every stage kind that PRODUCES a matte rather than grading the image --
 # see this module's docstring, "MATTE CHANNELS", matte_letters_for, and
-# _maybe_populate_matte. Every one of these currently identity-
-# passthroughs its own RGB output entirely (see _apply_stage_to_array)
-# and is deliberately left out of gpu_stack_renderer.GPU_ELIGIBLE_KINDS,
-# so any stack using any of them already falls back to this module's own
-# CPU path in full via that module's existing all-or-nothing eligibility
-# rule -- no GPU
-# work needed for any of them to stay correct. "matte_combine" is the
+# _maybe_populate_matte. Every one of these identity-passthroughs its
+# own RGB output entirely (see _apply_stage_to_array); all but
+# "segment_mask" also render on the GPU (see the GPU note in this
+# module's docstring). "matte_combine" is the
 # odd one out: it never reads the image's own RGB at all, only OTHER
 # already-computed mattes (see matte_combine.py's own docstring).
 MATTE_PRODUCING_KINDS = frozenset({"keyer", "segment_mask", "matte_combine", "matte_shape"})

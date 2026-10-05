@@ -1726,8 +1726,7 @@ class SampleImagePanel(QWidget):
         burst_in_progress = self._editing_settle_timer.isActive()
         self._editing_settle_timer.start(EDIT_SETTLE_DEBOUNCE_MS)
         stack = self._stack_getter() if self._stack_getter else None
-        gpu_eligible = bool(stack is not None and stack.stages
-                             and gpu_stack_renderer.is_stack_gpu_eligible(stack))
+        gpu_eligible = self._gpu_stack_for_viewer(stack) is not None
         if gpu_eligible:
             self._recompute_sample_after(scopes=True)
         else:
@@ -1833,6 +1832,20 @@ class SampleImagePanel(QWidget):
             return None
         return _compose_highlight_overlay(self._current_after_array, matte)
 
+    def _gpu_stack_for_viewer(self, stack):
+        """`stack` if the Viewer should grade it on the GPU, else None:
+        non-empty, GPU-eligible, and no matte Highlight showing for one of
+        its stages -- the Highlight overlay is composited from the CPU
+        path's mattes (_highlighted_after_array_or_none), so while it's
+        on the Viewer stays on the CPU path, as it always did before
+        matte stages could render on the GPU."""
+        if stack is None or not stack.stages or not gpu_stack_renderer.is_stack_gpu_eligible(stack):
+            return None
+        highlight_id = self._highlight_getter() if self._highlight_getter else None
+        if highlight_id is not None and any(s.id == highlight_id for s in stack.stages):
+            return None
+        return stack
+
     def _array_and_gpu_stack_for_source(self, key, gpu_stack):
         """(array, stage_for_widget_to_grade_or_None, placeholder_message)
         for one of WIPE_SOURCE_CHOICES' three keys -- shared by the
@@ -1912,8 +1925,7 @@ class SampleImagePanel(QWidget):
         self.compare.set_wipe_enabled(wipe_enabled)
 
         stack = self._stack_getter() if self._stack_getter else None
-        gpu_stack = (stack if stack is not None and stack.stages
-                     and gpu_stack_renderer.is_stack_gpu_eligible(stack) else None)
+        gpu_stack = self._gpu_stack_for_viewer(stack)
 
         if wipe_enabled:
             left_array, left_gpu_stack, _left_placeholder = \

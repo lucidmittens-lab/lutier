@@ -101,6 +101,7 @@ import gpu_cdl_shader
 import gpu_color_warper_shader
 import gpu_custom_drt_shader
 import gpu_fork_merge_shader as gfm
+import gpu_matte_shaders
 import gpu_lut_shader
 import gpu_ocio_dynamic
 import gpu_printer_lights_shader
@@ -111,10 +112,14 @@ import grading_primary
 import grading_rgb_curve
 import grading_tone
 import printer_lights
+import stack as st
 
 GPU_ELIGIBLE_KINDS = frozenset({"cdl", "aces_drt", "custom_drt", "colorspace", "grading_primary",
                                 "exposure_contrast", "grading_tone", "grading_rgb_curve",
-                                "lut", "printer_lights", "color_warper"})
+                                "lut", "printer_lights", "color_warper",
+                                # Matte producers (gpu_matte_shaders.py) --
+                                # "segment_mask" stays CPU-only.
+                                "keyer", "matte_shape", "matte_combine"})
 
 
 def is_stack_gpu_eligible(stack):
@@ -128,17 +133,33 @@ def is_stack_gpu_eligible(stack):
     branch tag, none of it matters, since _run_stages never evaluates
     them either)."""
     fork_state = None
+    region_branch_of = {}  # stage id -> branch, for the open fork region
     for stage in stack.stages:
         if stage.kind == "fork_split":
             if fork_state is not None:
                 return False  # nested fork -- not supported (see _run_stages)
             fork_state = stage.enabled
+            region_branch_of = {}
             continue
         if stage.kind == "fork_merge":
             if fork_state is None:
                 return False  # unmatched merge -- already an invalid stack
             fork_state = None
             continue
+        if fork_state is True:
+            # The GPU renders all of branch A, then all of branch B; the
+            # CPU interleaves them in list order. A matte from one branch
+            # used in the OTHER branch of the same region could therefore
+            # differ (gpu_matte_shaders.py) -- keep that layout on the CPU.
+            source_branch = region_branch_of.get(stage.params.get("matte_source_id"))
+            if source_branch is not None and source_branch != stage.branch:
+                return False
+            if stage.kind == "matte_combine":
+                for key in ("matte_a_source_id", "matte_b_source_id"):
+                    other = region_branch_of.get(stage.params.get(key))
+                    if other is not None and other != stage.branch:
+                        return False
+            region_branch_of[stage.id] = stage.branch
         if fork_state is False:
             continue  # inside a DISABLED fork region -- whole region is a no-op, skip entirely
         if fork_state is True and stage.branch not in ("a", "b"):
@@ -201,6 +222,8 @@ def is_stack_gpu_eligible(stack):
             if not gpu_color_warper_shader.is_color_warper_gpu_eligible(
                     aces_drt.DEFAULT_CONFIG_NAME, working_colourspace, point_count=point_count):
                 return False
+        if stage.kind == "keyer" and not gpu_matte_shaders.is_keyer_gpu_eligible(stage.params):
+            return False  # decode needs a LUT texture, or a blur past MAX_BLUR_RADIUS
     if fork_state is not None:
         return False  # unmatched split at the end of the stack -- already invalid
     return True
@@ -326,6 +349,15 @@ class GpuStackRenderer:
         self._fork_snapshot_textures = None
         self._fork_snapshot_fbos = None
         self._blit_source_fbo = None
+        # Matte stages (gpu_matte_shaders.py): one matte texture per
+        # producing stage id, refilled every render_chain; plus one
+        # scratch target a matte-gated stage renders into before its
+        # matte blend.
+        self._matte_renderer = gpu_matte_shaders.MatteRenderer()
+        self._matte_targets = {}       # stage id -> (texture, fbo)
+        self._matte_size = None
+        self._mattes = {}              # stage id -> texture, this render only
+        self._gated_scratch = None     # (texture, fbo)
 
     @staticmethod
     def _aces_drt_fingerprint(stage):
@@ -714,13 +746,85 @@ class GpuStackRenderer:
         current_texture = start_texture
         output_index = 0
         for stage in stages:
-            program = self._program_for_stage(stage)
-            set_uniforms = self._set_uniforms_for_stage(stage)
-            target_fbo = self._ping_pong_fbos[output_index]
-            self._render_stage_pass(program, current_texture, target_fbo, w, h, set_uniforms, self._vbo)
-            current_texture = self._ping_pong_textures[output_index]
-            output_index = 1 - output_index
+            current_texture, output_index = self._render_plain_stage(
+                stage, current_texture, output_index, w, h)
         return current_texture
+
+    def _render_plain_stage(self, stage, current_texture, output_index, w, h):
+        """One enabled, non-fork stage -> (new current texture, new
+        output_index). A matte producer renders its matte into its own
+        texture (self._mattes) and leaves the image alone, exactly like
+        the CPU (its RGB output is an identity passthrough). A stage
+        whose matte_source_id resolves to a matte rendered so far renders
+        at full strength into the gated scratch target, then blends
+        mix(before, output, opacity * matte) into the ping-pong target
+        (stack._stage_blend_factor). Anything else is the plain pass with
+        its own uStageOpacity."""
+        if stage.kind in st.MATTE_PRODUCING_KINDS:
+            self._render_matte_producer(stage, current_texture, w, h)
+            return current_texture, output_index
+        program = self._program_for_stage(stage)
+        set_uniforms = self._set_uniforms_for_stage(stage)
+        target_fbo = self._ping_pong_fbos[output_index]
+        matte = self._mattes.get(stage.params.get("matte_source_id"))
+        if matte is None:
+            self._render_stage_pass(program, current_texture, target_fbo, w, h, set_uniforms, self._vbo)
+        else:
+            def full_strength(prog):
+                if set_uniforms is not None:
+                    set_uniforms(prog)
+                gl.glUniform1f(gl.glGetUniformLocation(prog, "uStageOpacity"), 1.0)
+            scratch_tex, scratch_fbo = self._gated_scratch
+            self._render_stage_pass(program, current_texture, scratch_fbo, w, h, full_strength, self._vbo)
+            self._matte_renderer.render_matte_blend(
+                current_texture, scratch_tex, matte, stage.opacity, target_fbo, w, h, self._vbo)
+        return self._ping_pong_textures[output_index], 1 - output_index
+
+    def _render_matte_producer(self, stage, image_texture, w, h):
+        target = self._matte_targets.get(stage.id)
+        if target is None:
+            target = gsp.create_rgba32f_render_target(w, h)
+            self._matte_targets[stage.id] = target
+        tex, fbo = target
+        if stage.kind == "matte_shape":
+            self._matte_renderer.render_shape(stage, fbo, w, h, self._vbo)
+        elif stage.kind == "matte_combine":
+            self._matte_renderer.render_combine(
+                stage, self._mattes.get(stage.params.get("matte_a_source_id")),
+                self._mattes.get(stage.params.get("matte_b_source_id")), fbo, w, h, self._vbo)
+        elif stage.kind == "keyer":
+            self._matte_renderer.render_keyer(stage, image_texture, fbo, w, h, self._vbo)
+        else:  # pragma: no cover -- is_stack_gpu_eligible keeps others off the GPU
+            raise AssertionError(f"{stage.kind!r} has no GPU matte pass")
+        self._mattes[stage.id] = tex
+
+    def _prepare_matte_state(self, stack, w, h):
+        """Per-render reset: no mattes yet; matte targets and the gated
+        scratch sized to (w, h); targets for stage ids no longer in the
+        stack released."""
+        self._mattes = {}
+        if self._matte_size != (w, h):
+            self._release_matte_targets()
+            self._matte_size = (w, h)
+        live = {s.id for s in stack.stages}
+        for stage_id in [i for i in self._matte_targets if i not in live]:
+            tex, fbo = self._matte_targets.pop(stage_id)
+            gl.glDeleteFramebuffers(1, [fbo])
+            gl.glDeleteTextures([tex])
+        if self._gated_scratch is None:
+            self._gated_scratch = gsp.create_rgba32f_render_target(w, h)
+
+    def _release_matte_targets(self):
+        for tex, fbo in self._matte_targets.values():
+            gl.glDeleteFramebuffers(1, [fbo])
+            gl.glDeleteTextures([tex])
+        self._matte_targets = {}
+        if self._gated_scratch is not None:
+            tex, fbo = self._gated_scratch
+            gl.glDeleteFramebuffers(1, [fbo])
+            gl.glDeleteTextures([tex])
+            self._gated_scratch = None
+        self._matte_size = None
 
     def render_chain(self, stack, input_texture, w, h):
         """Renders `stack` (caller must have already confirmed
@@ -790,6 +894,7 @@ class GpuStackRenderer:
         if self._vbo is None:
             self._vbo = gsp.make_fullscreen_quad_vbo()
         self._ensure_ping_pong(w, h)
+        self._prepare_matte_state(stack, w, h)
 
         # Capture the AMBIENT framebuffer binding (Qt's own internal FBO
         # for this widget, when called from paintGL) once, up front, and
@@ -855,9 +960,21 @@ class GpuStackRenderer:
                     self._fork_merge_program = gfm.compile_fork_merge_program()
                 blend = float(merge_stage.params.get("blend", 0.5))
                 target_fbo = self._ping_pong_fbos[output_index]
-                gfm.render_fork_merge_pass(
-                    self._fork_merge_program, pre_split_snapshot, branch_a_snapshot, branch_b_snapshot,
-                    blend, merge_stage.opacity, target_fbo, w, h, self._vbo)
+                merge_matte = self._mattes.get(merge_stage.params.get("matte_source_id"))
+                if merge_matte is None:
+                    gfm.render_fork_merge_pass(
+                        self._fork_merge_program, pre_split_snapshot, branch_a_snapshot, branch_b_snapshot,
+                        blend, merge_stage.opacity, target_fbo, w, h, self._vbo)
+                else:
+                    # Matte-gated merge: combine the branches at full
+                    # strength, then blend against the pre-split image.
+                    scratch_tex, scratch_fbo = self._gated_scratch
+                    gfm.render_fork_merge_pass(
+                        self._fork_merge_program, pre_split_snapshot, branch_a_snapshot, branch_b_snapshot,
+                        blend, 1.0, scratch_fbo, w, h, self._vbo)
+                    self._matte_renderer.render_matte_blend(
+                        pre_split_snapshot, scratch_tex, merge_matte, merge_stage.opacity,
+                        target_fbo, w, h, self._vbo)
                 current_texture = self._ping_pong_textures[output_index]
                 output_index = 1 - output_index
                 i = merge_i + 1
@@ -866,12 +983,8 @@ class GpuStackRenderer:
             if not stage.enabled:
                 i += 1
                 continue
-            program = self._program_for_stage(stage)
-            set_uniforms = self._set_uniforms_for_stage(stage)
-            target_fbo = self._ping_pong_fbos[output_index]
-            self._render_stage_pass(program, current_texture, target_fbo, w, h, set_uniforms, self._vbo)
-            current_texture = self._ping_pong_textures[output_index]
-            output_index = 1 - output_index
+            current_texture, output_index = self._render_plain_stage(
+                stage, current_texture, output_index, w, h)
             i += 1
 
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, ambient_fbo)
@@ -902,6 +1015,8 @@ class GpuStackRenderer:
         render target held here is only valid for that one context."""
         self._delete_ping_pong()
         self._delete_fork_snapshots()
+        self._release_matte_targets()
+        self._matte_renderer.clear_gl_resources()
         if self._blit_source_fbo is not None:
             gl.glDeleteFramebuffers(1, [self._blit_source_fbo])
             self._blit_source_fbo = None
