@@ -8,7 +8,7 @@ Layout: a folder tree (QFileSystemModel, folders only) rooted at a
 chosen folder (Choose Root..., default: home), and below it the
 recognized files in the selected folder -- media (stills and video), LUTs
 and ASC CDLs -- with Name / Type / Folder / Size / Modified columns.
-"Include subfolders" lists the selected folder's whole subtree instead
+"Subfolders" (next to the search box) lists the selected folder's whole subtree instead
 (the Folder column then shows where under it each file lives). A type
 filter and the name search (wildcards ok) narrow the list.
 
@@ -243,13 +243,14 @@ class BrowserPanel(QWidget):
             self.type_combo.addItem(label)
         self.type_combo.currentIndexChanged.connect(lambda _i: self.refresh())
         filter_row.addWidget(self.type_combo)
-        files_layout.addLayout(filter_row)
-        self.recursive_checkbox = QCheckBox("Include subfolders")
+        # In the search row rather than its own line (one less row).
+        self.recursive_checkbox = QCheckBox("Subfolders")
         self.recursive_checkbox.setToolTip(
-            "List every recognized file under the selected folder, not just "
-            "the ones directly in it")
+            "Include subfolders: list every recognized file under the selected "
+            "folder, not just the ones directly in it")
         self.recursive_checkbox.toggled.connect(lambda _on: self.refresh())
-        files_layout.addWidget(self.recursive_checkbox)
+        filter_row.addWidget(self.recursive_checkbox)
+        files_layout.addLayout(filter_row)
 
         self.file_list = _FileList()
         self.file_list.setColumnCount(5)
@@ -274,7 +275,8 @@ class BrowserPanel(QWidget):
         files_layout.addWidget(self.file_list, stretch=1)
         hover_inspector.register(self.file_list, self._hover_info_for_item)
         splitter.addWidget(files)
-        splitter.setSizes([200, 300])
+        # The file list is what you work in; the tree just navigates.
+        splitter.setSizes([140, 360])
 
         self.status_label = QLabel("")
         layout.addWidget(self.status_label)

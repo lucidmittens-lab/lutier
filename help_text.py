@@ -55,8 +55,8 @@ A file-system browser: a folder tree on top (**Choose Root...** picks the
 top folder, **↑** goes up a level) and, below it, the recognized files in
 the selected folder — media (stills and video), LUTs (`.cube`, `.clf`,
 `.spi1d`, `.spi3d`, `.spimtx`, `.csp`) and ASC CDLs (`.cc`, `.cdl`,
-`.ccc`) — with Name, Type, Size and Modified columns. Tick **Include
-subfolders** to list everything under the selected folder (a Folder
+`.ccc`) — with Name, Type, Size and Modified columns. Tick
+**Subfolders** (next to the search box) to list everything under the selected folder (a Folder
 column then shows where each file lives; hidden folders are skipped and
 very large trees stop at 5,000 files). Narrow the list with the type menu
 (All / Media / LUTs & CDLs) or the search box (wildcards ok).
@@ -87,9 +87,13 @@ to Timeline / Rename / Delete; video only supports Source). Entries are
 catalogued by path and header metadata only — moving or deleting the
 source file after import breaks that entry.
 
+Only the essential columns show by default (Name, Kind, Resolution,
+Duration, FPS, Codec); Path, timecode and the rest are a header
+right-click away, and Alt+hover shows them for any row.
+
 Double-click a timeline (or right-click → Load Timeline) to open it in
 the Timeline panel; the loaded one is marked ▶. Unload it from the same
-menu or the Timeline panel's ⏏ button — it stays in its library. **☰ →
+menu or the ⏏ button next to its name under the Timeline track — it stays in its library. **☰ →
 New Timeline** makes an empty one at the project's edit rate; adding a
 clip with no timeline loaded makes one automatically.
 

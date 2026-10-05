@@ -289,8 +289,12 @@ class TimelineTrackWidget(QWidget):
         self._trim_clip_id = None
         self._trim_edge = None  # "left" or "right" while self._trim_clip_id is set
         self._drop_preview_index = None  # insertion index while a Media Library row is dragged over, see dragMoveEvent
+        # Grows with the panel up to a comfortable clip height, then stops
+        # (taller blocks just crop their thumbnails) -- TimelinePanel
+        # keeps its controls directly under it and the spare height below.
         self.setMinimumHeight(RULER_HEIGHT + 64)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMaximumHeight(RULER_HEIGHT + 110)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         # Needed for hover-only mouseMoveEvent calls (no button held) --
         # that's how the trim-handle resize cursor (see _update_hover_
         # cursor) tracks the mouse without a drag in progress.

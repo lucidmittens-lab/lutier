@@ -151,18 +151,6 @@ class TimelinePanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
 
-        header = QHBoxLayout()
-        header.setContentsMargins(4, 0, 4, 0)
-        self.timeline_name_label = QLabel()
-        header.addWidget(self.timeline_name_label, stretch=1)
-        self.unload_button = QToolButton()
-        self.unload_button.setObjectName("panelMenuButton")
-        self.unload_button.setAutoRaise(True)
-        self.unload_button.setText("⏏")
-        self.unload_button.setToolTip("Unload this timeline (it stays in its Media Library)")
-        self.unload_button.clicked.connect(self.unload_timeline)
-        header.addWidget(self.unload_button)
-        layout.addLayout(header)
 
         self.track_widget = TimelineTrackWidget(self.timeline)
         self.track_widget.clip_selected.connect(self._on_widget_clip_selected)
@@ -179,11 +167,28 @@ class TimelinePanel(QWidget):
 
         self._build_toolbar_row(layout)
         self._build_edl_subpanel(layout)
+        layout.addStretch(1)  # spare height goes below the controls, not around the track
         self._build_menu_button()
 
     def _build_toolbar_row(self, layout):
+        """ONE row under the track (Tom, 2026-10-05: "everything feels
+        rather crowded"): loaded timeline's name + unload, split, the
+        scroll bar, zoom, and the EDL toggle -- these used to be three
+        separate rows eating the track's height."""
         row = QHBoxLayout()
         row.setContentsMargins(4, 0, 4, 0)
+
+        self.timeline_name_label = QLabel()
+        self.timeline_name_label.setMaximumWidth(220)
+        row.addWidget(self.timeline_name_label)
+        self.unload_button = QToolButton()
+        self.unload_button.setObjectName("panelMenuButton")
+        self.unload_button.setAutoRaise(True)
+        self.unload_button.setText("⏏")
+        self.unload_button.setToolTip("Unload this timeline (it stays in its Media Library)")
+        self.unload_button.clicked.connect(self.unload_timeline)
+        row.addWidget(self.unload_button)
+        row.addSpacing(8)
 
         self.split_button = QToolButton()
         self.split_button.setObjectName("panelMenuButton")
@@ -220,6 +225,7 @@ class TimelinePanel(QWidget):
         self.zoom_in_button.setToolTip("Zoom in (Ctrl+scroll also works)")
         self.zoom_in_button.clicked.connect(self.track_widget.zoom_in)
         row.addWidget(self.zoom_in_button)
+        self._toolbar_row = row  # the EDL toggle joins it (see _build_edl_subpanel)
 
         layout.addLayout(row)
         self._refresh_scrollbar()
@@ -251,8 +257,6 @@ class TimelinePanel(QWidget):
         self.timeline_changed.emit()
 
     def _build_edl_subpanel(self, layout):
-        header = QHBoxLayout()
-        header.setContentsMargins(4, 2, 4, 2)
         self.edl_toggle_button = QToolButton()
         self.edl_toggle_button.setObjectName("panelMenuButton")
         self.edl_toggle_button.setAutoRaise(True)
@@ -260,9 +264,8 @@ class TimelinePanel(QWidget):
         self.edl_toggle_button.setChecked(False)  # starts minimized
         self.edl_toggle_button.setText("▸ EDL")
         self.edl_toggle_button.toggled.connect(self._on_edl_toggle_toggled)
-        header.addWidget(self.edl_toggle_button)
-        header.addStretch(1)
-        layout.addLayout(header)
+        self._toolbar_row.addSpacing(8)
+        self._toolbar_row.addWidget(self.edl_toggle_button)
 
         self.edl_text_view = QPlainTextEdit()
         self.edl_text_view.setObjectName("edlTextView")
@@ -556,9 +559,10 @@ class TimelinePanel(QWidget):
     def _refresh_loaded_state(self):
         loaded = self.timeline is not None
         self.timeline_name_label.setText(
-            self.timeline.name if loaded else
-            "No timeline loaded -- double-click one in Media Libraries, "
-            "or add a clip to start a new one")
+            self.timeline.name if loaded else "No timeline loaded")
+        self.timeline_name_label.setToolTip(
+            "" if loaded else "Double-click a timeline in Media Libraries, or add a "
+            "clip to start a new one")
         self.timeline_name_label.setEnabled(loaded)
         for widget in (self.unload_button, self.split_button, self.zoom_out_button,
                        self.zoom_fit_button, self.zoom_in_button):

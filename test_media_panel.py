@@ -448,7 +448,8 @@ def test_restoring_an_older_header_state_keeps_new_columns_at_their_defaults():
     # Saved before "camera" (default hidden) and "fps" (default shown)
     # existed, and naming a column that has since been removed.
     old_keys = [k for k in COLUMN_KEYS if k not in ("camera", "fps")] + ["removed_column"]
-    panel.restore_header_state({"order": old_keys, "hidden": ["kind", "removed_column"], "widths": {}})
+    panel.restore_header_state({"version": media_panel.HEADER_STATE_VERSION, "order": old_keys,
+                                "hidden": ["kind", "removed_column"], "widths": {}})
     assert panel.table.isColumnHidden(COLUMN_KEYS.index("kind"))
     assert panel.table.isColumnHidden(COLUMN_KEYS.index("camera"))
     assert not panel.table.isColumnHidden(COLUMN_KEYS.index("fps"))
@@ -459,7 +460,8 @@ def test_restoring_an_older_header_state_keeps_new_columns_at_their_defaults():
 def test_name_column_cannot_be_hidden_by_a_saved_state():
     _app()
     panel = MediaPanel()
-    panel.restore_header_state({"order": list(COLUMN_KEYS), "hidden": ["name"]})
+    panel.restore_header_state({"version": media_panel.HEADER_STATE_VERSION,
+                                "order": list(COLUMN_KEYS), "hidden": ["name"]})
     assert not panel.table.isColumnHidden(COLUMN_NAME)
     print("MediaPanel: Name stays visible whatever a saved layout says -- OK")
 
@@ -620,6 +622,19 @@ def test_dropping_files_on_a_library_imports_into_that_library():
     print("test_dropping_files_on_a_library_imports_into_that_library -- OK")
 
 
+def test_a_layout_saved_under_the_old_defaults_gives_way_to_the_new_ones():
+    """Version-1 layouts just recorded the old, crowded defaults (every
+    probed column on) -- they're ignored so the trimmed defaults apply."""
+    _app()
+    panel = MediaPanel()
+    panel.restore_header_state({"order": list(COLUMN_KEYS), "hidden": [], "widths": {}})
+    for index, column in enumerate(COLUMNS):
+        assert panel.table.isColumnHidden(index) == (not column.visible), column.key
+    assert panel.table.isColumnHidden(COLUMN_KEYS.index("path"))
+    print("MediaPanel: an old-version saved layout falls back to the "
+          "current defaults -- OK")
+
+
 if __name__ == "__main__":
     test_hover_info_includes_start_and_end_timecode_for_video()
     test_hover_info_omits_timecode_for_a_still()
@@ -653,5 +668,6 @@ if __name__ == "__main__":
     test_import_paths_into_another_library_leaves_the_current_one_alone()
     test_dropping_files_on_the_table_imports_into_the_current_library()
     test_dropping_files_on_a_library_imports_into_that_library()
+    test_a_layout_saved_under_the_old_defaults_gives_way_to_the_new_ones()
     print()
     print("All media_panel tests passed.")
