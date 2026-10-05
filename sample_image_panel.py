@@ -232,6 +232,26 @@ def _compose_highlight_overlay(graded_array, matte):
     return graded_array * m + gray * (1.0 - m)
 
 
+# "❚❚", not "⏸": DejaVu Sans (and the other common UI fonts) have U+275A
+# but not U+23F8, which falls back to a math/emoji font with a different
+# line height -- see _fix_size_across_texts.
+_PLAY_GLYPH = "▶"
+_PAUSE_GLYPH = "❚❚"
+
+
+def _fix_size_across_texts(button, texts):
+    """Pin `button` to the largest size it takes for any of `texts` and
+    leave it showing texts[0] -- for a button whose label toggles (Play/
+    Pause), so the toggle can never resize it or the row it sits in."""
+    width = height = 0
+    for text in texts:
+        button.setText(text)
+        hint = button.sizeHint()
+        width, height = max(width, hint.width()), max(height, hint.height())
+    button.setFixedSize(width, height)
+    button.setText(texts[0])
+
+
 class SampleImagePanel(QWidget):
     """Emits after_image_changed(array_or_None) every time the previewed
     "after" result is (re)computed -- ScopesPanel subscribes to this so its
@@ -592,7 +612,11 @@ class SampleImagePanel(QWidget):
 
         self._video_play_button = QToolButton()
         self._video_play_button.setObjectName("videoTransportButton")
-        self._video_play_button.setText("▶")
+        # Fixed to the larger of its two states: a glyph the UI font lacks
+        # falls back to whatever font has it (on Linux "⏸" came from STIX
+        # Two Math, whose tall line height grew the whole transport bar
+        # the moment Play was pressed).
+        _fix_size_across_texts(self._video_play_button, (_PLAY_GLYPH, _PAUSE_GLYPH))
         self._video_play_button.setToolTip("Play/Pause (Space)")
         self._video_play_button.clicked.connect(self._on_video_play_pause_clicked)
         transport_layout.addWidget(self._video_play_button)
@@ -1166,7 +1190,8 @@ class SampleImagePanel(QWidget):
         self._update_video_play_button_text()
 
     def _update_video_play_button_text(self):
-        self._video_play_button.setText("⏸" if self._active_transport_controller().is_playing else "▶")
+        self._video_play_button.setText(
+            _PAUSE_GLYPH if self._active_transport_controller().is_playing else _PLAY_GLYPH)
 
     def activate_record_mode(self):
         """Public switch to RECORD mode, for a caller outside this panel

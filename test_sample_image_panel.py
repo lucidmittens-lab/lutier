@@ -763,17 +763,30 @@ def test_video_play_pause_button_toggles_timeline_playback_and_its_own_label():
     default is SOURCE (see test_viewer_defaults_to_source_mode)."""
     panel = _panel_with_timeline_clip()
     panel._viewer_mode_badge.setChecked(True)
-    assert panel._video_play_button.text() == "▶"
+    assert panel._video_play_button.text() == sample_image_panel_module._PLAY_GLYPH
 
     panel._on_video_play_pause_clicked()
     assert panel._timeline_controller.is_playing
-    assert panel._video_play_button.text() == "⏸"
+    assert panel._video_play_button.text() == sample_image_panel_module._PAUSE_GLYPH
 
     panel._on_video_play_pause_clicked()
     assert not panel._timeline_controller.is_playing
-    assert panel._video_play_button.text() == "▶"
+    assert panel._video_play_button.text() == sample_image_panel_module._PLAY_GLYPH
     print("SampleImagePanel: Play/Pause button toggles Timeline playback "
           "and its own label -- OK")
+
+
+def test_play_pause_toggle_never_resizes_the_button():
+    """The Pause label used to fall back to a taller font than Play's,
+    growing the whole transport bar the moment playback started."""
+    panel = _panel_with_timeline_clip()
+    panel._viewer_mode_badge.setChecked(True)
+    before = panel._video_play_button.size()
+    panel._on_video_play_pause_clicked()
+    assert panel._video_play_button.size() == before
+    assert panel._video_play_button.sizeHint().height() <= before.height()
+    panel._on_video_play_pause_clicked()
+    print("SampleImagePanel: Play/Pause toggle keeps the button's size -- OK")
 
 
 def test_viewer_defaults_to_source_mode():
@@ -826,7 +839,7 @@ def test_play_in_source_mode_drives_the_single_clip_controller():
     panel._on_video_play_pause_clicked()
     assert panel._playback_controller.is_playing
     assert not panel._timeline_controller.is_playing
-    assert panel._video_play_button.text() == "⏸"
+    assert panel._video_play_button.text() == sample_image_panel_module._PAUSE_GLYPH
 
     panel._on_video_play_pause_clicked()
     assert not panel._playback_controller.is_playing
@@ -845,7 +858,7 @@ def test_play_in_record_mode_drives_the_timeline_controller():
     panel._on_video_play_pause_clicked()
     assert panel._timeline_controller.is_playing
     assert not panel._playback_controller.is_playing
-    assert panel._video_play_button.text() == "⏸"
+    assert panel._video_play_button.text() == sample_image_panel_module._PAUSE_GLYPH
 
     panel._on_video_play_pause_clicked()
     assert not panel._timeline_controller.is_playing
@@ -866,7 +879,7 @@ def test_switching_viewer_mode_mid_playback_pauses_both_controllers():
     panel._viewer_mode_badge.setChecked(True)  # switch to RECORD mid-playback
     assert not panel._playback_controller.is_playing
     assert not panel._timeline_controller.is_playing
-    assert panel._video_play_button.text() == "▶"
+    assert panel._video_play_button.text() == sample_image_panel_module._PLAY_GLYPH
     print("SampleImagePanel: switching SOURCE/RECORD mid-playback pauses "
           "both controllers -- OK")
 
