@@ -45,14 +45,8 @@ one _build_layout is split into _build_list_ui and _build_params_ui, but
 every other method (selection handling, the inspector dispatch,
 add/remove/reorder) is unchanged.
 
-Grid Size/Domain (_build_global_settings_dialog) used to be a QGroupBox
-inline at the bottom of params_widget_area, but that made Stack Params'
-own minimum height big enough to leave ~0 slack in the right-column
-splitter for anything else (see main_window.py's docstring on the
-toggle-visibility quirks) -- moved into its own QDialog instead, opened
-via a button in list_widget_area (the stage list), since it's edited
-rarely compared to per-stage params. All the same fields/validation/Apply
-behavior, just windowed instead of inline; see _show_global_settings_dialog.
+LUT grid size/domain are no longer edited here: they're export settings
+(stack.BakeSettings), edited in File > Export -- see bake_settings_form.py.
 
 This sandbox originally had no PySide6 install at all -- fixed by
 installing the full requirements.txt plus a stub libEGL.so.1 (see
@@ -110,7 +104,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QDoubleSpinBox,
     QGroupBox, QSlider, QCheckBox, QStackedWidget, QInputDialog,
-    QDialog, QDialogButtonBox, QFrame, QToolButton, QAbstractItemView, QMenu,
+    QFrame, QToolButton, QAbstractItemView, QMenu,
     QSizePolicy, QButtonGroup, QGraphicsOpacityEffect, QScrollArea,
 )
 
@@ -137,7 +131,6 @@ from printer_lights import POINTS_PER_STOP, DEFAULT_WORKING_COLOURSPACE
 import hover_inspector
 from spinbox_scrub import enable_drag_to_scrub
 from browser_panel import LUT_PATH_MIME
-from floating_dialog import make_floating_tool_window, show_floating
 from stack_memory import StackMemory
 from cdl_library import CDLEntry
 # style.HINT_TEXT_HEX -- see style.py's FOURTEENTH PASS docstring: hint
@@ -145,7 +138,6 @@ from cdl_library import CDLEntry
 # reliably survive Qt's style-polish pass on this Qt build).
 from style import HINT_TEXT_HEX, PANEL_BORDER_RADIUS
 
-COMMON_SIZES = [9, 17, 25, 33, 45, 65, 97]
 PRINTER_LIGHT_RANGE = 50
 
 # One entry per _StackListWidget row (see StackPanel._row_insert_index,
@@ -408,11 +400,7 @@ def _matte_options_by_index(stages, letters):
     return options
 
 
-# Stack()'s own constructor defaults, read once rather than hardcoded here
-# a second time -- used by _update_domain_readout to flag when the current
-# grid size/domain differ from a freshly-created stack's, so it's obvious
-# at a glance whether either has actually been touched.
-_STACK_DEFAULTS = st.Stack()
+
 
 
 def _stage_info_text(stage):
@@ -1557,8 +1545,6 @@ class StackPanel(QObject):
         self.params_widget_area = QWidget()
         self._build_list_ui()
         self._build_params_ui()
-        self._build_global_settings_dialog()
-        self._update_domain_readout()
         self._refresh_list()
         self._refresh_inspector()
 
@@ -1592,21 +1578,6 @@ class StackPanel(QObject):
         # each row's own "x" (_StageRowWidget.delete_button /
         # _on_row_delete_clicked) or Delete/Backspace on the selected row
         # (see _StackListWidget.keyPressEvent -> _on_remove_clicked).
-
-        # Live readout so it's obvious at a glance whether the grid size/
-        # domain have actually been changed from the default -- styled
-        # differently (see _update_domain_readout) when they have, since
-        # "quietly still 33 / [0,1]" and "quietly still an LMT's extended
-        # range from three sessions ago" look identical without this. The
-        # actions that used to sit next to it (Printer Lights / ACES DRT /
-        # "Stack Output...") are all in the header's "..." menu now, see
-        # _build_list_menu_button below -- this readout is the one bit
-        # that's informational rather than an action, so it stays inline.
-        domain_row = QHBoxLayout()
-        self.domain_readout_label = QLabel()
-        domain_row.addWidget(self.domain_readout_label)
-        domain_row.addStretch(1)
-        layout.addLayout(domain_row)
 
         # Surfaces a bake failure inline rather than letting it propagate
         # as an unhandled exception -- see set_bake_error/MainWindow's
@@ -1676,7 +1647,7 @@ class StackPanel(QObject):
         self.list_menu_button.setMenu(menu)
 
     def populate_menu(self, menu):
-        """Add this panel's "Add stage"/"Edit Size-Domain..." actions to
+        """Add this panel's "Add stage" actions to
         `menu` -- shared by the "..." corner button above and MainWindow's
         top-level "Stack" menu-bar menu (per Tom, making the "..." menu
         redundant rather than the only way in), so both stay in sync
@@ -1744,8 +1715,6 @@ class StackPanel(QObject):
             "pair. Add any stage(s) between them and tag each one Branch "
             "A or Branch B using that row's own branch dropdown -- see "
             "stack.py's docstring, STACK FORKING.")
-        menu.addSeparator()
-        menu.addAction("Edit Size/Domain...", self._show_global_settings_dialog)
 
     # ---- params area (stage inspector) ------------------------------------
 
@@ -1784,219 +1753,6 @@ class StackPanel(QObject):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(self.inspector_stack)
         layout.addWidget(scroll, stretch=1)
-
-    # ---- global settings (grid size + domain, formerly Resize/Bounds) ----
-    # Own popup dialog rather than inline in Stack Params -- see this
-    # module's docstring.
-
-    @staticmethod
-    def _make_domain_spin(default_value):
-        """One Domain min/max field (per Tom -- these used to be plain
-        QLineEdits, "supposed to be" spin boxes already but weren't).
-        Wide range and 4 decimals: a domain bound is a HDR/scene-linear
-        LUT's actual input range, which can legitimately be negative or
-        run well past [0,1] (e.g. an extended-range IDT/LMT), not just a
-        display-referred 0-1 value like most of this app's other numeric
-        fields."""
-        spin = QDoubleSpinBox()
-        spin.setRange(-10000.0, 10000.0)
-        spin.setDecimals(4)
-        spin.setSingleStep(0.01)
-        spin.setValue(default_value)
-        enable_drag_to_scrub(spin)
-        return spin
-
-    def _build_global_settings_dialog(self):
-        dialog = QDialog(self.list_widget_area)
-        make_floating_tool_window(dialog)
-        dialog.setWindowTitle("Stack Output -- Grid Size / Domain")
-        outer = QVBoxLayout(dialog)
-
-        size_row = QHBoxLayout()
-        size_row.addWidget(QLabel("Grid size:"))
-        self.size_combo = QComboBox()
-        self.size_combo.setEditable(True)
-        self.size_combo.addItems([str(s) for s in COMMON_SIZES])
-        self.size_combo.setCurrentText(str(self.stack.size))
-        size_row.addWidget(self.size_combo)
-        size_row.addStretch(1)
-        outer.addLayout(size_row)
-
-        self.domain_link_checkbox = QCheckBox("Link R/G/B")
-        self.domain_link_checkbox.setChecked(True)
-        self.domain_link_checkbox.toggled.connect(self._on_domain_link_toggled)
-        outer.addWidget(self.domain_link_checkbox)
-
-        self._domain_fields = {}
-        for channel in ("R", "G", "B"):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"{channel} min:"))
-            min_field = self._make_domain_spin(0.0)
-            row.addWidget(min_field)
-            row.addWidget(QLabel(f"{channel} max:"))
-            max_field = self._make_domain_spin(1.0)
-            row.addWidget(max_field)
-            self._domain_fields[channel] = (min_field, max_field)
-            outer.addLayout(row)
-        for channel in ("G", "B"):
-            min_field, max_field = self._domain_fields[channel]
-            min_field.setEnabled(False)
-            max_field.setEnabled(False)
-        r_min, r_max = self._domain_fields["R"]
-        r_min.valueChanged.connect(self._sync_linked_domain_fields)
-        r_max.valueChanged.connect(self._sync_linked_domain_fields)
-
-        use_first_stage_button = QPushButton("Use Input Bounds From First Stack Entry")
-        use_first_stage_button.setToolTip(
-            "Reads the first stack entry's own declared input domain (e.g. "
-            "a non-stock IDT or LMT with an extended range) and fills the "
-            "fields above with it, so concatenating on top of it doesn't "
-            "silently clamp back to [0,1] metadata. Only fills the fields "
-            "-- doesn't apply anything until you hit Apply below."
-        )
-        use_first_stage_button.clicked.connect(self._on_use_first_stage_bounds_clicked)
-        outer.addWidget(use_first_stage_button)
-
-        apply_button = QPushButton("Apply Grid Size / Domain")
-        apply_button.clicked.connect(self._on_apply_global_settings_clicked)
-        outer.addWidget(apply_button)
-
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        button_box.rejected.connect(dialog.close)
-        button_box.button(QDialogButtonBox.StandardButton.Close).clicked.connect(dialog.close)
-        outer.addWidget(button_box)
-
-        self._global_settings_dialog = dialog
-
-    def _show_global_settings_dialog(self):
-        # Re-sync the fields to self.stack every time this opens rather
-        # than only at dialog-build time -- otherwise a session load
-        # (set_stack) that brings in a different size/domain would leave
-        # this dialog showing stale 33/[0,1] defaults until Apply or "Use
-        # Input Bounds..." overwrote them.
-        self.size_combo.setCurrentText(str(self.stack.size))
-        lo, hi = self.stack.domain_min, self.stack.domain_max
-        for i, channel in enumerate(("R", "G", "B")):
-            min_field, max_field = self._domain_fields[channel]
-            min_field.setValue(lo[i])
-            max_field.setValue(hi[i])
-        uniform = len(set(lo)) == 1 and len(set(hi)) == 1
-        self.domain_link_checkbox.setChecked(uniform)
-
-        # Non-modal (show(), not exec()) -- Apply already pushes changes
-        # live via stack_changed, no reason to block interacting with the
-        # rest of the window while this is open. Qt.Tool (see
-        # floating_dialog.py) keeps it from sliding behind the main window
-        # if you click back into it while this stays open -- without also
-        # forcing it above every other application's windows, unlike the
-        # WindowStaysOnTopHint this used to use.
-        show_floating(self._global_settings_dialog)
-
-    def _on_use_first_stage_bounds_clicked(self):
-        if not self.stack.stages:
-            QMessageBox.information(
-                self._global_settings_dialog, "Empty stack",
-                "Add a stage first -- there's nothing to read bounds from.")
-            return
-        first_stage = self.stack.stages[0]
-        if first_stage.kind != "lut":
-            QMessageBox.information(
-                self._global_settings_dialog, "Not a LUT stage",
-                f"The first stack entry is a {first_stage.kind.replace('_', ' ')} "
-                "stage, which doesn't declare its own input bounds -- this "
-                "only works when the first entry is a LUT (e.g. a non-stock "
-                "IDT or LMT loaded from a file).")
-            return
-        lut = first_stage.params.get("lut")
-        domain = getattr(lut, "domain", None)
-        if domain is None:
-            QMessageBox.information(
-                self._global_settings_dialog, "No declared bounds",
-                "This LUT doesn't declare its own input domain.")
-            return
-
-        domain = np.asarray(domain, dtype=float)
-        if domain.ndim == 1:
-            # A single [min, max] pair shared by every channel (LUT1D).
-            lo = np.full(3, domain[0])
-            hi = np.full(3, domain[1])
-        else:
-            lo = np.broadcast_to(domain[0], (3,)).astype(float)
-            hi = np.broadcast_to(domain[1], (3,)).astype(float)
-
-        for i, channel in enumerate(("R", "G", "B")):
-            min_field, max_field = self._domain_fields[channel]
-            min_field.setValue(float(lo[i]))
-            max_field.setValue(float(hi[i]))
-
-        uniform = bool(np.all(lo == lo[0]) and np.all(hi == hi[0]))
-        self.domain_link_checkbox.setChecked(uniform)
-
-    def _update_domain_readout(self):
-        lo = self.stack.domain_min
-        hi = self.stack.domain_max
-        if len(set(lo)) == 1 and len(set(hi)) == 1:
-            domain_text = f"[{lo[0]:g}, {hi[0]:g}]"
-        else:
-            domain_text = (
-                f"R[{lo[0]:g},{hi[0]:g}] "
-                f"G[{lo[1]:g},{hi[1]:g}] "
-                f"B[{lo[2]:g},{hi[2]:g}]"
-            )
-        self.domain_readout_label.setText(f"{self.stack.size}³ · domain {domain_text}")
-
-        is_default = (
-            self.stack.size == _STACK_DEFAULTS.size
-            and tuple(lo) == _STACK_DEFAULTS.domain_min
-            and tuple(hi) == _STACK_DEFAULTS.domain_max
-        )
-        if is_default:
-            self.domain_readout_label.setStyleSheet(f"color: {HINT_TEXT_HEX}; font-size: 10px;")
-        else:
-            self.domain_readout_label.setStyleSheet(
-                "color: palette(link); font-size: 10px; font-weight: 600;")
-
-    def _on_domain_link_toggled(self, linked):
-        for channel in ("G", "B"):
-            min_field, max_field = self._domain_fields[channel]
-            min_field.setEnabled(not linked)
-            max_field.setEnabled(not linked)
-        if linked:
-            self._sync_linked_domain_fields()
-
-    def _sync_linked_domain_fields(self):
-        if not self.domain_link_checkbox.isChecked():
-            return
-        r_min, r_max = self._domain_fields["R"]
-        for channel in ("G", "B"):
-            min_field, max_field = self._domain_fields[channel]
-            min_field.setValue(r_min.value())
-            max_field.setValue(r_max.value())
-
-    def _on_apply_global_settings_clicked(self):
-        try:
-            size = int(self.size_combo.currentText())
-        except ValueError:
-            QMessageBox.warning(self._global_settings_dialog, "Invalid size", "Grid size must be an integer.")
-            return
-        if size < 2:
-            QMessageBox.warning(self._global_settings_dialog, "Invalid size", "Grid size must be at least 2.")
-            return
-        # No "is this actually a number?" check needed anymore -- these
-        # are QDoubleSpinBox fields now (per Tom), which can never hold
-        # invalid text in the first place, unlike the plain QLineEdits
-        # they replaced.
-        domain_min = [self._domain_fields[c][0].value() for c in ("R", "G", "B")]
-        domain_max = [self._domain_fields[c][1].value() for c in ("R", "G", "B")]
-        if any(mn >= mx for mn, mx in zip(domain_min, domain_max)):
-            QMessageBox.warning(self._global_settings_dialog, "Invalid domain", "Each channel's min must be less than its max.")
-            return
-
-        self.stack.size = size
-        self.stack.domain_min = tuple(domain_min)
-        self.stack.domain_max = tuple(domain_max)
-        self._update_domain_readout()
-        self._emit_changed()
 
     # ---- stage list -------------------------------------------------------
 
@@ -6064,27 +5820,24 @@ class StackPanel(QObject):
         getter/callback in this class already uses."""
         self._eyedropper_requester = requester
 
-    def get_baked_lut(self, name=None):
-        """Bake the current stack into a flat colour.LUT3D -- used by
-        MainWindow for the 3D viewer/info panel/export, same integration
-        point every other baking function in this app has always had.
-        Passes self._bake_cache so repeated calls (this fires on every
-        single Stack edit -- see MainWindow._on_stack_changed) only
-        recompute the stages that actually changed since the last call."""
-        return st.bake_stack_to_lut3d(self.stack, name=name, cache=self._bake_cache)
+    def get_baked_lut(self, settings=st.DEFAULT_BAKE_SETTINGS, name=None):
+        """Bake the current stack into a flat colour.LUT3D at `settings`
+        (stack.BakeSettings) -- the Graph panel's live preview and export
+        both go through here. Passes self._bake_cache so repeated preview
+        bakes only recompute the stages that changed since the last call;
+        the cache keys on `settings` too, so an export at a different
+        size/domain recomputes from scratch rather than reusing preview
+        checkpoints."""
+        return st.bake_stack_to_lut3d(self.stack, settings, name=name, cache=self._bake_cache)
 
     def set_bake_error(self, message):
-        """Shows/hides the inline warning below the domain readout (see
+        """Shows/hides the inline warning below the stage list (see
         _build_list_ui) -- `message` a string to show it, None/"" to hide
-        it. Called by MainWindow's _on_stack_changed, which is the one
-        place that actually calls get_baked_lut() on every edit and can
-        catch the ValueError _run_stages raises for a structurally
-        invalid fork region (unmatched fork_split/fork_merge, nested
-        forks, a branch-region stage missing its tag -- see stack.py's
-        docstring, STACK FORKING) without crashing. This panel doesn't
-        bake itself, so it can't catch that error on its own -- MainWindow
-        hands the message back in rather than this panel needing its own
-        redundant try/except around a bake it doesn't perform."""
+        it. Called by MainWindow's _on_stack_changed with the ValueError
+        stack.check_stack_structure raises for a structurally invalid
+        fork region (unmatched fork_split/fork_merge, nested forks, a
+        branch-region stage missing its tag -- see stack.py's docstring,
+        STACK FORKING), or a preview bake's own failure."""
         if message:
             self.bake_error_label.setText(f"⚠ {message}")
             self.bake_error_label.show()
@@ -6116,9 +5869,7 @@ class StackPanel(QObject):
         # anyway, so this is purely about releasing that memory right now
         # rather than one block at a time as edits happen to touch it.
         self._bake_cache.clear()
-        self.size_combo.setCurrentText(str(self.stack.size))
         self._refresh_list()
-        self._update_domain_readout()
         self._emit_changed()
 
     def apply_cdl_entry(self, entry):

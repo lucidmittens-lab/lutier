@@ -216,14 +216,14 @@ def compute_yrgb_curve(lut, num_samples=256):
 
     The ramp fed in follows the LUT's OWN declared domain (`lut.domain`,
     the same `[[min_r,min_g,min_b],[max_r,max_g,max_b]]` array
-    stack.bake_stack_to_lut3d writes from Stack.domain_min/domain_max --
+    stack.bake_stack_to_lut3d writes from its BakeSettings domain --
     see that function's own docstring) rather than a hardcoded [0,1], per
     Tom -- this app supports non-[0,1] domains (HDR grades, scene-linear
     stages) and the 3D Viewer's camera-centering fix already had to learn
     the same lesson (see lut_viewer_3d.py's CAMERA-CENTERING BUG note).
     One shared parameter `t` (0 to 1) sweeps every channel through ITS
     OWN [domain_min, domain_max] in lockstep -- when the domain is linked
-    across channels (Stack's usual "Link R/G/B" default), this is exactly
+    across channels (the usual "Link R/G/B" default), this is exactly
     the familiar R=G=B neutral ramp; when it isn't, each channel still
     advances through its own real range together rather than assuming
     [0,1] regardless of what the Stack's domain settings actually are.

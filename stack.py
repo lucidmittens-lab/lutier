@@ -36,12 +36,12 @@ shape the other three do:
     which is strictly LESS accurate than what the stack model gives you
     for free: since bake_stack_to_lut3d always recomputes every stage
     fresh from a plain identity grid at whatever size you ask for,
-    changing Stack.size and re-baking recomputes the WHOLE chain natively
+    changing BakeSettings.size and re-baking recomputes the WHOLE chain natively
     at the new resolution -- no double interpolation. So "Resize" is just
-    the Stack.size field, not a stage to insert.
+    BakeSettings.size, not a stage to insert.
   - Bounds has no per-position meaning mid-chain -- there's nothing for a
-    "Bounds stage" to insert between other stages, so Stack.domain_min/
-    domain_max stay stack-level fields, not a stage kind. UNLIKE
+    "Bounds stage" to insert between other stages, so domain_min/
+    domain_max are bake-time settings (BakeSettings), not a stage kind. UNLIKE
     app_logic.set_lut_domain (which relabels an already-baked, foreign
     table without recomputing it -- a legitimate metadata-only relabel,
     since it has no way to know how that table was produced), bake_stack_
@@ -160,6 +160,7 @@ Same rule as every other backend module in this app: no PySide6 import
 here, fully testable without a display.
 """
 import itertools
+from dataclasses import dataclass
 
 import numpy as np
 import colour
@@ -254,20 +255,43 @@ class Stage:
                 f"enabled={self.enabled}, opacity={self.opacity}{branch_bit})")
 
 
-class Stack:
-    """An ordered list of Stages plus the two former "LUT Controls"
-    settings that turned out to be global bake properties rather than
-    stages (see module docstring): `size` (grid resolution to bake at) and
-    `domain_min`/`domain_max` (metadata written onto the final LUT3D,
-    matching app_logic.set_lut_domain's always-metadata-only behavior --
-    does not affect the computed table)."""
+@dataclass(frozen=True)
+class BakeSettings:
+    """How a Stack is sampled into a LUT3D: grid `size` and the input
+    range [`domain_min`, `domain_max`] the grid spans (see
+    bake_stack_to_lut3d). Export settings, not part of the color
+    pipeline (Tom, 2026-10-05: "decouple the LUT domain from the color
+    pipeline stack ... should only be calculated on export") -- they
+    used to be Stack.size/domain_min/domain_max, so every stack edit
+    re-baked at the export domain and recalling a Stack Memory changed
+    them. Now they live with the session (session_io "lut_bake") and are
+    edited in the Export dialog."""
+    size: int = 33
+    domain_min: tuple = (0.0, 0.0, 0.0)
+    domain_max: tuple = (1.0, 1.0, 1.0)
 
-    def __init__(self, stages=None, size=33, domain_min=(0.0, 0.0, 0.0),
-                 domain_max=(1.0, 1.0, 1.0), name="Stack"):
+    def __post_init__(self):
+        if int(self.size) < 2:
+            raise ValueError(f"LUT grid size must be at least 2, got {self.size}")
+        object.__setattr__(self, "size", int(self.size))
+        lo = tuple(float(v) for v in np.broadcast_to(self.domain_min, (3,)))
+        hi = tuple(float(v) for v in np.broadcast_to(self.domain_max, (3,)))
+        if any(a >= b for a, b in zip(lo, hi)):
+            raise ValueError("Each channel's domain min must be less than its max.")
+        object.__setattr__(self, "domain_min", lo)
+        object.__setattr__(self, "domain_max", hi)
+
+
+DEFAULT_BAKE_SETTINGS = BakeSettings()
+
+
+class Stack:
+    """An ordered list of Stages -- the color pipeline itself. How it gets
+    sampled into a LUT (grid size, domain) is a separate BakeSettings
+    handed to bake_stack_to_lut3d at export time."""
+
+    def __init__(self, stages=None, name="Stack"):
         self.stages = list(stages) if stages is not None else []
-        self.size = size
-        self.domain_min = tuple(domain_min)
-        self.domain_max = tuple(domain_max)
         self.name = name
 
     # ---- editing -----------------------------------------------------
@@ -318,11 +342,7 @@ class Stack:
             self.move_stage(stage_id, idx + 1)
 
     def copy(self):
-        new = Stack(
-            stages=[s.copy() for s in self.stages],
-            size=self.size, domain_min=self.domain_min, domain_max=self.domain_max,
-            name=self.name,
-        )
+        new = Stack(stages=[s.copy() for s in self.stages], name=self.name)
         return new
 
 
@@ -1155,7 +1175,7 @@ _identity_grid_cache = {}
 
 def _get_identity_grid(size):
     """A plain [0,1]-domain identity grid at `size`, memoized per size so
-    repeated bakes at an unchanged Stack.size hand back the exact same
+    repeated bakes at an unchanged grid size hand back the exact same
     array OBJECT, not just an equal one -- this is what lets StageCache
     (below) recognize "the input didn't change" with a cheap identity
     check instead of hashing or comparing array contents on every single
@@ -1312,8 +1332,8 @@ class StageCache:
     single edit, including live slider drags.
 
     `input_key` identifies the starting array without hashing its
-    contents: bake_stack_to_lut3d passes `(stack.size, stack.domain_min,
-    stack.domain_max)` -- size alone used to be enough back when the grid
+    contents: bake_stack_to_lut3d passes its BakeSettings (size and
+    domain) -- size alone used to be enough back when the grid
     was always plain [0,1] (see _get_identity_grid, which still hands back
     the same cached array object for an unchanged size), but the grid is
     now domain-scaled, so a domain-only change (same size) has to
@@ -1404,17 +1424,44 @@ class StageCache:
         self._block_mattes = []
 
 
-def bake_stack_to_lut3d(stack, name=None, cache=None):
+def check_stack_structure(stages):
+    """Raises the same ValueError _run_stages would for a structurally
+    invalid stack (nested or unmatched fork_split/fork_merge, a stage
+    inside an enabled fork region with no branch), without evaluating a
+    single stage -- what StackPanel's inline error shows on every edit
+    now that a stack edit no longer bakes a LUT (see BakeSettings).
+    Mirrors _run_stages' rules exactly, including that the interior of a
+    DISABLED fork region is skipped unchecked."""
+    open_regions = []  # one entry per open fork: whether that split is enabled
+    for stage in stages:
+        if stage.kind == "fork_split":
+            if open_regions:
+                raise ValueError(
+                    f"fork_split {stage.label!r}: nested fork regions aren't "
+                    "supported yet.")
+            open_regions.append(stage.enabled)
+        elif stage.kind == "fork_merge":
+            if not open_regions:
+                raise ValueError(
+                    f"fork_merge {stage.label!r}: no matching fork_split before it.")
+            open_regions.pop()
+        elif open_regions and open_regions[-1] and stage.branch not in ("a", "b"):
+            raise ValueError(
+                f"Stage {stage.label!r} is inside a fork region but has no "
+                "branch assignment (expected 'a' or 'b').")
+    if open_regions:
+        raise ValueError("fork_split with no matching fork_merge after it.")
+
+
+def bake_stack_to_lut3d(stack, settings=DEFAULT_BAKE_SETTINGS, name=None, cache=None):
     """Bake the whole stack -- every enabled stage, in order, at
-    `stack.size` -- into one flat colour.LUT3D, by folding each stage over
-    a plain [0,1]-domain identity grid (same "trust each stage's own
-    verified apply, don't hand-roll interpolation" rule as every other
-    baking helper in this app). `stack.domain_min`/`domain_max` are
-    written onto the result as metadata afterward (see this module's
-    docstring on why that's correct and doesn't need to touch the table).
-    An empty stack (no stages) bakes to a plain identity LUT3D at
-    `stack.size`, i.e. Stack() with nothing added IS "load an identity
-    LUT," not a special case.
+    `settings.size` -- into one flat colour.LUT3D, by folding each stage
+    over an identity grid spanning [settings.domain_min, domain_max]
+    (same "trust each stage's own verified apply, don't hand-roll
+    interpolation" rule as every other baking helper in this app), and
+    writes that domain onto the result. An empty stack (no stages) bakes
+    to a plain identity LUT3D, i.e. Stack() with nothing added IS "load
+    an identity LUT," not a special case.
 
     From this point the result is just another LUT to the rest of the
     app, same integration strategy as every prior baking function here.
@@ -1425,8 +1472,8 @@ def bake_stack_to_lut3d(stack, name=None, cache=None):
     re-running the whole stack from scratch (see StageCache's own
     docstring). Omit it (default) for a one-shot bake -- e.g. export --
     where there's nothing to reuse next time anyway."""
-    lo = np.broadcast_to(np.asarray(stack.domain_min, dtype=float), (3,))
-    hi = np.broadcast_to(np.asarray(stack.domain_max, dtype=float), (3,))
+    lo = np.asarray(settings.domain_min, dtype=float)
+    hi = np.asarray(settings.domain_max, dtype=float)
     # Fold the stages over a grid that actually SPANS [domain_min,
     # domain_max], not the fixed [0,1] identity grid -- reduces to that
     # plain grid exactly when domain is the default (0,0,0)-(1,1,1), so
@@ -1440,7 +1487,7 @@ def bake_stack_to_lut3d(stack, name=None, cache=None):
     # visually a much-too-dark result, since most of the real extended
     # input range was being pulled from table entries that were never
     # actually computed for it.
-    identity_grid = lo + _get_identity_grid(stack.size) * (hi - lo)
+    identity_grid = lo + _get_identity_grid(settings.size) * (hi - lo)
     if cache is not None:
         # input_key must reflect domain too, not just size -- StageCache
         # trusts a matching input_key to mean "the starting array is
@@ -1448,7 +1495,7 @@ def bake_stack_to_lut3d(stack, name=None, cache=None):
         # otherwise, even though `identity_grid` above is a brand new
         # array (see StageCache.run's own docstring on what input_key is
         # for).
-        running = cache.run(stack.stages, identity_grid, input_key=(stack.size, stack.domain_min, stack.domain_max))
+        running = cache.run(stack.stages, identity_grid, input_key=settings)
     else:
         running = _run_stages(stack.stages, identity_grid)
 
@@ -1460,7 +1507,7 @@ def bake_stack_to_lut3d(stack, name=None, cache=None):
     # that a LATER bake would then read back out as if it were still
     # correct.
     table = np.array(running, dtype=float)
-    lut = colour.LUT3D(table=table, size=stack.size, name=name or stack.name)
+    lut = colour.LUT3D(table=table, size=settings.size, name=name or stack.name)
     lut.domain = np.array([lo, hi], dtype=float)
     return lut
 
@@ -1471,7 +1518,7 @@ def apply_stack_to_image_array(stack, image_array, cache=None, input_key=None):
     in-progress stack, mirroring app_logic.apply_lut_chain_with_opacity's
     relationship to concatenate_luts_with_opacity. Clips to [0,1] for
     on-screen display, same convention as apply_lut_to_image_array.
-    Stack.size/domain have no effect here (they're properties of the
+    BakeSettings have no effect here (they're properties of the
     BAKED LUT3D object, not the direct-pixel path) -- an empty stack
     returns the image unchanged.
 

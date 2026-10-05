@@ -179,8 +179,8 @@ def test_fork_split_and_merge_round_trip_with_branch_tagged_stages():
     # And the rebuilt region actually bakes to the same thing the
     # original does -- not just matching field-by-field, but
     # functionally identical.
-    original_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=stack.stages))
-    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=rebuilt_stack.stages))
+    original_baked = st.bake_stack_to_lut3d(st.Stack(stages=stack.stages), st.BakeSettings(size=5))
+    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(stages=rebuilt_stack.stages), st.BakeSettings(size=5))
     assert np.allclose(original_baked.table, rebuilt_baked.table, atol=1e-9)
     print("stack_to_session_dict/stack_from_session_dict: a fork_split/"
           "fork_merge region with a branch-tagged stage on each side "
@@ -212,8 +212,8 @@ def test_grading_primary_stage_round_trips():
     assert r.params["pivot"] == -0.15
     assert r.params["saturation"] == 1.05
 
-    original_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=stack.stages))
-    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=rebuilt_stack.stages))
+    original_baked = st.bake_stack_to_lut3d(st.Stack(stages=stack.stages), st.BakeSettings(size=5))
+    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(stages=rebuilt_stack.stages), st.BakeSettings(size=5))
     assert np.allclose(original_baked.table, rebuilt_baked.table, atol=1e-9)
     print("stack_to_session_dict/stack_from_session_dict: a 'grading_primary' "
           "stage round-trips through plain JSON and bakes identically -- OK")
@@ -239,8 +239,8 @@ def test_exposure_contrast_stage_round_trips():
     assert r.params["contrast"] == 1.15
     assert r.params["gamma"] == 1.05
 
-    original_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=stack.stages))
-    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=rebuilt_stack.stages))
+    original_baked = st.bake_stack_to_lut3d(st.Stack(stages=stack.stages), st.BakeSettings(size=5))
+    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(stages=rebuilt_stack.stages), st.BakeSettings(size=5))
     assert np.allclose(original_baked.table, rebuilt_baked.table, atol=1e-9)
     print("stack_to_session_dict/stack_from_session_dict: an 'exposure_contrast' "
           "stage round-trips through plain JSON and bakes identically -- OK")
@@ -284,8 +284,8 @@ def test_custom_drt_stage_round_trips():
     assert r.params["final_target"] == "P3-D65"
     assert r.params["mastering_brightness"] == 1000
 
-    original_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=stack.stages))
-    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=rebuilt_stack.stages))
+    original_baked = st.bake_stack_to_lut3d(st.Stack(stages=stack.stages), st.BakeSettings(size=5))
+    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(stages=rebuilt_stack.stages), st.BakeSettings(size=5))
     assert np.allclose(original_baked.table, rebuilt_baked.table, atol=1e-9)
     print("stack_to_session_dict/stack_from_session_dict: a 'custom_drt' "
           "stage round-trips through plain JSON and bakes identically -- OK")
@@ -312,8 +312,8 @@ def test_grading_tone_stage_round_trips():
     assert tuple(r.params["blacks"]) == grading_tone.DEFAULT_RANGE_VALUES["blacks"]
     assert r.params["scontrast"] == 1.2
 
-    original_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=stack.stages))
-    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=rebuilt_stack.stages))
+    original_baked = st.bake_stack_to_lut3d(st.Stack(stages=stack.stages), st.BakeSettings(size=5))
+    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(stages=rebuilt_stack.stages), st.BakeSettings(size=5))
     assert np.allclose(original_baked.table, rebuilt_baked.table, atol=1e-9)
     print("stack_to_session_dict/stack_from_session_dict: a 'grading_tone' "
           "stage round-trips through plain JSON and bakes identically -- OK")
@@ -341,8 +341,8 @@ def test_grading_rgb_curve_stage_round_trips():
     assert tuple(tuple(p) for p in r.params["red"]) == red
     assert tuple(tuple(p) for p in r.params["green"]) == grading_rgb_curve.DEFAULT_CONTROL_POINTS
 
-    original_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=stack.stages))
-    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=rebuilt_stack.stages))
+    original_baked = st.bake_stack_to_lut3d(st.Stack(stages=stack.stages), st.BakeSettings(size=5))
+    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(stages=rebuilt_stack.stages), st.BakeSettings(size=5))
     assert np.allclose(original_baked.table, rebuilt_baked.table, atol=1e-9)
     print("stack_to_session_dict/stack_from_session_dict: a 'grading_rgb_curve' "
           "stage round-trips through plain JSON and bakes identically -- OK")
@@ -373,8 +373,8 @@ def test_color_warper_stage_round_trips():
     assert r.params["chroma_dropoff"] == 0.6
     assert r.params["points"] == points
 
-    original_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=stack.stages))
-    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(size=5, stages=rebuilt_stack.stages))
+    original_baked = st.bake_stack_to_lut3d(st.Stack(stages=stack.stages), st.BakeSettings(size=5))
+    rebuilt_baked = st.bake_stack_to_lut3d(st.Stack(stages=rebuilt_stack.stages), st.BakeSettings(size=5))
     assert np.allclose(original_baked.table, rebuilt_baked.table, atol=1e-9)
     print("stack_to_session_dict/stack_from_session_dict: a 'color_warper' "
           "stage round-trips through plain JSON and bakes identically -- OK")
@@ -677,7 +677,7 @@ def test_load_session_with_unknown_future_stage_kind_still_loads_others():
         with open(path, "w") as f:
             json.dump(data, f)
 
-        (loaded_stack, _sample_image_state, _memory_library, _gallery_still_library,
+        (loaded_stack, _bake_settings, _sample_image_state, _memory_library, _gallery_still_library,
          _cdl_library, _lut_library, _media_library, _undo_history_state, _canvas, _timeline,
          warnings) = session_io.load_session(path)
 
@@ -736,7 +736,7 @@ def test_save_and_load_session_round_trips_lut_library_and_embedded_stage():
         path = os.path.join(tmp_dir, "test_session.ltr")
         session_io.save_session(path, stack, None, lut_library=lut_library)
 
-        (loaded_stack, sample_image_state, memory_library, gallery_still_library,
+        (loaded_stack, _bake_settings, sample_image_state, memory_library, gallery_still_library,
          cdl_library, loaded_lut_library, loaded_media_library, undo_history_state,
          canvas, timeline, warnings) = session_io.load_session(path)
 
@@ -791,7 +791,7 @@ def test_load_session_ignores_a_leftover_workspace_key_from_version_6():
             json.dump(data, f)
 
         result = session_io.load_session(path)
-        assert len(result) == 11  # no workspace element in the returned tuple
+        assert len(result) == 12  # no workspace element in the returned tuple
         warnings = result[-1]
         assert warnings == []
     print("load_session: a VERSION 6 file's leftover 'workspace' key is "
@@ -991,7 +991,7 @@ def test_load_session_reads_the_old_image_library_key_as_a_fallback():
         with open(session_path, "w") as f:
             json.dump(data, f)
 
-        (_stack, _sample_image_state, _memory_library, _gallery_still_library,
+        (_stack, _bake_settings, _sample_image_state, _memory_library, _gallery_still_library,
          _cdl_library, _lut_library, media_library, _undo_history_state,
          _canvas, _timeline, warnings) = session_io.load_session(session_path)
 
@@ -1243,7 +1243,7 @@ def test_save_and_load_session_round_trips_memories_and_gallery_stills():
             path, st.Stack(), None, stack_memory_library=memory_library,
             gallery_still_library=gallery_library)
 
-        (_stack, _sample_image_state, loaded_memory_library, loaded_gallery_library,
+        (_stack, _bake_settings, _sample_image_state, loaded_memory_library, loaded_gallery_library,
          _cdl_library, _lut_library, _media_library, _undo_history_state, _canvas, _timeline,
          warnings) = session_io.load_session(path)
 
@@ -1268,7 +1268,7 @@ def test_load_session_without_gallery_stills_key_defaults_to_empty():
             json.dump(data, f)
 
         result = session_io.load_session(path)
-        gallery_still_library = result[3]
+        gallery_still_library = result[4]
         warnings = result[-1]
         assert warnings == []
         assert gallery_still_library.stills == []
@@ -1290,7 +1290,7 @@ def test_load_session_without_lut_library_key_defaults_to_empty():
         with open(path, "w") as f:
             json.dump(data, f)
 
-        (_stack, _sample_image_state, _memory_library, _gallery_still_library,
+        (_stack, _bake_settings, _sample_image_state, _memory_library, _gallery_still_library,
          _cdl_library, lut_library, media_library, _undo_history_state, _canvas, _timeline,
          warnings) = session_io.load_session(path)
         assert warnings == []
@@ -1316,7 +1316,7 @@ def test_save_and_load_session_round_trips_undo_history():
         path = os.path.join(tmp_dir, "test_session.ltr")
         session_io.save_session(path, stack_b, None, undo_history=history)
 
-        (_stack, _sample_image_state, _memory_library, _gallery_still_library,
+        (_stack, _bake_settings, _sample_image_state, _memory_library, _gallery_still_library,
          _cdl_library, _lut_library, _media_library, undo_history_state, _canvas, _timeline,
          warnings) = session_io.load_session(path)
 
@@ -1523,6 +1523,43 @@ def test_save_session_still_raises_if_the_current_stack_itself_is_broken():
           "stack itself is unreconstructable -- OK")
 
 
+def test_bake_settings_round_trip_and_migrate_from_an_old_stack_dict():
+    """LUT grid size/domain are a session-level "lut_bake" section now
+    (stack.BakeSettings); an older file stored them on the stack, and
+    those values must carry over so it exports exactly as before."""
+    custom = st.BakeSettings(size=17, domain_min=(-0.5,) * 3, domain_max=(2.0,) * 3)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "session.ltr")
+        session_io.save_session(path, st.Stack(), None, bake_settings=custom)
+        with open(path) as f:
+            data = json.load(f)
+        assert "size" not in data["stack"] and "domain_min" not in data["stack"]
+        assert session_io.load_session(path)[1] == custom
+
+        del data["lut_bake"]
+        data["stack"].update({"size": 65, "domain_min": [0, 0, 0], "domain_max": [4, 4, 4]})
+        with open(path, "w") as f:
+            json.dump(data, f)
+        migrated = session_io.load_session(path)[1]
+        assert migrated == st.BakeSettings(size=65, domain_max=(4.0, 4.0, 4.0))
+
+        data["stack"].update({"domain_min": [5, 5, 5]})  # invalid: min >= max
+        with open(path, "w") as f:
+            json.dump(data, f)
+        assert session_io.load_session(path)[1] == st.DEFAULT_BAKE_SETTINGS
+    print("session bake settings: round-trip, migrate from an old stack's "
+          "size/domain, invalid falls back to defaults -- OK")
+
+
+def test_stack_memories_no_longer_carry_size_or_domain():
+    library = st_mem.StackMemoryLibrary()
+    library.save("Grade", st.Stack(stages=[st.make_cdl_stage()]))
+    entries, _warnings = session_io.memory_library_to_session_list(library)
+    text = json.dumps(entries)
+    assert '"size"' not in text and "domain_min" not in text, text
+    print("Stack Memories: saved without grid size/domain -- OK")
+
+
 if __name__ == "__main__":
     test_embedded_dict_round_trips_lut3d_table_exactly()
     test_embedded_dict_round_trips_lut1d_table_exactly()
@@ -1583,5 +1620,7 @@ if __name__ == "__main__":
     test_undo_history_to_session_list_drops_the_state_at_the_pointer_itself()
     test_save_session_succeeds_despite_a_broken_stack_memory()
     test_save_session_still_raises_if_the_current_stack_itself_is_broken()
+    test_bake_settings_round_trip_and_migrate_from_an_old_stack_dict()
+    test_stack_memories_no_longer_carry_size_or_domain()
     print()
     print("All session_io tests passed.")

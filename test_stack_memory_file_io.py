@@ -26,7 +26,7 @@ def _make_sample_stack():
     lut_stage.params["source_kind"] = "embedded"
     cdl_stage = st.make_cdl_stage(slope=(1.1, 1.0, 0.95), offset=(0.01, 0.0, -0.01),
                                    power=(1.0, 1.0, 1.0), sat=1.05)
-    return st.Stack(stages=[lut_stage, cdl_stage], size=17)
+    return st.Stack(stages=[lut_stage, cdl_stage])
 
 
 def test_export_then_import_round_trips_name_and_stack():
@@ -41,7 +41,6 @@ def test_export_then_import_round_trips_name_and_stack():
         assert warnings == []
         assert imported.name == "My Grade"
         assert len(imported.stack.stages) == 2
-        assert imported.stack.size == 17
         assert imported.stack.stages[0].kind == "lut"
         assert imported.stack.stages[0].params["source_kind"] == "embedded"
         assert np.allclose(

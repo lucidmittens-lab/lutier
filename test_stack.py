@@ -117,8 +117,8 @@ def test_add_remove_find_move_stage():
 # --- empty stack is a pure pass-through -----------------------------------
 
 def test_empty_stack_bakes_to_plain_identity():
-    stack = st.Stack(size=9)
-    baked = st.bake_stack_to_lut3d(stack)
+    stack = st.Stack()
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=9))
     identity = colour.LUT3D(size=9).table
     assert np.array_equal(baked.table, identity), \
         "an empty stack should bake to exactly the plain identity grid"
@@ -293,9 +293,9 @@ def test_compose_stacks_gpu_eligibility_matches_the_flat_equivalent():
 def test_single_lut_stage_matches_direct_apply():
     lut = colour.read_LUT(SAMPLE_LUT_PATH)
     size = 9
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_lut_stage(lut))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     identity_grid = colour.LUT3D(size=size).table
     direct = lut.apply(identity_grid)
@@ -311,9 +311,9 @@ def test_lut_stage_with_retarget_matches_bake_retargeted_lut():
 
     expected = bake_retargeted_lut(lut, from_space, to_space, size=size)
 
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_lut_stage(lut, retarget_from=from_space, retarget_to=to_space))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     assert np.allclose(baked.table, expected.table, atol=1e-9)
     print("bake_stack_to_lut3d: 'lut' stage with a retarget declaration "
@@ -330,13 +330,13 @@ def test_lut_stage_with_empty_string_retarget_spaces_fails_loudly():
     the two checks disagreeing was a real inconsistency worth locking
     down either way."""
     lut = create_identity_lut(size=5)
-    stack = st.Stack(size=5)
+    stack = st.Stack()
     stage = st.make_lut_stage(lut, retarget_from="ACEScct", retarget_to="ACES2065-1")
     stage.params["retarget_from"] = ""
     stage.params["retarget_to"] = ""
     stack.add_stage(stage)
     try:
-        st.bake_stack_to_lut3d(stack)
+        st.bake_stack_to_lut3d(stack, st.BakeSettings(size=5))
         raise AssertionError(
             "expected an empty-string retarget space to fail loudly, not "
             "silently skip the retarget")
@@ -358,10 +358,10 @@ def test_printer_lights_stage_matches_bake_printer_lights_on_lut():
     expected = bake_printer_lights_on_lut(
         lut, r, g, b, working_colourspace=working_space, size=size)
 
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_lut_stage(lut))
     stack.add_stage(st.make_printer_lights_stage(r, g, b, working_colourspace=working_space))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     assert np.allclose(baked.table, expected.table, atol=1e-9)
     print("bake_stack_to_lut3d: 'lut' stage followed by 'printer_lights' stage "
@@ -380,9 +380,9 @@ def test_aces_drt_stage_matches_bake_aces_output_transform_to_lut3d():
     expected = aces_drt.bake_aces_output_transform_to_lut3d(
         working_space, display, view, size=size)
 
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_aces_drt_stage(working_space, display, view))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     assert np.allclose(baked.table, expected.table, atol=1e-9)
     print("bake_stack_to_lut3d: single 'aces_drt' stage matches "
@@ -396,9 +396,9 @@ def test_cdl_stage_matches_direct_apply_cdl():
     size = 9
     slope, offset, power, sat = (1.2, 1.0, 0.9), (0.02, 0.0, -0.01), (1.0, 1.05, 1.0), 1.1
 
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_cdl_stage(slope=slope, offset=offset, power=power, sat=sat))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     identity_grid = colour.LUT3D(size=size).table
     expected = cdl.apply_cdl(identity_grid, slope=slope, offset=offset, power=power, sat=sat)
@@ -414,9 +414,9 @@ def test_grading_primary_stage_matches_direct_apply():
     size = 9
     brightness, contrast = (0.02, -0.01, 0.03, 0.0), (1.1, 1.05, 0.95, 1.0)
 
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_grading_primary_stage(brightness=brightness, contrast=contrast))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     identity_grid = colour.LUT3D(size=size).table
     expected = grading_primary.apply_grading_primary(
@@ -435,11 +435,11 @@ def test_color_warper_stage_matches_direct_apply():
     wake, dropoff = 40.0, 0.2
     chroma_wake, chroma_dropoff = 0.08, 0.5
 
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_color_warper_stage(
         points=points, wake=wake, dropoff=dropoff,
         chroma_wake=chroma_wake, chroma_dropoff=chroma_dropoff))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     identity_grid = colour.LUT3D(size=size).table
     expected = color_warper.apply_color_warper_in_working_space(
@@ -452,9 +452,9 @@ def test_color_warper_stage_matches_direct_apply():
 
 def test_color_warper_stage_default_is_identity():
     size = 5
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_color_warper_stage())
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
     identity_grid = colour.LUT3D(size=size).table
     assert np.array_equal(baked.table, identity_grid)
     print("bake_stack_to_lut3d: a freshly-added 'color_warper' stage "
@@ -469,10 +469,10 @@ def test_grading_primary_stage_composes_after_a_lut_stage():
     lut = colour.read_LUT(SAMPLE_LUT_PATH)
     contrast = (1.15, 1.0, 0.9, 1.0)
 
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_lut_stage(lut))
     stack.add_stage(st.make_grading_primary_stage(contrast=contrast))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     identity_grid = colour.LUT3D(size=size).table
     lut_output = lut.apply(identity_grid)
@@ -489,9 +489,9 @@ def test_exposure_contrast_stage_matches_direct_apply():
     size = 9
     exposure, contrast, gamma = 0.4, 1.15, 1.05
 
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_exposure_contrast_stage(exposure=exposure, contrast=contrast, gamma=gamma))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     identity_grid = colour.LUT3D(size=size).table
     expected = exposure_contrast.apply_exposure_contrast(
@@ -509,10 +509,10 @@ def test_exposure_contrast_stage_composes_after_a_lut_stage():
     lut = colour.read_LUT(SAMPLE_LUT_PATH)
     exposure = 0.3
 
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_lut_stage(lut))
     stack.add_stage(st.make_exposure_contrast_stage(exposure=exposure))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     identity_grid = colour.LUT3D(size=size).table
     lut_output = lut.apply(identity_grid)
@@ -529,9 +529,9 @@ def test_grading_tone_stage_matches_direct_apply():
     size = 9
     midtones = (1.05, 0.98, 1.02, 1.0, 0.4, 0.6)
 
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_grading_tone_stage(midtones=midtones))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     identity_grid = colour.LUT3D(size=size).table
     expected = grading_tone.apply_grading_tone(identity_grid, midtones=midtones)
@@ -548,10 +548,10 @@ def test_grading_tone_stage_composes_after_a_lut_stage():
     lut = colour.read_LUT(SAMPLE_LUT_PATH)
     highlights = (1.1, 1.0, 0.95, 1.0, 0.3, 1.0)
 
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_lut_stage(lut))
     stack.add_stage(st.make_grading_tone_stage(highlights=highlights))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     identity_grid = colour.LUT3D(size=size).table
     lut_output = lut.apply(identity_grid)
@@ -568,9 +568,9 @@ def test_grading_rgb_curve_stage_matches_direct_apply():
     size = 9
     master = ((0.0, 0.0), (0.5, 0.6), (1.0, 1.0))
 
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_grading_rgb_curve_stage(master=master))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     identity_grid = colour.LUT3D(size=size).table
     expected = grading_rgb_curve.apply_grading_rgb_curve(identity_grid, master=master)
@@ -587,10 +587,10 @@ def test_grading_rgb_curve_stage_composes_after_a_lut_stage():
     lut = colour.read_LUT(SAMPLE_LUT_PATH)
     red = ((0.0, 0.0), (0.5, 0.4), (1.0, 1.0))
 
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_lut_stage(lut))
     stack.add_stage(st.make_grading_rgb_curve_stage(red=red))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     identity_grid = colour.LUT3D(size=size).table
     lut_output = lut.apply(identity_grid)
@@ -608,10 +608,10 @@ def test_cdl_stage_composes_after_a_lut_stage():
     lut = colour.read_LUT(SAMPLE_LUT_PATH)
     slope = (1.15, 1.0, 0.9)
 
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_lut_stage(lut))
     stack.add_stage(st.make_cdl_stage(slope=slope, style="no_clip"))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     identity_grid = colour.LUT3D(size=size).table
     lut_output = lut.apply(identity_grid)
@@ -633,9 +633,9 @@ def test_colorspace_stage_matches_direct_apply_colorspace_conversion():
     size = 9
     src, dst = "ACEScct", "ACEScg"
 
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_colorspace_stage(src, dst))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     identity_grid = colour.LUT3D(size=size).table
     expected = csc.apply_colorspace_conversion(identity_grid, src, dst)
@@ -654,10 +654,10 @@ def test_colorspace_stage_composes_after_a_lut_stage():
     lut = colour.read_LUT(SAMPLE_LUT_PATH)
     src, dst = "ACEScct", "ACEScg"
 
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_lut_stage(lut))
     stack.add_stage(st.make_colorspace_stage(src, dst))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     identity_grid = colour.LUT3D(size=size).table
     lut_output = lut.apply(identity_grid)
@@ -675,9 +675,9 @@ def test_colorspace_stage_composes_after_a_lut_stage():
 
 def test_opacity_one_is_full_effect():
     size = 5
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_lut_stage(_make_gain_lut3d(0.4, size=size), opacity=1.0))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
     identity = colour.LUT3D(size=size).table
     assert np.allclose(baked.table, identity * 0.4, atol=1e-9)
     print("bake_stack_to_lut3d: opacity=1.0 gives the stage's full effect -- OK")
@@ -685,9 +685,9 @@ def test_opacity_one_is_full_effect():
 
 def test_opacity_zero_is_exact_noop():
     size = 5
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_lut_stage(_make_gain_lut3d(0.4, size=size), opacity=0.0))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
     identity = colour.LUT3D(size=size).table
     assert np.array_equal(baked.table, identity)
     print("bake_stack_to_lut3d: opacity=0.0 is an exact no-op -- OK")
@@ -695,9 +695,9 @@ def test_opacity_zero_is_exact_noop():
 
 def test_opacity_half_is_arithmetic_midpoint():
     size = 5
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_lut_stage(_make_gain_lut3d(0.4, size=size), opacity=0.5))
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
     identity = colour.LUT3D(size=size).table
     expected = identity * 0.5 + (identity * 0.4) * 0.5  # midpoint of input (1.0x) and output (0.4x)
     assert np.allclose(baked.table, expected, atol=1e-9)
@@ -707,11 +707,11 @@ def test_opacity_half_is_arithmetic_midpoint():
 
 def test_disabled_stage_is_exact_noop_regardless_of_params():
     size = 5
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stage = st.make_lut_stage(_make_gain_lut3d(0.4, size=size), opacity=1.0)
     stage.enabled = False
     stack.add_stage(stage)
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
     identity = colour.LUT3D(size=size).table
     assert np.array_equal(baked.table, identity), \
         "a disabled stage should have zero effect, same as not being in the stack at all"
@@ -726,11 +726,11 @@ def test_stage_order_matters():
     offset_lut = colour.LUT3D(table=colour.LUT3D(size=size).table + 0.1, size=size)
     offset = st.make_lut_stage(offset_lut, label="offset")
 
-    gain_then_offset = st.Stack(size=size, stages=[gain, offset])
-    offset_then_gain = st.Stack(size=size, stages=[offset, gain])
+    gain_then_offset = st.Stack(stages=[gain, offset])
+    offset_then_gain = st.Stack(stages=[offset, gain])
 
-    baked_a = st.bake_stack_to_lut3d(gain_then_offset)
-    baked_b = st.bake_stack_to_lut3d(offset_then_gain)
+    baked_a = st.bake_stack_to_lut3d(gain_then_offset, st.BakeSettings(size=size))
+    baked_b = st.bake_stack_to_lut3d(offset_then_gain, st.BakeSettings(size=size))
     assert not np.allclose(baked_a.table, baked_b.table), \
         "gain-then-offset should differ from offset-then-gain, or order isn't respected"
     print("bake_stack_to_lut3d: stage order is respected (gain->offset != "
@@ -743,14 +743,14 @@ def test_move_stage_actually_changes_the_bake():
     offset_lut = colour.LUT3D(table=colour.LUT3D(size=size).table + 0.1, size=size)
     offset = st.make_lut_stage(offset_lut, label="offset")
 
-    stack = st.Stack(size=size, stages=[gain, offset])
-    before = st.bake_stack_to_lut3d(stack)
+    stack = st.Stack(stages=[gain, offset])
+    before = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
     stack.move_stage_up(offset.id)  # now [offset, gain]
-    after = st.bake_stack_to_lut3d(stack)
+    after = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
 
-    reference = st.Stack(size=size, stages=[offset, gain])
-    reference_baked = st.bake_stack_to_lut3d(reference)
+    reference = st.Stack(stages=[offset, gain])
+    reference_baked = st.bake_stack_to_lut3d(reference, st.BakeSettings(size=size))
 
     assert not np.allclose(before.table, after.table)
     assert np.allclose(after.table, reference_baked.table, atol=1e-9), \
@@ -770,13 +770,13 @@ def _tagged(stage, branch):
 
 def test_fork_merge_blend_zero_is_exactly_branch_a():
     size = 5
-    stack = st.Stack(size=size, stages=[
+    stack = st.Stack(stages=[
         st.make_fork_split_stage(),
         _tagged(st.make_lut_stage(_make_gain_lut3d(0.4, size=size)), "a"),
         _tagged(st.make_lut_stage(_make_gain_lut3d(2.0, size=size)), "b"),
         st.make_fork_merge_stage(blend=0.0),
     ])
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
     identity = colour.LUT3D(size=size).table
     assert np.allclose(baked.table, identity * 0.4, atol=1e-9)
     print("fork_merge: blend=0.0 gives exactly branch a's output -- OK")
@@ -784,13 +784,13 @@ def test_fork_merge_blend_zero_is_exactly_branch_a():
 
 def test_fork_merge_blend_one_is_exactly_branch_b():
     size = 5
-    stack = st.Stack(size=size, stages=[
+    stack = st.Stack(stages=[
         st.make_fork_split_stage(),
         _tagged(st.make_lut_stage(_make_gain_lut3d(0.4, size=size)), "a"),
         _tagged(st.make_lut_stage(_make_gain_lut3d(2.0, size=size)), "b"),
         st.make_fork_merge_stage(blend=1.0),
     ])
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
     identity = colour.LUT3D(size=size).table
     assert np.allclose(baked.table, identity * 2.0, atol=1e-9)
     print("fork_merge: blend=1.0 gives exactly branch b's output -- OK")
@@ -798,13 +798,13 @@ def test_fork_merge_blend_one_is_exactly_branch_b():
 
 def test_fork_merge_blend_half_is_arithmetic_midpoint_of_both_branches():
     size = 5
-    stack = st.Stack(size=size, stages=[
+    stack = st.Stack(stages=[
         st.make_fork_split_stage(),
         _tagged(st.make_lut_stage(_make_gain_lut3d(0.4, size=size)), "a"),
         _tagged(st.make_lut_stage(_make_gain_lut3d(2.0, size=size)), "b"),
         st.make_fork_merge_stage(blend=0.5),
     ])
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
     identity = colour.LUT3D(size=size).table
     expected = identity * (0.5 * 0.4 + 0.5 * 2.0)  # == identity * 1.2
     assert np.allclose(baked.table, expected, atol=1e-9)
@@ -826,14 +826,14 @@ def test_fork_supports_multiple_stages_per_branch():
     is what makes this test's arithmetic unambiguous."""
     size = 5
     offset_lut = colour.LUT3D(table=colour.LUT3D(size=size).table + 0.1, size=size)
-    stack = st.Stack(size=size, stages=[
+    stack = st.Stack(stages=[
         st.make_fork_split_stage(),
         _tagged(st.make_lut_stage(_make_gain_lut3d(0.3, size=size)), "a"),
         _tagged(st.make_lut_stage(offset_lut), "a"),          # branch a: gain then offset
         _tagged(st.make_lut_stage(_make_gain_lut3d(0.5, size=size)), "b"),  # branch b: one stage
         st.make_fork_merge_stage(blend=0.5),
     ])
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
     identity = colour.LUT3D(size=size).table
     branch_a_result = identity * 0.3 + 0.1  # gain then offset, in that order
     branch_b_result = identity * 0.5
@@ -850,14 +850,14 @@ def test_fork_branch_stage_enabled_and_opacity_work_normally_within_branch():
     size = 5
     disabled_stage = _tagged(st.make_lut_stage(_make_gain_lut3d(9.0, size=size)), "a")
     disabled_stage.enabled = False
-    stack = st.Stack(size=size, stages=[
+    stack = st.Stack(stages=[
         st.make_fork_split_stage(),
         disabled_stage,  # should have zero effect
         _tagged(st.make_lut_stage(_make_gain_lut3d(2.0, size=size), opacity=0.5), "a"),
         _tagged(st.make_lut_stage(_make_gain_lut3d(3.0, size=size)), "b"),
         st.make_fork_merge_stage(blend=0.0),  # all branch a, to isolate its result
     ])
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
     identity = colour.LUT3D(size=size).table
     # disabled_stage: no-op. Then gain=2.0 at opacity=0.5: 0.5*1.0 + 0.5*2.0 = 1.5x.
     assert np.allclose(baked.table, identity * 1.5, atol=1e-9)
@@ -881,14 +881,14 @@ def test_fork_merge_total_opacity_blends_against_signal_before_split():
     .apply() call, only fork_merge's plain numpy blend."""
     size = 5
     pre_split = st.make_lut_stage(_make_gain_lut3d(0.5, size=size), label="pre-split")
-    stack = st.Stack(size=size, stages=[
+    stack = st.Stack(stages=[
         pre_split,
         st.make_fork_split_stage(),
         _tagged(st.make_lut_stage(_make_gain_lut3d(0.4, size=size)), "a"),
         _tagged(st.make_lut_stage(_make_gain_lut3d(2.0, size=size)), "b"),
         st.make_fork_merge_stage(blend=0.5, opacity=0.5),
     ])
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
     identity = colour.LUT3D(size=size).table
     signal_before_split = identity * 0.5
     combined = signal_before_split * 0.4 * 0.5 + signal_before_split * 2.0 * 0.5
@@ -904,13 +904,13 @@ def test_fork_split_disabled_makes_whole_region_a_noop():
     size = 5
     split = st.make_fork_split_stage()
     split.enabled = False
-    stack = st.Stack(size=size, stages=[
+    stack = st.Stack(stages=[
         split,
         _tagged(st.make_lut_stage(_make_gain_lut3d(0.4, size=size)), "a"),
         _tagged(st.make_lut_stage(_make_gain_lut3d(2.0, size=size)), "b"),
         st.make_fork_merge_stage(blend=0.5),
     ])
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
     identity = colour.LUT3D(size=size).table
     assert np.array_equal(baked.table, identity)
     print("fork_split: enabled=False makes the whole split/branches/merge "
@@ -921,7 +921,7 @@ def test_fork_merge_disabled_has_same_effect_as_opacity_zero():
     size = 5
 
     def build(merge_stage):
-        return st.Stack(size=size, stages=[
+        return st.Stack(stages=[
             st.make_fork_split_stage(),
             _tagged(st.make_lut_stage(_make_gain_lut3d(0.4, size=size)), "a"),
             _tagged(st.make_lut_stage(_make_gain_lut3d(2.0, size=size)), "b"),
@@ -932,8 +932,9 @@ def test_fork_merge_disabled_has_same_effect_as_opacity_zero():
     disabled_merge.enabled = False
     zero_opacity_merge = st.make_fork_merge_stage(blend=0.5, opacity=0.0)
 
-    baked_disabled = st.bake_stack_to_lut3d(build(disabled_merge))
-    baked_zero_opacity = st.bake_stack_to_lut3d(build(zero_opacity_merge))
+    settings = st.BakeSettings(size=size)
+    baked_disabled = st.bake_stack_to_lut3d(build(disabled_merge), settings)
+    baked_zero_opacity = st.bake_stack_to_lut3d(build(zero_opacity_merge), settings)
     identity = colour.LUT3D(size=size).table
     assert np.array_equal(baked_disabled.table, identity)
     assert np.array_equal(baked_zero_opacity.table, identity)
@@ -946,14 +947,14 @@ def test_stage_after_fork_merge_sees_only_the_rejoined_single_signal():
     between one split/merge pair -- whatever comes next in the Stack sees
     one signal, same as if forking never happened."""
     size = 5
-    stack = st.Stack(size=size, stages=[
+    stack = st.Stack(stages=[
         st.make_fork_split_stage(),
         _tagged(st.make_lut_stage(_make_gain_lut3d(0.4, size=size)), "a"),
         _tagged(st.make_lut_stage(_make_gain_lut3d(2.0, size=size)), "b"),
         st.make_fork_merge_stage(blend=0.5),  # rejoins to 1.2x
         st.make_lut_stage(Gain(2.0), label="after"),
     ])
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
     identity = colour.LUT3D(size=size).table
     assert np.allclose(baked.table, identity * 1.2 * 2.0, atol=1e-9)
     print("fork: the next stage in the Stack sees only the single "
@@ -961,9 +962,9 @@ def test_stage_after_fork_merge_sees_only_the_rejoined_single_signal():
 
 
 def test_fork_merge_with_no_matching_split_raises():
-    stack = st.Stack(size=5, stages=[st.make_fork_merge_stage()])
+    stack = st.Stack(stages=[st.make_fork_merge_stage()])
     try:
-        st.bake_stack_to_lut3d(stack)
+        st.bake_stack_to_lut3d(stack, st.BakeSettings(size=5))
         raise AssertionError("expected ValueError for an unmatched fork_merge")
     except ValueError:
         pass
@@ -971,12 +972,12 @@ def test_fork_merge_with_no_matching_split_raises():
 
 
 def test_fork_split_with_no_matching_merge_raises():
-    stack = st.Stack(size=5, stages=[
+    stack = st.Stack(stages=[
         st.make_fork_split_stage(),
         _tagged(st.make_lut_stage(_make_gain_lut3d(0.4, size=5)), "a"),
     ])
     try:
-        st.bake_stack_to_lut3d(stack)
+        st.bake_stack_to_lut3d(stack, st.BakeSettings(size=5))
         raise AssertionError("expected ValueError for an unmatched fork_split")
     except ValueError:
         pass
@@ -984,12 +985,12 @@ def test_fork_split_with_no_matching_merge_raises():
 
 
 def test_nested_fork_split_raises():
-    stack = st.Stack(size=5, stages=[
+    stack = st.Stack(stages=[
         st.make_fork_split_stage(),
         st.make_fork_split_stage(),
     ])
     try:
-        st.bake_stack_to_lut3d(stack)
+        st.bake_stack_to_lut3d(stack, st.BakeSettings(size=5))
         raise AssertionError("expected ValueError for a nested fork_split")
     except ValueError:
         pass
@@ -997,13 +998,13 @@ def test_nested_fork_split_raises():
 
 
 def test_stage_inside_fork_region_without_branch_tag_raises():
-    stack = st.Stack(size=5, stages=[
+    stack = st.Stack(stages=[
         st.make_fork_split_stage(),
         st.make_lut_stage(_make_gain_lut3d(0.4, size=5)),  # no .branch set
         st.make_fork_merge_stage(),
     ])
     try:
-        st.bake_stack_to_lut3d(stack)
+        st.bake_stack_to_lut3d(stack, st.BakeSettings(size=5))
         raise AssertionError("expected ValueError for a stage with no branch inside a fork region")
     except ValueError:
         pass
@@ -1015,10 +1016,10 @@ def test_stray_branch_tag_outside_any_fork_region_is_ignored():
     the UI shouldn't be a hard failure -- outside any open region it's
     simply inert, and the stage runs as an ordinary top-level stage."""
     size = 5
-    stack = st.Stack(size=size, stages=[
+    stack = st.Stack(stages=[
         _tagged(st.make_lut_stage(_make_gain_lut3d(2.0, size=size)), "a"),
     ])
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
     identity = colour.LUT3D(size=size).table
     assert np.allclose(baked.table, identity * 2.0, atol=1e-9)
     print("fork: a branch-tagged stage outside any open fork region runs "
@@ -1037,11 +1038,11 @@ def test_stage_copy_preserves_branch_tag():
 def test_apply_to_image_array_agrees_with_bake_on_identity_grid():
     size = 9
     lut = colour.read_LUT(SAMPLE_LUT_PATH)
-    stack = st.Stack(size=size)
+    stack = st.Stack()
     stack.add_stage(st.make_lut_stage(lut))
     stack.add_stage(st.make_printer_lights_stage(6, -3, 1, working_colourspace="ACEScct"))
 
-    baked = st.bake_stack_to_lut3d(stack)
+    baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
     identity_grid = colour.LUT3D(size=size).table
     direct = st.apply_stack_to_image_array(stack, identity_grid)
 
@@ -1057,7 +1058,7 @@ def test_apply_to_image_array_agrees_with_bake_on_identity_grid():
 def test_domain_min_max_actually_scale_the_baked_table():
     """A regression test for a real export bug (Tom, 2026-08-12): the
     table used to always be folded over a plain [0,1] grid regardless of
-    Stack.domain_min/domain_max, with the domain only ever slapped on
+    the bake's domain_min/domain_max, with the domain only ever slapped on
     afterward as metadata -- so an extended-domain export's DOMAIN_MIN/
     DOMAIN_MAX header described a range the table was never actually
     computed for. Any domain-aware reader (this app's own re-import,
@@ -1066,13 +1067,10 @@ def test_domain_min_max_actually_scale_the_baked_table():
     computed from a grid spanning [domain_min, domain_max], NOT be
     identical to the default-domain bake."""
     size = 5
-    stack_default_domain = st.Stack(size=size, stages=[st.make_lut_stage(Gain(1.5))])
-    stack_custom_domain = st.Stack(
-        size=size, stages=[st.make_lut_stage(Gain(1.5))],
-        domain_min=(-0.5, -0.5, -0.5), domain_max=(2.0, 2.0, 2.0),
-    )
-    baked_default = st.bake_stack_to_lut3d(stack_default_domain)
-    baked_custom = st.bake_stack_to_lut3d(stack_custom_domain)
+    stack = st.Stack(stages=[st.make_lut_stage(Gain(1.5))])
+    baked_default = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
+    baked_custom = st.bake_stack_to_lut3d(stack, st.BakeSettings(
+        size=size, domain_min=(-0.5, -0.5, -0.5), domain_max=(2.0, 2.0, 2.0)))
 
     assert not np.array_equal(baked_default.table, baked_custom.table), \
         "domain_min/domain_max must actually change the computed table, not just its metadata"
@@ -1086,7 +1084,7 @@ def test_domain_min_max_actually_scale_the_baked_table():
     # direct apply" contract as
     # test_apply_to_image_array_agrees_with_bake_on_identity_grid above.
     probe = np.array([[-0.5, -0.5, -0.5], [0.0, 0.0, 0.0], [0.75, 0.75, 0.75], [2.0, 2.0, 2.0]])
-    direct = st.apply_stack_to_image_array(stack_custom_domain, probe)
+    direct = st.apply_stack_to_image_array(stack, probe)
     via_lut = baked_custom.apply(probe)
     assert np.allclose(direct, np.clip(via_lut, 0.0, 1.0), atol=1e-6), \
         "sampling the baked extended-domain LUT via its own .domain must agree with " \
@@ -1097,7 +1095,7 @@ def test_domain_min_max_actually_scale_the_baked_table():
 
 
 def test_resize_recomputes_natively_more_accurately_than_resampling():
-    """The whole point of Stack.size replacing the old "Resize" panel:
+    """The whole point of the bake's grid size replacing the old "Resize" panel:
     changing it and re-baking recomputes the ENTIRE chain fresh from a
     plain identity grid at the new resolution, rather than resampling an
     already-baked (lossy) table -- confirmed here by showing the two
@@ -1106,15 +1104,14 @@ def test_resize_recomputes_natively_more_accurately_than_resampling():
     lut = colour.read_LUT(SAMPLE_LUT_PATH)
     small_size, big_size = 5, 33
 
-    stack = st.Stack(size=small_size, stages=[st.make_lut_stage(lut)])
-    baked_small = st.bake_stack_to_lut3d(stack)
+    stack = st.Stack(stages=[st.make_lut_stage(lut)])
+    baked_small = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=small_size))
 
     # Old-style: resample the already-baked small table up to big_size.
     old_style_resampled = resample_lut(baked_small, big_size)
 
-    # New-style: just change Stack.size and re-bake from scratch.
-    stack.size = big_size
-    new_style_rebaked = st.bake_stack_to_lut3d(stack)
+    # New-style: just re-bake from scratch at the new size.
+    new_style_rebaked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=big_size))
 
     # Both should be reasonably close (same underlying LUT), but NOT
     # identical -- resampling a coarse bake loses information a fresh
@@ -1125,7 +1122,7 @@ def test_resize_recomputes_natively_more_accurately_than_resampling():
     identity_at_big_size = colour.LUT3D(size=big_size).table
     direct = lut.apply(identity_at_big_size)
     assert np.allclose(new_style_rebaked.table, direct, atol=1e-9)
-    print("Stack.size + re-bake recomputes natively (matches a direct apply "
+    print("BakeSettings.size + re-bake recomputes natively (matches a direct apply "
           "at the new resolution exactly), unlike resampling an already-baked "
           "coarse table -- confirms the accuracy improvement -- OK")
 
@@ -1236,7 +1233,7 @@ def test_find_fork_partner_returns_none_when_no_matching_marker_exists():
 
 def test_stage_cache_matches_uncached_result_across_edits():
     cache = st.StageCache()
-    stack = st.Stack(size=5)
+    stack = st.Stack()
     a = st.make_lut_stage(_make_gain_lut3d(2.0, size=5), label="a")
     b = st.make_lut_stage(_make_gain_lut3d(3.0, size=5), label="b")
     c = st.make_cdl_stage(slope=(1.1, 1.0, 0.9))
@@ -1245,8 +1242,8 @@ def test_stage_cache_matches_uncached_result_across_edits():
     stack.add_stage(c)
 
     def check():
-        cached = st.bake_stack_to_lut3d(stack, cache=cache)
-        uncached = st.bake_stack_to_lut3d(stack)
+        cached = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=5), cache=cache)
+        uncached = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=5))
         assert np.allclose(cached.table, uncached.table, atol=1e-12)
 
     check()  # first bake -- nothing cached yet
@@ -1266,25 +1263,25 @@ def test_stage_cache_matches_uncached_result_across_edits():
 
 def test_stage_cache_skips_recompute_of_untouched_stages():
     cache = st.StageCache()
-    stack = st.Stack(size=4)
+    stack = st.Stack()
     first = CountingGain(2.0, name="first")
     second = CountingGain(3.0, name="second")
     stack.add_stage(st.make_lut_stage(first, label="first"))
     s2 = st.make_lut_stage(second, label="second")
     stack.add_stage(s2)
 
-    st.bake_stack_to_lut3d(stack, cache=cache)
+    st.bake_stack_to_lut3d(stack, st.BakeSettings(size=4), cache=cache)
     assert first.call_count == 1 and second.call_count == 1
 
     # Editing only the SECOND stage's opacity should reuse the first
     # stage's cached checkpoint rather than re-running its .apply again.
     s2.opacity = 0.5
-    st.bake_stack_to_lut3d(stack, cache=cache)
+    st.bake_stack_to_lut3d(stack, st.BakeSettings(size=4), cache=cache)
     assert first.call_count == 1, "untouched earlier stage was recomputed unnecessarily"
     assert second.call_count == 2
 
     # A no-op re-bake (nothing changed at all) shouldn't re-run either stage.
-    st.bake_stack_to_lut3d(stack, cache=cache)
+    st.bake_stack_to_lut3d(stack, st.BakeSettings(size=4), cache=cache)
     assert first.call_count == 1 and second.call_count == 2
     print("StageCache: editing one stage doesn't re-run an earlier, "
           "unchanged stage's own transform (and a no-op re-bake re-runs "
@@ -1423,7 +1420,7 @@ def test_running_array_before_stage_does_not_clip_out_of_range_values():
 
 def test_stage_cache_handles_fork_regions_as_one_block():
     cache = st.StageCache()
-    stack = st.Stack(size=4)
+    stack = st.Stack()
     before = st.make_lut_stage(_make_gain_lut3d(2.0, size=4), label="before")
     split = st.make_fork_split_stage()
     a = st.make_lut_stage(_make_gain_lut3d(1.5, size=4), label="a")
@@ -1436,8 +1433,8 @@ def test_stage_cache_handles_fork_regions_as_one_block():
         stack.add_stage(s)
 
     def check():
-        cached = st.bake_stack_to_lut3d(stack, cache=cache)
-        uncached = st.bake_stack_to_lut3d(stack)
+        cached = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=4), cache=cache)
+        uncached = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=4))
         assert np.allclose(cached.table, uncached.table, atol=1e-9)
 
     check()  # first bake
@@ -2058,6 +2055,81 @@ def test_matte_shape_combined_with_a_keyer_via_matte_combine():
           "-- OK")
 
 
+# --- BakeSettings / check_stack_structure ---------------------------------
+
+def test_bake_settings_validate_and_normalize():
+    settings = st.BakeSettings(size="17", domain_min=-0.5, domain_max=(2, 2, 2))
+    assert settings.size == 17
+    assert settings.domain_min == (-0.5, -0.5, -0.5) and settings.domain_max == (2.0, 2.0, 2.0)
+    for bad in (dict(size=1), dict(domain_min=(0, 0, 1), domain_max=(1, 1, 1))):
+        try:
+            st.BakeSettings(**bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"BakeSettings({bad}) should have raised")
+    assert not hasattr(st.Stack(), "size") and not hasattr(st.Stack(), "domain_min")
+    print("BakeSettings: validates size/domain, broadcasts scalars; Stack "
+          "no longer carries them -- OK")
+
+
+def test_check_stack_structure_matches_run_stages_errors():
+    """The structural check (what the Stack panel's inline error uses now
+    that edits don't bake) must flag exactly what a real bake would, with
+    the same message, and pass everything a real bake accepts."""
+    def split(enabled=True):
+        stage = st.make_fork_split_stage()
+        stage.enabled = enabled
+        return stage
+
+    def lut(branch=None):
+        stage = st.make_lut_stage(_make_gain_lut3d(1.2))
+        if branch:
+            stage.branch = branch
+        return stage
+
+    cases = [
+        [],
+        [lut()],
+        [split(), lut("a"), lut("b"), st.make_fork_merge_stage()],
+        [split(enabled=False), lut(), st.make_fork_merge_stage()],  # disabled region: untagged is fine
+        [st.make_fork_merge_stage()],
+        [split(), lut("a")],
+        [split(), split(), st.make_fork_merge_stage(), st.make_fork_merge_stage()],
+        [split(), lut(), st.make_fork_merge_stage()],
+    ]
+    settings = st.BakeSettings(size=3)
+    for stages in cases:
+        try:
+            st.bake_stack_to_lut3d(st.Stack(stages=stages), settings)
+            bake_error = None
+        except ValueError as e:
+            bake_error = str(e)
+        try:
+            st.check_stack_structure(stages)
+            check_error = None
+        except ValueError as e:
+            check_error = str(e)
+        assert check_error == bake_error, (stages, check_error, bake_error)
+    print("check_stack_structure: same verdict and message as a real bake "
+          "for valid and invalid fork layouts -- OK")
+
+
+def test_cached_bake_recomputes_when_bake_settings_change():
+    """StageCache keys on the BakeSettings, so a preview bake's
+    checkpoints are never reused for an export at a different domain."""
+    stack = st.Stack(stages=[st.make_lut_stage(Gain(1.5))])
+    cache = st.StageCache()
+    preview = st.BakeSettings(size=5)
+    export = st.BakeSettings(size=5, domain_min=(-0.5,) * 3, domain_max=(2.0,) * 3)
+    st.bake_stack_to_lut3d(stack, preview, cache=cache)
+    cached_export = st.bake_stack_to_lut3d(stack, export, cache=cache)
+    fresh_export = st.bake_stack_to_lut3d(stack, export)
+    assert np.array_equal(cached_export.table, fresh_export.table)
+    print("bake_stack_to_lut3d: a cache warmed at one BakeSettings isn't "
+          "reused for another -- OK")
+
+
 if __name__ == "__main__":
     test_stage_rejects_unknown_kind()
     test_make_lut_stage_retarget_requires_both_or_neither()
@@ -2157,5 +2229,8 @@ if __name__ == "__main__":
     test_matte_shape_gates_a_downstream_stage_per_pixel()
     test_matte_shape_matte_amount_is_scaled_by_its_own_opacity()
     test_matte_shape_combined_with_a_keyer_via_matte_combine()
+    test_bake_settings_validate_and_normalize()
+    test_check_stack_structure_matches_run_stages_errors()
+    test_cached_bake_recomputes_when_bake_settings_change()
     print()
     print("All stack tests passed.")

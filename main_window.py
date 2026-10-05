@@ -187,10 +187,9 @@ and ACES DRT -- with one reorderable, non-destructive operation stack,
 itself split across two spots here: the stage list (center, the main
 thing you're building) and Stack Params (top-right, the inspector for
 whichever stage is selected) -- see stack_panel.py's docstring for why one
-StackPanel object can hand out two separately-placeable widgets like this,
-and for where the Grid Size/Domain settings live now (a popup dialog
-launched from a button in the stage list, not inline in Stack Params
-anymore). See stack.py's module docstring for the full architecture and
+StackPanel object can hand out two separately-placeable widgets like this.
+LUT grid size/domain aren't Stack settings: they're export settings
+(stack.BakeSettings, self._bake_settings), edited in File > Export. See stack.py's module docstring for the full architecture and
 reasoning behind the Stack itself. Loading a file or Identity LUT from the
 Browser ADDS a stage to the stack instead of replacing "the current LUT"
 -- there's no separate "current LUT" concept anymore, the stack's own
@@ -218,7 +217,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDockWidget, QVBoxLayout, QHBoxLayout,
     QComboBox, QFileDialog, QMessageBox, QLabel, QCheckBox,
     QDialog, QTextBrowser, QDialogButtonBox, QToolButton, QColorDialog,
-    QSpinBox, QDoubleSpinBox, QPushButton, QProgressDialog, QFormLayout,
+    QSpinBox, QDoubleSpinBox, QPushButton, QProgressDialog, QFormLayout, QGroupBox,
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtGui import QAction, QKeySequence, QColor
@@ -231,6 +230,7 @@ from media_panel import MediaPanel
 from timeline_panel import TimelinePanel
 from sample_image_panel import SampleImagePanel
 from stack_panel import StackPanel
+from bake_settings_form import BakeSettingsForm, describe_bake_settings
 from scopes_panel import ScopesPanel
 from lut_viewer_3d import LutViewer3D
 from panel_frame import PanelFrame
@@ -796,7 +796,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("LUTier")
         self.resize(*DEFAULT_WORKSPACE_STATE["window_size"])
 
-        self._current_lut = None  # last baked stack result -- see _on_stack_changed
+        # LUT grid size/domain for export (stack.BakeSettings) -- a session
+        # setting edited in File > Export, not part of the Stack.
+        self._bake_settings = st.DEFAULT_BAKE_SETTINGS
+        # The Graph panel's live preview bake is skipped while it's hidden
+        # and caught up when it's shown -- see _on_stack_changed.
+        self._graph_preview_stale = True
         self._session_path = None  # currently open .ltr file, or None (unsaved) -- see _save_session
 
         # Video export state -- all None except during an active export
@@ -1843,6 +1848,7 @@ class MainWindow(QMainWindow):
         self.media_panel.load_library(MediaLibrary())
         self._canvas = cv.DEFAULT_CANVAS
         self._canvas_confirmed = False
+        self._bake_settings = st.DEFAULT_BAKE_SETTINGS
         # stop(), not pause() -- same "about to be replaced wholesale,
         # don't bother re-parking" reasoning as _close_video_source's own
         # use of _playback_controller.stop() -- also resets position back
@@ -1866,7 +1872,7 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            (new_stack, sample_image_state, memory_library, gallery_still_library,
+            (new_stack, bake_settings, sample_image_state, memory_library, gallery_still_library,
              cdl_library, lut_library, media_library, undo_history_state,
              loaded_canvas, loaded_timeline, warnings) = session_io.load_session(path)
         except Exception as e:  # noqa: BLE001 -- surface any read/parse failure to the user
@@ -1919,6 +1925,7 @@ class MainWindow(QMainWindow):
         # reload (see _on_sample_image_loaded).
         self._canvas = loaded_canvas
         self._canvas_confirmed = True
+        self._bake_settings = bake_settings
         # Same "stop, don't re-park, reset position" reasoning as
         # _new_session's own use of this call, just above.
         self.sample_image._timeline_controller.stop()
@@ -1967,7 +1974,8 @@ class MainWindow(QMainWindow):
                 lut_library=self.lut_library_panel.get_library(),
                 media_library=self.media_panel.get_library(),
                 undo_history=self._undo_history, canvas=self._canvas,
-                timeline=self.timeline_panel.get_timeline())
+                timeline=self.timeline_panel.get_timeline(),
+                bake_settings=self._bake_settings)
         except Exception as e:  # noqa: BLE001 -- surface any write failure to the user
             QMessageBox.critical(self, "Failed to save session", str(e))
             return
@@ -2273,6 +2281,12 @@ class MainWindow(QMainWindow):
                       else Qt.DockWidgetArea.NoDockWidgetArea)
             for frame_attr in self._floating_panels:
                 getattr(self, frame_attr).setAllowedAreas(areas)
+        # The Graph coming on screen (shown, its tab picked, floated back
+        # in) catches up a preview bake skipped while it was hidden --
+        # deferred a tick so isVisible() is already true by then.
+        if (event.type() == QEvent.Type.Show and obj is self.__dict__.get("viewer_3d")
+                and self._graph_preview_stale):
+            QTimer.singleShot(0, self._refresh_graph_preview)
         return super().eventFilter(obj, event)
 
     def closeEvent(self, event):
@@ -2634,18 +2648,16 @@ class MainWindow(QMainWindow):
         return array
 
     def _on_stack_changed(self):
-        """Single place that re-bakes the Stack and pushes the result to
-        every panel that displays it -- fires on every stage add/remove/
-        reorder/enable-toggle/opacity/param edit/grid-size/domain change
-        (StackPanel.stack_changed), so 3D Viewer and export can't drift
-        out of sync with what's actually in the stack. Sample Image
-        previews the stack directly (see set_stack_getter above) rather
-        than needing this baked result.
+        """Fires on every stage add/remove/reorder/enable-toggle/opacity/
+        param edit (StackPanel.stack_changed). No LUT is baked here for
+        export -- that happens only in _resolve_export_source, at the
+        session's BakeSettings (Tom, 2026-10-05). This only checks the
+        stack's structure and refreshes the Graph's preview bake if the
+        Graph is on screen (_refresh_graph_preview). Sample Image previews
+        the stack directly (see set_stack_getter above).
 
-        Wrapped in try/except (per Tom's Stack Forking feature) because a
-        stack can now pass through a transiently invalid structural state
-        that only bake_stack_to_lut3d/_run_stages actually detects --
-        most notably, deleting one half of a fork_split/fork_merge pair
+        A stack can pass through a transiently invalid structural state
+        (stack.check_stack_structure) -- most notably, deleting one half of a fork_split/fork_merge pair
         via that row's own "x" button (see stack_panel.py's
         _StageRowWidget.delete_button/_on_row_delete_clicked), which is
         an entirely ordinary, expected single-click action for every
@@ -2653,17 +2665,33 @@ class MainWindow(QMainWindow):
         here until its other half is removed too. This fires on every
         single edit -- including live slider drags -- so a QMessageBox
         here would be far too disruptive; StackPanel.set_bake_error
-        surfaces it inline instead (see its docstring) and this simply
-        skips pushing a new bake, leaving the 3D Viewer/_current_lut at
-        their last valid state rather than crashing the whole app over
+        surfaces it inline instead (see its docstring) and the Graph keeps
+        its last valid preview rather than crashing the whole app over
         what's very likely a mid-edit, about-to-be-fixed structure."""
         try:
-            baked = self.stack_panel.get_baked_lut()
-        except Exception as e:  # noqa: BLE001 -- see docstring above
+            st.check_stack_structure(self.stack_panel.get_stack().stages)
+        except ValueError as e:
             self.stack_panel.set_bake_error(str(e))
             return
         self.stack_panel.set_bake_error(None)
-        self._current_lut = baked
+        self._graph_preview_stale = True
+        self._refresh_graph_preview()
+
+    def _refresh_graph_preview(self):
+        """The Graph panel's live LUT view -- baked at the fixed
+        DEFAULT_BAKE_SETTINGS (33³ over [0,1]), never the session's export
+        size/domain, and only while the Graph is actually on screen (Tom,
+        2026-10-05: "live, only when visible"). A hidden/tabbed-away Graph
+        just stays stale; the Show event filter (see eventFilter) catches
+        it up the moment it's visible again."""
+        if not self._graph_preview_stale or not self.viewer_3d.isVisible():
+            return
+        try:
+            baked = self.stack_panel.get_baked_lut(st.DEFAULT_BAKE_SETTINGS)
+        except Exception as e:  # noqa: BLE001 -- a stage's own failure; shown inline, never crashes
+            self.stack_panel.set_bake_error(str(e))
+            return
+        self._graph_preview_stale = False
         self.viewer_3d.set_lut(baked)
 
     # ---- undo/redo (see undo_history.py for scope/design) ----------------
@@ -2963,8 +2991,7 @@ class MainWindow(QMainWindow):
             self.export_specs_label.setTextInteractionFlags(
                 Qt.TextInteractionFlag.TextSelectableByMouse)
             # palette(highlight) rather than palette(mid) (per Tom -- the
-            # mid-gray hint-label color used elsewhere, e.g.
-            # _update_domain_readout's own readout, was too low-contrast
+            # mid-gray hint-label color used elsewhere was too low-contrast
             # to read comfortably in dark mode here). This is the same
             # palette(highlight) blue already used for stack_panel.py's
             # enabled-stage toggle/delete-button hover (see style.py's
@@ -2973,6 +3000,13 @@ class MainWindow(QMainWindow):
             # dark palettes, not a hardcoded hex that could fight either.
             self.export_specs_label.setStyleSheet("color: palette(highlight); font-size: 11px;")
             outer.addWidget(self.export_specs_label)
+
+            lut_group = QGroupBox("LUT Grid / Input Domain")
+            lut_group_layout = QVBoxLayout(lut_group)
+            self._bake_settings_form = BakeSettingsForm(self.stack_panel.get_stack)
+            self._bake_settings_form.settings_changed.connect(self._set_bake_settings)
+            lut_group_layout.addWidget(self._bake_settings_form)
+            outer.addWidget(lut_group)
 
             # Three top-level checkboxes (per Tom), in this order -- each
             # an independent optional side effect of the same Export
@@ -3010,8 +3044,17 @@ class MainWindow(QMainWindow):
             outer.addWidget(button_box)
 
             self._export_dialog = dialog
+        self._bake_settings_form.set_settings(self._bake_settings)
         self.export_specs_label.setText(self._export_specs_text())
         show_floating(self._export_dialog)
+
+    def _set_bake_settings(self, settings):
+        """The Export dialog's LUT grid/domain fields (BakeSettingsForm)
+        land here on every valid edit -- saved with the session, used
+        only when a LUT is actually exported (_resolve_export_source)."""
+        self._bake_settings = settings
+        if getattr(self, "export_specs_label", None) is not None:
+            self.export_specs_label.setText(self._export_specs_text())
 
     def _show_canvas_settings_dialog(self):
         """File > Project Settings... (was Canvas Settings, Tom 2026-08-13;
@@ -3380,25 +3423,11 @@ class MainWindow(QMainWindow):
 
     def _export_specs_text(self):
         """Basic-facts summary shown in the Export dialog (per Tom): grid
-        size, domain, and the stage list, read straight from the live
-        Stack (self.stack_panel.get_stack()) rather than a fresh bake --
-        all three are already plain attributes there (see stack.py), no
-        need to actually bake a LUT3D just to preview what's about to be
-        exported. The size/domain line's formatting matches Stack Params'
-        own Grid Size/Domain readout exactly (see stack_panel.py's
-        _update_domain_readout) -- same facts, so they should read
-        identically wherever they're shown."""
+        size and domain (self._bake_settings, see describe_bake_settings)
+        and the live Stack's stage list -- no bake needed just to preview
+        what's about to be exported."""
         stack = self.stack_panel.get_stack()
-        lo, hi = stack.domain_min, stack.domain_max
-        if len(set(lo)) == 1 and len(set(hi)) == 1:
-            domain_text = f"[{lo[0]:g}, {hi[0]:g}]"
-        else:
-            domain_text = (
-                f"R[{lo[0]:g},{hi[0]:g}] "
-                f"G[{lo[1]:g},{hi[1]:g}] "
-                f"B[{lo[2]:g},{hi[2]:g}]"
-            )
-        lines = [f"{stack.size}³ · domain {domain_text}"]
+        lines = [describe_bake_settings(self._bake_settings)]
 
         if stack.stages:
             plural = "" if len(stack.stages) == 1 else "s"
@@ -3424,7 +3453,7 @@ class MainWindow(QMainWindow):
                 "Add stages to the Stack first.")
             return None
         try:
-            lut = self.stack_panel.get_baked_lut()
+            lut = self.stack_panel.get_baked_lut(self._bake_settings)
         except Exception as e:  # noqa: BLE001 -- surface any bake failure to the user
             QMessageBox.critical(self, "Bake failed", str(e))
             return None

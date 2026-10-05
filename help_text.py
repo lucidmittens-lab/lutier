@@ -368,17 +368,19 @@ GPU-accelerated — any Stack containing a fork falls back to CPU
 
 ### Grid size and domain
 
-Set from the Stack's **"☰"** menu or **Stack** menu bar entry → **Edit
-Size/Domain...**. Grid size is the resolution of the final baked LUT (9
-through 97, or type your own — 33 is the common default). Domain is the
-input range each channel is sampled over, normally [0, 1]; uncheck "Link
-R/G/B" to set channels independently. "Use Input Bounds From First Stack
-Entry" pulls the domain straight from the first stage if it's a LUT that
-declares its own (e.g. a non-stock IDT/LMT). Hit **Apply Grid Size /
-Domain** to commit.
+These are export settings, not part of the Stack: they only matter when
+a LUT is baked for export, and they're set in **File > Export...** under
+**LUT Grid / Input Domain** (saved with the session; recalling a Stack
+Memory doesn't change them). Grid size is the resolution of the exported
+LUT (9 through 97, or type your own — 33 is the common default). Domain
+is the input range each channel is sampled over, normally [0, 1];
+uncheck "Link R/G/B" to set channels independently. "Use Input Bounds
+From First Stack Entry" pulls the domain straight from the first stage
+if it's a LUT that declares its own (e.g. a non-stock IDT/LMT). Changes
+apply as you make them.
 
-**Source:** `stack.py`'s `Stack.size`/`domain_min`/`domain_max` and
-`bake_stack_to_lut3d`.
+**Source:** `stack.py`'s `BakeSettings` and `bake_stack_to_lut3d`;
+`bake_settings_form.py`.
 
 ## Parameters
 
@@ -431,10 +433,11 @@ Settings...** opens a small dialog with "Grid density" (how many points
 are sampled) and "Cage opacity" (fades the cage in/out, 0–100%, defaults
 to 30%). Each **1D** choice plots exactly one of the same LUT's Y/R/G/B
 response curves — output vs. input, the traditional "curves" view — swept
-across the Stack's own Domain Min/Max (**Stack → Grid size and domain**
-above) rather than a fixed 0–1 range, so it stays correct for HDR/scene-
-linear grades. All views update live and stay in sync with the Stack;
-switching between them never loses data or resizes the panel.
+across [0, 1] — the Graph previews the Stack at a fixed 33³ / [0, 1]
+grid, independent of the export grid size and domain (**Grid size and
+domain** above). Views update live while the Graph is on screen (a
+hidden or tabbed-away Graph catches up when shown) and stay in sync with
+the Stack; switching between them never loses data or resizes the panel.
 
 **Source:** `lut_viewer_3d.py`'s `LutViewer3D` (built on pyqtgraph's
 `GLViewWidget`/`GLScatterPlotItem`/`GLLinePlotItem`), fed the same
@@ -509,8 +512,9 @@ File > Export... bakes the current Stack and saves it in the format
 picked from the dropdown (Cube, CLF, Sony SPI3D, Cinespace, Autodesk 3D
 LUT in either Flame or Lustre dialect, or FilmLight Truelight/Baselight
 Cube) — pick the format, click Export..., choose where to save. The
-dialog also shows the grid size, domain, and stage list of what's about
-to be baked, plus three optional checkboxes, none of which prompt any
+dialog also holds the export grid size and domain (**Grid size and
+domain** above) and shows the stage list of what's about to be baked,
+plus three optional checkboxes, none of which prompt any
 further dialogs of their own — everything's derived from the LUT's own
 filename:
 

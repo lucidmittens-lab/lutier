@@ -25,6 +25,8 @@ from PySide6.QtWidgets import QApplication
 import main_window as main_window_module
 import workspace_io
 import canvas as cv
+import numpy as np
+import stack as st
 from main_window import MainWindow
 
 # Same redirect-for-the-duration-of-tests discipline test_gl_reparent_
@@ -182,6 +184,85 @@ def test_opening_a_session_saved_without_an_image_clears_the_viewer():
           "Viewer -- OK")
 
 
+def test_graph_preview_bakes_only_while_visible_at_the_fixed_preview_grid():
+    """Stack edits don't bake for export any more; the Graph's preview
+    bake runs only while the Graph is on screen, at DEFAULT_BAKE_SETTINGS
+    regardless of the session's export size/domain."""
+    _app()
+    win = MainWindow()
+    try:
+        baked = []
+        win.viewer_3d.set_lut = baked.append
+        visible = [False]
+        win.viewer_3d.isVisible = lambda: visible[0]
+        win._set_bake_settings(st.BakeSettings(size=9, domain_max=(4.0, 4.0, 4.0)))
+
+        win.stack_panel._on_add_cdl_clicked()
+        assert baked == [] and win._graph_preview_stale
+
+        visible[0] = True
+        win._refresh_graph_preview()
+        assert len(baked) == 1 and not win._graph_preview_stale
+        assert baked[0].size == st.DEFAULT_BAKE_SETTINGS.size
+        assert np.allclose(np.asarray(baked[0].domain)[1], 1.0)
+    finally:
+        win.close()
+    print("MainWindow: Graph preview skipped while hidden, baked at the "
+          "fixed preview grid once visible -- OK")
+
+
+def test_fork_structure_error_is_reported_without_a_bake():
+    _app()
+    win = MainWindow()
+    try:
+        win.viewer_3d.isVisible = lambda: False
+        win.stack_panel._on_add_fork_clicked()
+        split = win.stack_panel.get_stack().stages[0]
+        win.stack_panel.get_stack().remove_stage(split.id)
+        win._on_stack_changed()
+        assert not win.stack_panel.bake_error_label.isHidden()
+        assert "fork_merge" in win.stack_panel.bake_error_label.text()
+    finally:
+        win.close()
+    print("MainWindow: an unmatched fork is flagged without baking -- OK")
+
+
+def test_export_bakes_at_the_session_settings_and_they_follow_the_session():
+    _app()
+    path = str(Path(_workspace_tmp_dir.name) / "bake_settings.ltr")
+    custom = st.BakeSettings(size=9, domain_min=(-0.5,) * 3, domain_max=(2.0,) * 3)
+    win = MainWindow()
+    try:
+        win.stack_panel._on_add_cdl_clicked()
+        win._set_bake_settings(custom)
+        lut, _stem = win._resolve_export_source()
+        assert lut.size == 9
+        assert np.allclose(np.asarray(lut.domain), [[-0.5] * 3, [2.0] * 3])
+
+        win._write_session(path)
+        question = main_window_module.QMessageBox.question
+        # The stack isn't empty, so New Session asks before discarding it.
+        main_window_module.QMessageBox.question = staticmethod(
+            lambda *a, **k: main_window_module.QMessageBox.StandardButton.Yes)
+        try:
+            assert win._new_session() is True
+        finally:
+            main_window_module.QMessageBox.question = question
+        assert win._bake_settings == st.DEFAULT_BAKE_SETTINGS
+
+        original = main_window_module.QFileDialog.getOpenFileName
+        main_window_module.QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (path, ""))
+        try:
+            win._open_session()
+        finally:
+            main_window_module.QFileDialog.getOpenFileName = original
+        assert win._bake_settings == custom
+    finally:
+        win.close()
+    print("MainWindow: export bakes at the session's grid/domain, which save, "
+          "reset on New Session, and reload -- OK")
+
+
 if __name__ == "__main__":
     test_rapid_stack_changes_coalesce_into_one_debounced_push()
     test_undo_flushes_a_pending_debounced_push_first()
@@ -189,5 +270,8 @@ if __name__ == "__main__":
     test_new_session_cancels_a_pending_debounced_push()
     test_launch_and_new_session_start_without_an_image_and_unconfirmed_canvas()
     test_opening_a_session_saved_without_an_image_clears_the_viewer()
+    test_graph_preview_bakes_only_while_visible_at_the_fixed_preview_grid()
+    test_fork_structure_error_is_reported_without_a_bake()
+    test_export_bakes_at_the_session_settings_and_they_follow_the_session()
     print()
     print("All undo-debounce tests passed.")

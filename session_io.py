@@ -185,7 +185,16 @@ from media_library import MediaEntry, MediaLibrary
 from atomic_write import atomic_open
 
 SESSION_FORMAT = "lutier-session"
-SESSION_VERSION = 12
+SESSION_VERSION = 13
+
+# VERSION 13 (Tom, 2026-10-05: decouple the LUT domain from the stack):
+# grid size/domain move out of the "stack" dict into a session-level
+# "lut_bake" section (stack.BakeSettings) -- they're export settings, not
+# part of the color pipeline, so Stack Memories and undo states no longer
+# carry them either. An older file's "stack" size/domain still load, as
+# the session's bake settings (bake_settings_from_session_dict). Media
+# Library entries also gain "metadata" (media_probe.py's header fields),
+# re-probed on load when absent.
 
 # VERSION 12 (Media Panel rewrite, per Tom: "a proper media panel...
 # columned database referring to files on disk, no longer embed data in
@@ -504,12 +513,7 @@ def stack_to_session_dict(stack):
             entry["matte_a_source_index"] = id_to_index.get(stage.params.get("matte_a_source_id"))
             entry["matte_b_source_index"] = id_to_index.get(stage.params.get("matte_b_source_id"))
         entries.append(entry)
-    return {
-        "size": stack.size,
-        "domain_min": list(stack.domain_min),
-        "domain_max": list(stack.domain_max),
-        "stages": entries,
-    }
+    return {"stages": entries}
 
 
 def stage_from_session_dict(entry):
@@ -779,11 +783,10 @@ def stack_from_session_dict(data):
     no special sentinel" fallback _stage_blend_factor already gives an
     unresolved reference at runtime)."""
     warnings = []
-    stack = st.Stack(
-        size=data.get("size", 33),
-        domain_min=tuple(data.get("domain_min", (0.0, 0.0, 0.0))),
-        domain_max=tuple(data.get("domain_max", (1.0, 1.0, 1.0))),
-    )
+    # Older files also carry "size"/"domain_min"/"domain_max" here (they
+    # were Stack fields until BakeSettings) -- ignored; load_session
+    # reads them via bake_settings_from_session_dict for migration.
+    stack = st.Stack()
     entries = data.get("stages", [])
     reconstructed = []  # parallel to `entries`, by ORIGINAL index -- None for a skipped stage
     for entry in entries:
@@ -1251,9 +1254,32 @@ def media_library_from_session_list(entries_data):
     return library, warnings
 
 
+def bake_settings_to_session_dict(settings):
+    return {"size": settings.size, "domain_min": list(settings.domain_min),
+            "domain_max": list(settings.domain_max)}
+
+
+def bake_settings_from_session_dict(data, legacy_stack_data=None):
+    """Inverse of bake_settings_to_session_dict. A session saved before
+    BakeSettings existed has no "lut_bake" section; its size/domain were
+    Stack fields, so they're read from `legacy_stack_data` (the session's
+    "stack" dict) instead -- an old session exports exactly as before.
+    Anything missing or invalid falls back to DEFAULT_BAKE_SETTINGS."""
+    source = data if data else (legacy_stack_data or {})
+    default = st.DEFAULT_BAKE_SETTINGS
+    try:
+        return st.BakeSettings(
+            size=source.get("size", default.size),
+            domain_min=tuple(source.get("domain_min", default.domain_min)),
+            domain_max=tuple(source.get("domain_max", default.domain_max)))
+    except (TypeError, ValueError):
+        return default
+
+
 def save_session(path, stack, sample_image_state, stack_memory_library=None,
                   gallery_still_library=None, cdl_library=None, lut_library=None,
-                  media_library=None, undo_history=None, canvas=None, timeline=None):
+                  media_library=None, undo_history=None, canvas=None, timeline=None,
+                  bake_settings=None):
     """sample_image_state: whatever SampleImagePanel.get_session_state()
     returned (a dict, or None if no image is currently loaded).
     stack_memory_library: whatever StackMemoriesPanel.get_library()
@@ -1320,6 +1346,7 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
         "format": SESSION_FORMAT,
         "version": SESSION_VERSION,
         "stack": stack_to_session_dict(stack),
+        "lut_bake": bake_settings_to_session_dict(bake_settings or st.DEFAULT_BAKE_SETTINGS),
         "sample_image": sample_image_state,
         "stack_memories": stack_memories,
         "gallery_stills": (
@@ -1351,9 +1378,9 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
 
 
 def load_session(path):
-    """Returns (stack, sample_image_state_or_None, stack_memory_library,
-    gallery_still_library, cdl_library, lut_library, media_library,
-    undo_history_state, canvas, timeline, warnings).
+    """Returns (stack, bake_settings, sample_image_state_or_None,
+    stack_memory_library, gallery_still_library, cdl_library, lut_library,
+    media_library, undo_history_state, canvas, timeline, warnings).
     Raises ValueError if `path` isn't a LUTier session file at all (wrong
     format/not JSON) -- that's a hard failure, unlike a single
     unreconstructable stage/memory/LUT Library/Media Library entry. Files
@@ -1394,6 +1421,7 @@ def load_session(path):
     if data.get("format") != SESSION_FORMAT:
         raise ValueError(f"Not a LUTier session file: {path}")
     stack, warnings = stack_from_session_dict(data.get("stack", {}))
+    bake_settings = bake_settings_from_session_dict(data.get("lut_bake"), data.get("stack"))
     memory_library, memory_warnings = memory_library_from_session_list(
         data.get("stack_memories", []))
     warnings = warnings + memory_warnings
@@ -1422,6 +1450,6 @@ def load_session(path):
     timeline, timeline_warnings = timeline_from_session_dict(data.get("timeline"))
     warnings = warnings + timeline_warnings
 
-    return (stack, sample_image_state, memory_library, gallery_still_library,
+    return (stack, bake_settings, sample_image_state, memory_library, gallery_still_library,
             cdl_library, lut_library, media_library, undo_history_state, canvas,
             timeline, warnings)

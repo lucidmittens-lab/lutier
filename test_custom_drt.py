@@ -293,8 +293,8 @@ def test_stack_integration_bake_agrees_with_direct_apply():
             combos.append(kwargs)
 
     for kwargs in combos:
-        stack = st.Stack(size=size, stages=[st.make_custom_drt_stage("ACEScct", **kwargs)])
-        baked = st.bake_stack_to_lut3d(stack)
+        stack = st.Stack(stages=[st.make_custom_drt_stage("ACEScct", **kwargs)])
+        baked = st.bake_stack_to_lut3d(stack, st.BakeSettings(size=size))
         identity_grid = colour.LUT3D(size=size).table
         direct = st.apply_stack_to_image_array(stack, identity_grid)
         assert np.allclose(direct, baked.table, atol=1e-6), kwargs
