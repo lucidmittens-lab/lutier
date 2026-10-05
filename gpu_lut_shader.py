@@ -27,6 +27,20 @@ tolerance as the default-domain case). Baked as GLSL literal constants
 at compile time (fingerprinted on id(lut), so a different domain always
 means a different LUT object anyway, no separate cache key needed).
 
+EXACT INTERPOLATION (2026-10-05) -- OCIO's generated lookup is one
+texture3D() call with GL_LINEAR filtering, i.e. the GPU's own
+fixed-function trilinear. On NVIDIA (RTX 3080 Ti) that filter computes
+its blend weights in ~8-bit fixed point, which put a random 9^3 LUT
+1.1e-3 away from colour.LUT3D.apply() -- over this module's own 1e-3
+validation bar, and a real (if usually invisible) grading error on any
+LUT with steep neighbouring lattice values. Apple's GL and Mesa's
+llvmpipe filter in full float, which is why it never showed before.
+So the lookup itself is now this module's own GLSL (_exact_lut3d_glsl):
+the SAME texture OCIO built (same layout, same .zyx axis order), but
+sampled GL_NEAREST at exact lattice points and blended in shader float
+math -- 8 fetches instead of 1, cheap at preview resolution. OCIO still
+does the texture packing; only the sampling changed.
+
 SCOPE LIMIT (documented, not an oversight): only a plain colour.LUT3D,
 with an IMPLICIT domain (see above) and no retarget_from/retarget_to
 wrapping, is GPU-eligible here -- see is_lut3d_gpu_eligible and
@@ -67,6 +81,41 @@ def is_lut3d_gpu_eligible(lut):
     if not isinstance(lut, colour.LUT3D):
         return False
     return not lut.is_domain_explicit()
+
+
+def _exact_lut3d_glsl(sampler_name, size):
+    """OCIORawLut3D with float-precision trilinear interpolation -- see
+    module docstring's EXACT INTERPOLATION. Same contract as OCIO's own
+    generated function: input already normalized to [0,1] (out-of-range
+    clamps to the edge, as GL_CLAMP_TO_EDGE did before), texture axes in
+    .zyx order."""
+    n = float(size)
+    return f"""
+uniform sampler3D {sampler_name};
+
+vec4 OCIORawLut3D(vec4 inPixel) {{
+    const float N = {n!r};
+    vec3 p = clamp(inPixel.zyx, 0.0, 1.0) * (N - 1.0);
+    vec3 i0 = min(floor(p), vec3(N - 2.0));  // keep i0+1 in range; p == N-1 gives f == 1
+    vec3 f = p - i0;
+    vec3 a = (i0 + 0.5) / N;  // lattice point centers
+    vec3 b = (i0 + 1.5) / N;
+    vec3 c000 = texture3D({sampler_name}, vec3(a.x, a.y, a.z)).rgb;
+    vec3 c100 = texture3D({sampler_name}, vec3(b.x, a.y, a.z)).rgb;
+    vec3 c010 = texture3D({sampler_name}, vec3(a.x, b.y, a.z)).rgb;
+    vec3 c110 = texture3D({sampler_name}, vec3(b.x, b.y, a.z)).rgb;
+    vec3 c001 = texture3D({sampler_name}, vec3(a.x, a.y, b.z)).rgb;
+    vec3 c101 = texture3D({sampler_name}, vec3(b.x, a.y, b.z)).rgb;
+    vec3 c011 = texture3D({sampler_name}, vec3(a.x, b.y, b.z)).rgb;
+    vec3 c111 = texture3D({sampler_name}, vec3(b.x, b.y, b.z)).rgb;
+    vec3 c00 = mix(c000, c100, f.x);
+    vec3 c10 = mix(c010, c110, f.x);
+    vec3 c01 = mix(c001, c101, f.x);
+    vec3 c11 = mix(c011, c111, f.x);
+    vec3 c = mix(mix(c00, c10, f.y), mix(c01, c11, f.y), f.z);
+    return vec4(c, inPixel.a);
+}}
+"""
 
 
 def _domain_wrapper_glsl(domain):
@@ -146,8 +195,6 @@ class Lut3DGpuCache:
         # already normalized to [0,1].
         shader_desc.setFunctionName("OCIORawLut3D")
         gpu_processor.extractGpuShaderInfo(shader_desc)
-        shader_text = shader_desc.getShaderText() + _domain_wrapper_glsl(lut.domain)
-        program = gsp.compile_ocio_program(shader_text)
 
         tex3d_list = list(shader_desc.get3DTextures())
         assert len(tex3d_list) == 1, (  # pragma: no cover -- OCIO's own Lut3DTransform codegen shape
@@ -156,10 +203,18 @@ class Lut3DGpuCache:
         values = np.asarray(tex3d.getValues(), dtype=np.float32)
         edge = tex3d.edgeLen
 
+        # OCIO's texture packing, this module's own lookup -- see module
+        # docstring's EXACT INTERPOLATION for why its generated shader
+        # text isn't used.
+        shader_text = _exact_lut3d_glsl(tex3d.samplerName, edge) + _domain_wrapper_glsl(lut.domain)
+        program = gsp.compile_ocio_program(shader_text)
+
         gl_texture = gl.glGenTextures(1)
         gl.glBindTexture(gl.GL_TEXTURE_3D, gl_texture)
-        gl.glTexParameteri(gl.GL_TEXTURE_3D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
-        gl.glTexParameteri(gl.GL_TEXTURE_3D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        # NEAREST: the shader fetches exact lattice points and blends
+        # them itself (EXACT INTERPOLATION).
+        gl.glTexParameteri(gl.GL_TEXTURE_3D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
+        gl.glTexParameteri(gl.GL_TEXTURE_3D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
         gl.glTexParameteri(gl.GL_TEXTURE_3D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
         gl.glTexParameteri(gl.GL_TEXTURE_3D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
         gl.glTexParameteri(gl.GL_TEXTURE_3D, gl.GL_TEXTURE_WRAP_R, gl.GL_CLAMP_TO_EDGE)

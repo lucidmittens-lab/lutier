@@ -109,11 +109,15 @@ First real-GPU run (2026-10-05) found, and fixed:
   kernel's `x == 0.0` guard missed a tiny nonzero x at texel centers,
   giving NaN. Now an epsilon guard.
 
-Still failing on NVIDIA, *not* fixed yet: 4 GPU LUT tests
-(`test_gpu_lut_shader.py`, `test_gpu_stack_renderer.py`'s LUT cases) at
-~1.1e-3 vs a 1e-3 tolerance. That's hardware trilinear filtering's
-~8-bit fixed-point weights on a deliberately rough random 9³ test LUT;
-Apple/llvmpipe filter in full float, so it never showed before.
+- **GPU LUT lookups ~1.1e-3 off on NVIDIA** -- hardware trilinear
+  filtering uses ~8-bit fixed-point weights (Apple/llvmpipe filter in
+  full float, so it never showed before). `gpu_lut_shader.py` now does
+  the trilinear blend itself from exact lattice fetches; GPU now matches
+  the CPU path to <1e-6.
+- **Launch size** -- GNOME/XWayland drops a maximize requested before
+  the window is mapped; `show_on_launch` re-requests it.
+- **MXF** wasn't an accepted import extension, and ARRI MXF reports no
+  `average_rate` (now falls back to `guessed_rate`).
 
 `requirements.txt` is already fully cross-platform (PySide6, pyqtgraph,
 PyOpenGL, scipy, colour-science, colour-clf-io, numpy, Pillow,
