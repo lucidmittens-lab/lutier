@@ -2086,7 +2086,9 @@ class SampleImagePanel(QWidget):
         "Load Default Source" menu action, which replaced the old Clear
         button) -- kept as a public method since clearing to nothing is still a
         reasonable thing for other code (e.g. a future session-load) to
-        want, just not a standalone user-facing action anymore."""
+        want, just not a standalone user-facing action anymore. Used by
+        MainWindow._new_session now that a new session starts empty."""
+        self._close_video_source()
         self._current_path = None
         self._original_array = None
         self._image_array = None

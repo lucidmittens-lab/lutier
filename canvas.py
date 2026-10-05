@@ -41,6 +41,15 @@ DEFAULT_HEIGHT = 1080
 DEFAULT_BIT_DEPTH = 8
 DEFAULT_PIXEL_ASPECT_RATIO = 1.0
 DEFAULT_FRAME_RATE = 24.0
+# The project's working color space (Tom, 2026-10-05: project setup asks
+# for "the edit rate, resolution, and working color space"). Not a
+# conversion applied to media -- sources are still used as decoded --
+# it's the space every new color-aware stage (Printer Lights, ACES/
+# CAMier DRT, WARPier, Keyer) starts out assuming its input is in, so
+# that choice is made once per project instead of once per stage. A name
+# from aces_drt.list_working_colourspaces(); ACEScct matches the old
+# per-stage defaults.
+DEFAULT_WORKING_COLOURSPACE = "ACEScct"
 
 
 @dataclass(frozen=True)
@@ -56,6 +65,7 @@ class CanvasSettings:
     bit_depth: object = DEFAULT_BIT_DEPTH
     pixel_aspect_ratio: float = DEFAULT_PIXEL_ASPECT_RATIO
     frame_rate: float = DEFAULT_FRAME_RATE
+    working_colourspace: str = DEFAULT_WORKING_COLOURSPACE
 
     def __post_init__(self):
         if self.bit_depth not in BIT_DEPTHS:
@@ -80,7 +90,8 @@ DEFAULT_CANVAS = CanvasSettings()
 replace_canvas = replace
 
 
-def canvas_from_first_media(width, height, frame_rate=None):
+def canvas_from_first_media(width, height, frame_rate=None,
+                            working_colourspace=DEFAULT_WORKING_COLOURSPACE):
     """The one auto-sync carve-out (see module docstring): called only
     when the FIRST still/video loads in a session AND the canvas is
     still untouched (`== DEFAULT_CANVAS`) -- seeds width/height/
@@ -90,13 +101,15 @@ def canvas_from_first_media(width, height, frame_rate=None):
     value that was never actually observed."""
     return CanvasSettings(
         width=width, height=height,
-        frame_rate=frame_rate if frame_rate is not None else DEFAULT_FRAME_RATE)
+        frame_rate=frame_rate if frame_rate is not None else DEFAULT_FRAME_RATE,
+        working_colourspace=working_colourspace)
 
 
 def canvas_to_session_dict(canvas):
     return {
         "width": canvas.width, "height": canvas.height, "bit_depth": canvas.bit_depth,
         "pixel_aspect_ratio": canvas.pixel_aspect_ratio, "frame_rate": canvas.frame_rate,
+        "working_colourspace": canvas.working_colourspace,
     }
 
 
@@ -111,4 +124,5 @@ def canvas_from_session_dict(data):
         bit_depth=data.get("bit_depth", DEFAULT_BIT_DEPTH),
         pixel_aspect_ratio=data.get("pixel_aspect_ratio", DEFAULT_PIXEL_ASPECT_RATIO),
         frame_rate=data.get("frame_rate", DEFAULT_FRAME_RATE),
+        working_colourspace=data.get("working_colourspace", DEFAULT_WORKING_COLOURSPACE),
     )

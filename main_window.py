@@ -218,7 +218,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDockWidget, QVBoxLayout, QHBoxLayout,
     QComboBox, QFileDialog, QMessageBox, QLabel, QCheckBox,
     QDialog, QTextBrowser, QDialogButtonBox, QToolButton, QColorDialog,
-    QSpinBox, QDoubleSpinBox, QPushButton, QProgressDialog,
+    QSpinBox, QDoubleSpinBox, QPushButton, QProgressDialog, QFormLayout,
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtGui import QAction, QKeySequence, QColor
@@ -243,6 +243,7 @@ import workspace_io
 import media_cache
 import stack as st
 import canvas as cv
+import aces_drt
 import timeline as tl
 import image_io
 import video_export
@@ -703,6 +704,92 @@ class _GpuVideoExportRunner(QObject):
         self.progress.emit(self._frame_index, self._total)
 
 
+class _ProjectSettingsForm(QWidget):
+    """The project fields -- resolution, bit depth, pixel aspect, edit
+    rate, working color space -- shared by File > Project Settings and
+    the New Project prompt. Width/height/PAR use enable_drag_to_scrub,
+    matching every other numeric field in this app."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        form = QFormLayout(self)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+
+        def row(label, widget):
+            form.addRow(label, widget)
+
+        self.width_spin = QSpinBox()
+        self.width_spin.setRange(1, 33000)
+        self.width_spin.setSuffix(" px")
+        enable_drag_to_scrub(self.width_spin)
+        row("Width", self.width_spin)
+
+        self.height_spin = QSpinBox()
+        self.height_spin.setRange(1, 33000)
+        self.height_spin.setSuffix(" px")
+        enable_drag_to_scrub(self.height_spin)
+        row("Height", self.height_spin)
+
+        self.bit_depth_combo = QComboBox()
+        for depth in cv.BIT_DEPTHS:
+            self.bit_depth_combo.addItem(cv.BIT_DEPTH_LABELS[depth], depth)
+        row("Bit Depth", self.bit_depth_combo)
+
+        self.par_spin = QDoubleSpinBox()
+        self.par_spin.setRange(0.01, 10.0)
+        self.par_spin.setDecimals(4)
+        self.par_spin.setSingleStep(0.01)
+        enable_drag_to_scrub(self.par_spin)
+        row("Pixel Aspect Ratio", self.par_spin)
+
+        # Editable -- FRAME_RATE_PRESETS back the dropdown, but any
+        # positive rate can be typed in (odd rates are real, e.g. 47.952).
+        self.frame_rate_combo = QComboBox()
+        self.frame_rate_combo.setEditable(True)
+        for rate in cv.FRAME_RATE_PRESETS:
+            self.frame_rate_combo.addItem(str(rate))
+        row("Edit Rate", self.frame_rate_combo)
+
+        self.working_space_combo = QComboBox()
+        if aces_drt.OCIO_AVAILABLE:
+            self.working_space_combo.addItems(aces_drt.list_working_colourspaces())
+        row("Working Color Space", self.working_space_combo)
+
+    def set_canvas(self, c):
+        self.width_spin.setValue(c.width)
+        self.height_spin.setValue(c.height)
+        idx = self.bit_depth_combo.findData(c.bit_depth)
+        if idx >= 0:
+            self.bit_depth_combo.setCurrentIndex(idx)
+        self.par_spin.setValue(c.pixel_aspect_ratio)
+        self.frame_rate_combo.setCurrentText(str(c.frame_rate))
+        idx = self.working_space_combo.findText(c.working_colourspace)
+        if idx < 0:  # a session saved with a space this config lacks
+            self.working_space_combo.addItem(c.working_colourspace)
+            idx = self.working_space_combo.count() - 1
+        self.working_space_combo.setCurrentIndex(idx)
+
+    def canvas_or_report_error(self, parent):
+        """The CanvasSettings these fields describe, or None after
+        showing what's wrong."""
+        text = self.frame_rate_combo.currentText()
+        try:
+            frame_rate = float(text)
+        except ValueError:
+            QMessageBox.critical(parent, "Invalid edit rate", f"{text!r} isn't a valid frame rate.")
+            return None
+        try:
+            return cv.CanvasSettings(
+                width=self.width_spin.value(), height=self.height_spin.value(),
+                bit_depth=self.bit_depth_combo.currentData(),
+                pixel_aspect_ratio=self.par_spin.value(), frame_rate=frame_rate,
+                working_colourspace=self.working_space_combo.currentText())
+        except ValueError as e:
+            QMessageBox.critical(parent, "Invalid project settings", str(e))
+            return None
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1004,6 +1091,9 @@ class MainWindow(QMainWindow):
         if self._using_default_dock_layout:
             self._settling_default_layout = True
             QTimer.singleShot(1000, self._finish_launch_settling)
+        # After the window has settled into its launch size, so the
+        # prompt centers over the real (maximized) window.
+        QTimer.singleShot(700, self._prompt_project_setup)
 
     def _ensure_launch_maximized(self):
         if not self.isMaximized():
@@ -1160,14 +1250,13 @@ class MainWindow(QMainWindow):
 
         # ---- center column: Viewer (top) / Stack (main area) -----------
         self.sample_image = SampleImagePanel()
-        # Canvas Settings (per Tom, 2026-08-13) -- must be set up and
-        # connected BEFORE restore_default_image() below, not after: that
-        # call is what loads this app's very first image (the bundled
-        # default), and it needs image_loaded already wired so THAT load
-        # gets the same "seed once, while still untouched" treatment as
-        # any later one (see canvas.py's docstring and
-        # _on_sample_image_loaded).
+        # Project canvas (Canvas Settings, per Tom 2026-08-13; Project
+        # Settings since 2026-10-05). _canvas_confirmed: the user has
+        # explicitly set it (Project Settings / New Project prompt / an
+        # opened session) -- until then the first media loaded seeds it,
+        # see _on_sample_image_loaded.
         self._canvas = cv.DEFAULT_CANVAS
+        self._canvas_confirmed = False
         self.sample_image.image_loaded.connect(self._on_sample_image_loaded)
         self._apply_canvas_to_viewer()
         # corner_widget=self.sample_image.menu_button -- the "..." menu now
@@ -1229,13 +1318,10 @@ class MainWindow(QMainWindow):
             lambda: self.timeline_panel.setEnabled(False))
         self.sample_image._timeline_controller.playback_stopped.connect(
             lambda: self.timeline_panel.setEnabled(True))
-        # Bundled default reference still, loaded Unmanaged (per Tom, same
-        # default every image gets) but with its declared source color
-        # space pre-filled in the Adapt dialog -- see
-        # SampleImagePanel.restore_default_image (same method backs the
-        # "..." menu's Default action, so a missing asset degrades the
-        # same way here as it would from that menu).
-        self.sample_image.restore_default_image()
+        # No image at launch (per Tom, 2026-10-05: "default to launching
+        # without the test image loaded") -- the New Project prompt comes
+        # up instead (show_on_launch). The bundled still is still one
+        # click away: the Viewer menu's "Load Default Source".
 
         # Media Library entries "apply" into one of the Viewer's two
         # image slots rather than adding a Stack stage (see
@@ -1497,7 +1583,7 @@ class MainWindow(QMainWindow):
         split as always (see session_io.py)."""
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("&File")
-        new_action = file_menu.addAction("New Session", self._new_session)
+        new_action = file_menu.addAction("New Session", self._new_session_from_menu)
         new_action.setShortcut(QKeySequence("Ctrl+N"))
         open_action = file_menu.addAction("Open Session...", self._open_session)
         open_action.setShortcut(QKeySequence("Ctrl+O"))
@@ -1507,11 +1593,12 @@ class MainWindow(QMainWindow):
         save_as_action = file_menu.addAction("Save Session As...", self._save_session_as)
         save_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
         file_menu.addSeparator()
-        # Canvas Settings... (per Tom, 2026-08-13) -- the project-level
-        # Resolution/Bit Depth/Pixel Aspect/Frame Rate target, see
-        # canvas.py's docstring. Lives right before Export since it's the
-        # OTHER file-level setting that shapes what gets produced.
-        file_menu.addAction("Canvas Settings...", self._show_canvas_settings_dialog)
+        # Project Settings... (was Canvas Settings, per Tom 2026-08-13) --
+        # the project-level resolution/bit depth/pixel aspect/edit rate/
+        # working color space, see canvas.py's docstring. Lives right
+        # before Export since it's the OTHER file-level setting that
+        # shapes what gets produced.
+        file_menu.addAction("Project Settings...", self._show_canvas_settings_dialog)
         file_menu.addSeparator()
         # Export... (⌘E, per Tom) -- opens _show_export_dialog rather than
         # exporting straight away, same "menu entry, not an inline action"
@@ -1682,8 +1769,9 @@ class MainWindow(QMainWindow):
         but only while the canvas is still untouched (`== DEFAULT_CANVAS`)
         -- after that, Canvas Settings is fully independent and this is a
         no-op for the rest of the session, even across further loads."""
-        if self._canvas == cv.DEFAULT_CANVAS:
-            self._canvas = cv.canvas_from_first_media(width, height)
+        if not self._canvas_confirmed and self._canvas == cv.DEFAULT_CANVAS:
+            self._canvas = cv.canvas_from_first_media(
+                width, height, working_colourspace=self._canvas.working_colourspace)
             self._apply_canvas_to_viewer()
 
     def _apply_canvas_to_viewer(self):
@@ -1698,6 +1786,7 @@ class MainWindow(QMainWindow):
         _open_session, _apply_canvas_settings)."""
         c = self._canvas
         self.sample_image.set_canvas_aspect_ratio((c.width * c.pixel_aspect_ratio) / c.height)
+        self.stack_panel.set_default_working_colourspace(c.working_colourspace)
 
     def _new_session(self):
         if (self.stack_panel.get_sequence_stack().stages
@@ -1716,7 +1805,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.Cancel,
             )
             if reply != QMessageBox.StandardButton.Yes:
-                return
+                return False
         # Floating state was never part of "the session" (see
         # get_workspace_state) -- New Session doesn't touch workspace
         # layout otherwise, so this is the one place that needs its own
@@ -1752,15 +1841,8 @@ class MainWindow(QMainWindow):
         self.stack_memories_panel.load_cdl_library(CDLLibrary())
         self.lut_library_panel.load_library(LUTLibrary())
         self.media_panel.load_library(MediaLibrary())
-        # Reset BEFORE restore_default_image() below, not after -- that
-        # call itself fires image_loaded, and it should be free to seed
-        # the fresh canvas from the default image's own dimensions the
-        # same as any other first-load-of-a-session would (see
-        # _on_sample_image_loaded). Explicit _apply_canvas_to_viewer here
-        # too (not just relying on that reseed) so the Viewer still resets
-        # to the default aspect ratio even if the default asset is
-        # missing and restore_default_image bails out early.
         self._canvas = cv.DEFAULT_CANVAS
+        self._canvas_confirmed = False
         # stop(), not pause() -- same "about to be replaced wholesale,
         # don't bother re-parking" reasoning as _close_video_source's own
         # use of _playback_controller.stop() -- also resets position back
@@ -1769,8 +1851,12 @@ class MainWindow(QMainWindow):
         self.sample_image._timeline_controller.stop()
         self.timeline_panel.load_timeline(tl.Timeline())
         self._apply_canvas_to_viewer()
-        self.sample_image.restore_default_image()
+        # Empty, like a fresh launch (no bundled test image) -- the menu
+        # path follows up with the New Project prompt, see
+        # _new_session_from_menu.
+        self.sample_image.clear()
         self._session_path = None
+        return True
 
     def _open_session(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1821,12 +1907,18 @@ class MainWindow(QMainWindow):
         self.media_panel.load_library(media_library)
         if sample_image_state is not None:
             self.sample_image.load_session_state(sample_image_state)
+        else:
+            # Saved with no Source loaded -- the norm since launch and New
+            # Session start empty. Without this, the previous session's
+            # image would stay in the Viewer under the new session.
+            self.sample_image.clear()
         # Set AFTER load_session_state above, not before -- reloading the
         # sample image fires image_loaded too, and this session's own
         # saved canvas (whatever it is) must win outright over any
         # incidental reseed-from-image-dimensions side effect of that
         # reload (see _on_sample_image_loaded).
         self._canvas = loaded_canvas
+        self._canvas_confirmed = True
         # Same "stop, don't re-park, reset position" reasoning as
         # _new_session's own use of this call, just above.
         self.sample_image._timeline_controller.stop()
@@ -2919,68 +3011,19 @@ class MainWindow(QMainWindow):
         show_floating(self._export_dialog)
 
     def _show_canvas_settings_dialog(self):
-        """File > Canvas Settings... (per Tom, 2026-08-13) -- same lazy-
-        built-cached-QDialog shape as _show_export_dialog. Widgets are
-        built once; every open re-populates them FROM self._canvas (not
-        the other way around -- Apply is the only thing that writes back),
-        so switching stages/sessions between opens never leaves stale
-        values on screen. Width/height/pixel_aspect_ratio use
-        enable_drag_to_scrub, matching every other numeric field in this
-        app (see stack_panel.py)."""
+        """File > Project Settings... (was Canvas Settings, Tom 2026-08-13;
+        renamed when the working color space joined it, 2026-10-05) --
+        same lazy-built-cached-QDialog shape as _show_export_dialog. The
+        fields are a _ProjectSettingsForm, shared with the New Project
+        prompt (_prompt_project_setup); every open re-populates it FROM
+        self._canvas, and Apply is the only thing that writes back."""
         if getattr(self, "_canvas_settings_dialog", None) is None:
             dialog = QDialog(self)
             make_floating_tool_window(dialog)
-            dialog.setWindowTitle("Canvas Settings")
-
+            dialog.setWindowTitle("Project Settings")
             outer = QVBoxLayout(dialog)
-
-            width_row = QHBoxLayout()
-            width_row.addWidget(QLabel("Width"))
-            self.canvas_width_spin = QSpinBox()
-            self.canvas_width_spin.setRange(1, 33000)
-            self.canvas_width_spin.setSuffix(" px")
-            enable_drag_to_scrub(self.canvas_width_spin)
-            width_row.addWidget(self.canvas_width_spin, stretch=1)
-            outer.addLayout(width_row)
-
-            height_row = QHBoxLayout()
-            height_row.addWidget(QLabel("Height"))
-            self.canvas_height_spin = QSpinBox()
-            self.canvas_height_spin.setRange(1, 33000)
-            self.canvas_height_spin.setSuffix(" px")
-            enable_drag_to_scrub(self.canvas_height_spin)
-            height_row.addWidget(self.canvas_height_spin, stretch=1)
-            outer.addLayout(height_row)
-
-            depth_row = QHBoxLayout()
-            depth_row.addWidget(QLabel("Bit Depth"))
-            self.canvas_bit_depth_combo = QComboBox()
-            for depth in cv.BIT_DEPTHS:
-                self.canvas_bit_depth_combo.addItem(cv.BIT_DEPTH_LABELS[depth], depth)
-            depth_row.addWidget(self.canvas_bit_depth_combo, stretch=1)
-            outer.addLayout(depth_row)
-
-            par_row = QHBoxLayout()
-            par_row.addWidget(QLabel("Pixel Aspect Ratio"))
-            self.canvas_par_spin = QDoubleSpinBox()
-            self.canvas_par_spin.setRange(0.01, 10.0)
-            self.canvas_par_spin.setDecimals(4)
-            self.canvas_par_spin.setSingleStep(0.01)
-            enable_drag_to_scrub(self.canvas_par_spin)
-            par_row.addWidget(self.canvas_par_spin, stretch=1)
-            outer.addLayout(par_row)
-
-            # Editable combo (per the approved plan) -- FRAME_RATE_PRESETS
-            # back the dropdown, but any positive rate can be typed in
-            # directly (odd/custom rates are real, e.g. 47.952).
-            rate_row = QHBoxLayout()
-            rate_row.addWidget(QLabel("Frame Rate"))
-            self.canvas_frame_rate_combo = QComboBox()
-            self.canvas_frame_rate_combo.setEditable(True)
-            for rate in cv.FRAME_RATE_PRESETS:
-                self.canvas_frame_rate_combo.addItem(str(rate))
-            rate_row.addWidget(self.canvas_frame_rate_combo, stretch=1)
-            outer.addLayout(rate_row)
+            self._project_settings_form = _ProjectSettingsForm()
+            outer.addWidget(self._project_settings_form)
 
             button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
             apply_button = button_box.addButton(
@@ -2991,43 +3034,69 @@ class MainWindow(QMainWindow):
 
             self._canvas_settings_dialog = dialog
 
-        c = self._canvas
-        self.canvas_width_spin.setValue(c.width)
-        self.canvas_height_spin.setValue(c.height)
-        idx = self.canvas_bit_depth_combo.findData(c.bit_depth)
-        if idx >= 0:
-            self.canvas_bit_depth_combo.setCurrentIndex(idx)
-        self.canvas_par_spin.setValue(c.pixel_aspect_ratio)
-        self.canvas_frame_rate_combo.setCurrentText(str(c.frame_rate))
+        self._project_settings_form.set_canvas(self._canvas)
         show_floating(self._canvas_settings_dialog)
 
     def _apply_canvas_settings(self):
-        """Canvas Settings' own "Apply" button -- the ONLY place
-        self._canvas is ever reassigned from user input (see canvas.py's
-        docstring on why it's otherwise independent of whatever media is
-        loaded). A bad frame-rate entry (unparseable text in the editable
-        combo) reports an error and leaves self._canvas untouched rather
-        than half-applying the other fields."""
-        try:
-            frame_rate = float(self.canvas_frame_rate_combo.currentText())
-        except ValueError:
-            QMessageBox.critical(
-                self, "Invalid frame rate",
-                f"{self.canvas_frame_rate_combo.currentText()!r} isn't a valid frame rate.")
+        """Project Settings' own "Apply" button. A bad entry (e.g. an
+        unparseable frame rate) reports an error and leaves self._canvas
+        untouched rather than half-applying the other fields."""
+        canvas = self._project_settings_form.canvas_or_report_error(self)
+        if canvas is None:
             return
-        try:
-            self._canvas = cv.CanvasSettings(
-                width=self.canvas_width_spin.value(),
-                height=self.canvas_height_spin.value(),
-                bit_depth=self.canvas_bit_depth_combo.currentData(),
-                pixel_aspect_ratio=self.canvas_par_spin.value(),
-                frame_rate=frame_rate,
-            )
-        except ValueError as e:
-            QMessageBox.critical(self, "Invalid canvas settings", str(e))
-            return
-        self._apply_canvas_to_viewer()
+        self._set_project_canvas(canvas)
         self._canvas_settings_dialog.close()
+
+    def _set_project_canvas(self, canvas):
+        """Every user-confirmed project canvas lands here (Project
+        Settings Apply, the New Project prompt). Marks it confirmed so
+        the first-loaded media no longer reseeds it -- see
+        _on_sample_image_loaded."""
+        self._canvas = canvas
+        self._canvas_confirmed = True
+        self._apply_canvas_to_viewer()
+
+    def _prompt_project_setup(self):
+        """The New Project prompt (Tom, 2026-10-05: "default to launching
+        without the test image loaded and prompting for a project setup
+        with the edit rate, resolution, and working color space"). Shown
+        at launch (show_on_launch) and after File > New Session -- never
+        from _new_session itself, which tests and other callers use as a
+        plain reset. Cancel keeps the defaults; "Open Session..." skips
+        setup in favour of a saved session, whose own canvas wins."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("New Project")
+        outer = QVBoxLayout(dialog)
+        form = _ProjectSettingsForm()
+        form.set_canvas(self._canvas)
+        outer.addWidget(form)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        create_button = button_box.addButton(
+            "Create Project", QDialogButtonBox.ButtonRole.AcceptRole)
+        open_button = button_box.addButton(
+            "Open Session...", QDialogButtonBox.ButtonRole.ActionRole)
+        create_button.setDefault(True)
+
+        def create():
+            canvas = form.canvas_or_report_error(dialog)
+            if canvas is not None:
+                self._set_project_canvas(canvas)
+                dialog.accept()
+
+        def open_session():
+            dialog.reject()
+            QTimer.singleShot(0, self._open_session)
+
+        create_button.clicked.connect(create)
+        open_button.clicked.connect(open_session)
+        button_box.rejected.connect(dialog.reject)
+        outer.addWidget(button_box)
+        dialog.exec()
+
+    def _new_session_from_menu(self):
+        if self._new_session():
+            self._prompt_project_setup()
 
     def _show_export_video_dialog(self):
         """File > Export Video... (per Tom, 2026-08-13) -- same lazy-

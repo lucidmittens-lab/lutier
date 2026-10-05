@@ -1549,6 +1549,10 @@ class StackPanel(QObject):
         # clears it, since a wholesale-replaced Stack has nothing in
         # common with whatever was cached for the old one.
         self._bake_cache = st.StageCache()
+        # The project's working color space (MainWindow pushes it from
+        # the canvas, see set_default_working_colourspace) -- what every
+        # newly added color-aware stage starts out assuming.
+        self._default_working_colourspace = DEFAULT_WORKING_COLOURSPACE
         self.list_widget_area = QWidget()
         self.params_widget_area = QWidget()
         self._build_list_ui()
@@ -2626,9 +2630,15 @@ class StackPanel(QObject):
         stage.params["source_kind"] = "embedded"
         self._add_stage(stage, index=index)
 
+    def set_default_working_colourspace(self, name):
+        """Project Settings' working color space -- applies to stages
+        added from now on; existing stages keep whatever they were set
+        to (each one's own Working Color Space combo still overrides)."""
+        self._default_working_colourspace = name
+
     def _on_add_printer_lights_clicked(self):
         stage = st.make_printer_lights_stage(
-            0, 0, 0, working_colourspace=DEFAULT_WORKING_COLOURSPACE)
+            0, 0, 0, working_colourspace=self._default_working_colourspace)
         self._add_stage(stage)
 
     def _on_add_aces_drt_clicked(self):
@@ -2636,23 +2646,19 @@ class StackPanel(QObject):
             return
         config_name = aces_drt.DEFAULT_CONFIG_NAME
         display, view = aces_drt.get_default_display_and_view(config_name)
-        stage = st.make_aces_drt_stage("ACES2065-1", display, view, config_name=config_name)
+        stage = st.make_aces_drt_stage(self._default_working_colourspace, display, view,
+                                       config_name=config_name)
         self._add_stage(stage)
 
     def _on_add_custom_drt_clicked(self):
         if not aces_drt.OCIO_AVAILABLE:
             return
-        # "ACEScct", not aces_drt's own "ACES2065-1" default -- matches
-        # DEFAULT_SAMPLE_IMAGE_SOURCE_COLOURSPACE (app_logic.py), the
-        # declared encoding of the bundled default sample image every
-        # CAMier render in the design/validation pass was checked
-        # against. Getting this wrong doesn't error -- it just silently
-        # reinterprets log-encoded values as if they were already linear,
-        # producing a real but wrong-looking result (confirmed: mean
-        # output shifts from 0.40 to 0.59 on the bundled image). Still
-        # just a starting point -- change the Working Color Space combo
-        # to match whatever's actually loaded.
-        stage = st.make_custom_drt_stage("ACEScct")
+        # The project working space (ACEScct by default, the bundled
+        # sample image's encoding). Getting this wrong doesn't error --
+        # it silently reinterprets log-encoded values as linear (mean
+        # output 0.40 -> 0.59 on the bundled image) -- which is why it's
+        # a project-level choice now, not a per-stage hardcode.
+        stage = st.make_custom_drt_stage(self._default_working_colourspace)
         self._add_stage(stage)
 
     def _on_add_cdl_clicked(self):
@@ -2704,11 +2710,11 @@ class StackPanel(QObject):
         self._add_stage(stage)
 
     def _on_add_color_warper_clicked(self):
-        stage = st.make_color_warper_stage(working_colourspace=cw.DEFAULT_WORKING_COLOURSPACE)
+        stage = st.make_color_warper_stage(working_colourspace=self._default_working_colourspace)
         self._add_stage(stage)
 
     def _on_add_keyer_clicked(self):
-        stage = st.make_keyer_stage()
+        stage = st.make_keyer_stage(working_colourspace=self._default_working_colourspace)
         self._add_stage(stage)
 
     def _on_add_matte_combine_clicked(self):

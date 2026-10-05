@@ -24,6 +24,7 @@ from PySide6.QtWidgets import QApplication
 
 import main_window as main_window_module
 import workspace_io
+import canvas as cv
 from main_window import MainWindow
 
 # Same redirect-for-the-duration-of-tests discipline test_gl_reparent_
@@ -133,10 +134,60 @@ def test_new_session_cancels_a_pending_debounced_push():
           "than letting it land on the fresh history -- OK")
 
 
+def test_launch_and_new_session_start_without_an_image_and_unconfirmed_canvas():
+    """Per Tom (2026-10-05): no bundled test image at launch or after New
+    Session -- the New Project prompt sets the project up instead. Until
+    it's confirmed, the first loaded media still seeds the canvas, and
+    the project working space reaches the Stack panel."""
+    _app()
+    win = MainWindow()
+    try:
+        assert win.sample_image.current_path is None
+        assert not win._canvas_confirmed
+        win._set_project_canvas(cv.CanvasSettings(width=4096, height=2160,
+                                                  working_colourspace="ARRI LogC4"))
+        assert win.stack_panel._default_working_colourspace == "ARRI LogC4"
+        win._on_sample_image_loaded(1920, 1080)
+        assert win._canvas.width == 4096, "a confirmed project canvas must not be reseeded"
+
+        assert win._new_session() is True
+        assert win.sample_image.current_path is None
+        assert win._canvas == cv.DEFAULT_CANVAS and not win._canvas_confirmed
+    finally:
+        win.close()
+    print("MainWindow: launch/New Session start with no image and an "
+          "unconfirmed default canvas -- OK")
+
+
+def test_opening_a_session_saved_without_an_image_clears_the_viewer():
+    """A session saved with no Source (the norm now that launch starts
+    empty) must not leave the previous session's image in the Viewer."""
+    _app()
+    path = str(Path(_workspace_tmp_dir.name) / "no_image.ltr")
+    win = MainWindow()
+    try:
+        win._write_session(path)
+        win.sample_image.restore_default_image()
+        assert win.sample_image.current_path is not None
+        original = main_window_module.QFileDialog.getOpenFileName
+        main_window_module.QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (path, ""))
+        try:
+            win._open_session()
+        finally:
+            main_window_module.QFileDialog.getOpenFileName = original
+        assert win.sample_image.current_path is None
+    finally:
+        win.close()
+    print("MainWindow: opening a session saved without an image clears the "
+          "Viewer -- OK")
+
+
 if __name__ == "__main__":
     test_rapid_stack_changes_coalesce_into_one_debounced_push()
     test_undo_flushes_a_pending_debounced_push_first()
     test_redo_flushes_a_pending_debounced_push_first()
     test_new_session_cancels_a_pending_debounced_push()
+    test_launch_and_new_session_start_without_an_image_and_unconfirmed_canvas()
+    test_opening_a_session_saved_without_an_image_clears_the_viewer()
     print()
     print("All undo-debounce tests passed.")

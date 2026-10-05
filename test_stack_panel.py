@@ -2215,6 +2215,26 @@ def test_matte_shape_is_offered_as_a_matte_option_downstream():
           "upstream 'matte_shape' stage's own current letter -- OK")
 
 
+def test_new_color_aware_stages_start_in_the_project_working_colourspace():
+    """Project Settings' working color space (MainWindow pushes it via
+    set_default_working_colourspace) is what every newly added
+    color-aware stage starts out assuming."""
+    _app()
+    panel = StackPanel()
+    panel.set_default_working_colourspace("ARRI LogC4")
+    panel._on_add_printer_lights_clicked()
+    panel._on_add_aces_drt_clicked()
+    panel._on_add_custom_drt_clicked()
+    panel._on_add_color_warper_clicked()
+    panel._on_add_keyer_clicked()
+    spaces = {stage.kind: stage.params["working_colourspace"]
+              for stage in panel.get_sequence_stack().stages}
+    assert spaces == {kind: "ARRI LogC4" for kind in
+                      ("printer_lights", "aces_drt", "custom_drt", "color_warper", "keyer")}, spaces
+    print("StackPanel: new color-aware stages start in the project working "
+          "color space -- OK")
+
+
 if __name__ == "__main__":
     test_short_text_that_fits_is_not_elided_and_has_no_tooltip()
     test_long_text_at_narrow_width_is_elided_with_ellipsis_and_gets_a_tooltip()
@@ -2340,5 +2360,6 @@ if __name__ == "__main__":
     test_matte_shape_highlight_checkbox_toggles_get_highlight_stage_id()
     test_matte_shape_refresh_on_select_does_not_corrupt_stored_values()
     test_matte_shape_is_offered_as_a_matte_option_downstream()
+    test_new_color_aware_stages_start_in_the_project_working_colourspace()
     print()
     print("All stack_panel tests passed.")

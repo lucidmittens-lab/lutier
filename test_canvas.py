@@ -89,6 +89,19 @@ def test_session_dict_from_partial_data_fills_in_defaults():
     print("canvas_from_session_dict: missing keys fall back to defaults individually -- OK")
 
 
+def test_working_colourspace_defaults_round_trips_and_survives_first_media_seed():
+    assert cv.DEFAULT_CANVAS.working_colourspace == "ACEScct"
+    canvas = cv.CanvasSettings(working_colourspace="ARRI LogC4")
+    rebuilt = cv.canvas_from_session_dict(cv.canvas_to_session_dict(canvas))
+    assert rebuilt.working_colourspace == "ARRI LogC4"
+    # A session saved before the field existed loads with the default.
+    assert cv.canvas_from_session_dict({"width": 4096}).working_colourspace == "ACEScct"
+    seeded = cv.canvas_from_first_media(3840, 2160, working_colourspace="ARRI LogC4")
+    assert seeded.working_colourspace == "ARRI LogC4"
+    print("CanvasSettings.working_colourspace: defaults to ACEScct, round-trips "
+          "through the session dict, survives a first-media seed -- OK")
+
+
 if __name__ == "__main__":
     test_default_canvas_matches_documented_defaults()
     test_canvas_settings_rejects_unknown_bit_depth()
@@ -99,5 +112,6 @@ if __name__ == "__main__":
     test_session_dict_round_trips()
     test_session_dict_from_none_or_empty_returns_default()
     test_session_dict_from_partial_data_fills_in_defaults()
+    test_working_colourspace_defaults_round_trips_and_survives_first_media_seed()
     print()
     print("All canvas tests passed.")
