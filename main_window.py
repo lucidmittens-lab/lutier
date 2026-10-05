@@ -231,6 +231,9 @@ from timeline_panel import TimelinePanel
 from sample_image_panel import SampleImagePanel
 from stack_panel import StackPanel
 from bake_settings_form import BakeSettingsForm, describe_bake_settings
+from source_viewer import SourceViewerPanel
+import timeline as tl
+import timecode
 from scopes_panel import ScopesPanel
 from lut_viewer_3d import LutViewer3D
 from panel_frame import PanelFrame
@@ -304,7 +307,7 @@ PANEL_TOGGLES_LEFT = [
     ("stack_memories_toggle", "Galleries", "stack_memories_frame", True),
 ]
 PANEL_TOGGLES_CENTER = [
-    ("sample_image_toggle", "Viewer", "sample_image_frame", True),
+    ("sample_image_toggle", "Record", "sample_image_frame", True),
     ("stack_toggle", "Stack", "stack_frame", True),
 ]
 PANEL_TOGGLES_RIGHT = [
@@ -318,6 +321,10 @@ PANEL_TOGGLES_RIGHT = [
 # instead of bumping every existing Shift+1..9 assignment down by one.
 PANEL_TOGGLES_TIMELINE = [
     ("timeline_toggle", "Timeline", "timeline_frame", True),
+    # Source viewer (Tom, 2026-10-05: "we must have both source and record
+    # windows") -- appended last so every existing Shift+N panel toggle
+    # keeps its number.
+    ("source_viewer_toggle", "Source", "source_viewer_frame", True),
 ]
 PANEL_TOGGLES = (
     PANEL_TOGGLES_LEFT + PANEL_TOGGLES_CENTER + PANEL_TOGGLES_RIGHT + PANEL_TOGGLES_TIMELINE)
@@ -1049,7 +1056,33 @@ class MainWindow(QMainWindow):
         self.splitDockWidget(self.stack_params_frame, self.scopes_frame, Qt.Orientation.Vertical)
         self.splitDockWidget(self.scopes_frame, self.viewer_3d_frame, Qt.Orientation.Vertical)
 
+        # Source beside Record -- split AFTER the center column's vertical
+        # splits, so the two viewers share the top of the column and Stack/
+        # Timeline span both underneath.
+        self._place_source_viewer_beside_record()
+
         self._apply_default_dock_proportions()
+
+    def _place_source_viewer_beside_record(self):
+        """Source to the LEFT of Record (the Avid/Resolve convention), half
+        each. splitDockWidget only puts the second dock to the right of the
+        first, so Record is re-split off Source afterwards."""
+        # Widths BEFORE the split: Record's is shared between the two
+        # viewers, and the outer columns keep theirs (Qt otherwise takes
+        # the new dock's room from them).
+        total = self.sample_image_frame.width()
+        outer = [(d, d.width()) for d in (self.browser_frame, self.stack_params_frame)
+                 if d.isVisible() and not d.isFloating()]
+        self.splitDockWidget(self.sample_image_frame, self.source_viewer_frame, Qt.Orientation.Horizontal)
+        self.splitDockWidget(self.source_viewer_frame, self.sample_image_frame, Qt.Orientation.Horizontal)
+        self.source_viewer_frame.setVisible(True)
+        half = max(1, total // 2)
+        docks = [d for d, _ in outer] + [self.source_viewer_frame, self.sample_image_frame]
+        widths = [w for _, w in outer] + [half, half]
+        # A tick later: right after a split Qt hasn't laid the new dock out
+        # yet, and resizing now works from stale sizes (measured: Source
+        # took Record's whole width and the window grew past the screen).
+        QTimer.singleShot(0, lambda: self.resizeDocks(docks, widths, Qt.Orientation.Horizontal))
 
     def _apply_default_dock_proportions(self):
         """Size the default columns (and each column's panels) to the
@@ -1269,8 +1302,14 @@ class MainWindow(QMainWindow):
         # sits on the SAME row as the "Viewer" title (per Tom) instead of
         # its own row underneath; see panel_frame.py / sample_image_panel.py.
         self._make_dock(
-            "sample_image_frame", "Viewer", self.sample_image,
+            "sample_image_frame", "Record", self.sample_image,
             corner_widget=self.sample_image.menu_button)
+        # The Source viewer: the clip loaded from Media Libraries, ungraded,
+        # with its own transport and Insert/Overwrite/Append into the
+        # timeline (source_viewer.py). Record (above) is the grading monitor.
+        self.source_viewer = SourceViewerPanel()
+        self.source_viewer.edit_requested.connect(self._on_source_edit_requested)
+        self._make_dock("source_viewer_frame", "Source", self.source_viewer)
         # SampleImagePanel previews the live stack directly (no baking --
         # exact per-pixel apply, see stack.apply_stack_to_image_array),
         # re-rendering on every stack_changed the same way it used to for
@@ -1339,6 +1378,7 @@ class MainWindow(QMainWindow):
         # until this point in the method.
         self.media_panel.load_as_sample_requested.connect(
             self.sample_image.load_sample_from_library_entry)
+        self.media_panel.open_in_source_requested.connect(self._open_in_source_viewer)
         self.media_panel.load_as_reference_requested.connect(
             self.sample_image.load_reference_from_library_entry)
         self.media_panel.add_to_timeline_requested.connect(
@@ -1737,6 +1777,11 @@ class MainWindow(QMainWindow):
 
         viewer_menu = menu_bar.addMenu("Viewer")
         self.sample_image.populate_menu(viewer_menu)
+        viewer_menu.addSeparator()
+        # Match Frame (Avid/Resolve: F) -- the clip under Record's playhead
+        # into the Source viewer on the same source frame.
+        match_action = viewer_menu.addAction("Match Frame", self.match_frame)
+        match_action.setShortcut(QKeySequence("F"))
 
         stack_menu = menu_bar.addMenu("Stack")
         self.stack_panel.populate_menu(stack_menu)
@@ -2484,6 +2529,11 @@ class MainWindow(QMainWindow):
         except (ValueError, TypeError):
             return
         self.restoreState(QByteArray(raw))
+        # A layout saved before the Source viewer existed doesn't mention
+        # it (saveState stores each dock's objectName as UTF-16) -- put it
+        # beside Record rather than wherever the default layout left it.
+        if "source_viewer_frame".encode("utf-16-be") not in raw:
+            self._place_source_viewer_beside_record()
         self._snapshot_all_docked_state()
 
     def _reset_workspace_to_default(self):
@@ -2934,6 +2984,51 @@ class MainWindow(QMainWindow):
         except KeyError:
             return
         self.timeline_panel.insert_clip_from_library_entry_at(entry, index)
+
+    def _open_in_source_viewer(self, entry):
+        self.source_viewer_frame.setVisible(True)
+        self.source_viewer_frame.raise_()
+        self.source_viewer.load_entry(entry)
+
+    def _on_source_edit_requested(self, mode, spec):
+        """Source viewer's Insert / Overwrite / Append: the marked range of
+        the Source clip into the loaded timeline (a new one is made in the
+        current library if none is loaded), at Record's playhead."""
+        timeline_obj = self.timeline_panel.get_timeline()
+        if timeline_obj is None:
+            self.media_panel.new_timeline()
+            timeline_obj = self.timeline_panel.get_timeline()
+            if timeline_obj is None:
+                return
+        in_frame, out_frame = spec["in_frame"], spec["out_frame"]
+        if spec["kind"] != "video":
+            in_frame, out_frame = 0, self.timeline_panel.still_hold_out_frame()
+        clip = tl.TimelineClip(spec["name"], spec["path"], spec["kind"], in_frame, out_frame,
+                               thumbnail=spec.get("thumbnail"))
+        record_frame = self.sample_image._timeline_controller.current_record_frame() or 0
+        self.timeline_panel.apply_edit(mode, clip, record_frame)
+
+    def match_frame(self):
+        """Match Frame (F): load the clip under Record's playhead into the
+        Source viewer, on the same source frame."""
+        controller = self.sample_image._timeline_controller
+        timeline_obj = self.timeline_panel.get_timeline()
+        record_frame = controller.current_record_frame()
+        if timeline_obj is None or not timeline_obj.clips or record_frame is None:
+            return
+        clip_index, offset = controller._locate_record_frame(timeline_obj, record_frame)
+        clip = timeline_obj.clips[clip_index]
+        start_frame = 0
+        for library in self.media_panel.get_pool().libraries:
+            entry = next((e for e in library.entries if e.source_path == clip.source_path), None)
+            if entry is not None:
+                tc = entry.metadata.get("start_timecode")
+                start_frame = timecode.timecode_to_frames(tc, entry.frame_rate or 0) or 0 if tc else 0
+                break
+        self.source_viewer_frame.setVisible(True)
+        self.source_viewer.load_path(clip.source_path, clip.media_kind, clip.name,
+                                     frame_index=clip.in_frame + offset, start_frame=start_frame,
+                                     thumbnail=clip.thumbnail)
 
     def _load_timeline(self, timeline):
         """Open `timeline` (a Media Library timeline, or None to unload) in

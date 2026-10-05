@@ -793,7 +793,7 @@ def test_viewer_defaults_to_source_mode():
     _app()
     panel = SampleImagePanel()
     assert panel._viewer_mode == "source"
-    assert panel._viewer_mode_badge.text() == "SOURCE"
+    assert panel._viewer_mode_badge.text() == sample_image_panel_module.MODE_LABELS["source"]
     assert panel._viewer_mode_frame.property("viewerMode") == "source"
     print("SampleImagePanel: the Viewer defaults to SOURCE mode -- OK")
 
@@ -810,7 +810,7 @@ def test_viewer_mode_toggle_button_is_a_manual_switch_not_play_driven():
 
     panel._viewer_mode_badge.setChecked(True)
     assert panel._viewer_mode == "record"
-    assert panel._viewer_mode_badge.text() == "RECORD"
+    assert panel._viewer_mode_badge.text() == sample_image_panel_module.MODE_LABELS["record"]
     assert panel._viewer_mode_frame.property("viewerMode") == "record"
 
     # Playing and pausing must not touch the toggle -- this is the
@@ -823,7 +823,7 @@ def test_viewer_mode_toggle_button_is_a_manual_switch_not_play_driven():
 
     panel._viewer_mode_badge.setChecked(False)
     assert panel._viewer_mode == "source"
-    assert panel._viewer_mode_badge.text() == "SOURCE"
+    assert panel._viewer_mode_badge.text() == sample_image_panel_module.MODE_LABELS["source"]
     print("SampleImagePanel: the SOURCE/RECORD toggle is a manual "
           "switch, unaffected by play/pause -- OK")
 
@@ -899,7 +899,7 @@ def test_activate_record_mode_switches_from_source_and_pauses_it():
 
     assert panel._viewer_mode == "record"
     assert panel._viewer_mode_badge.isChecked()
-    assert panel._viewer_mode_badge.text() == "RECORD"
+    assert panel._viewer_mode_badge.text() == sample_image_panel_module.MODE_LABELS["record"]
     assert not panel._playback_controller.is_playing, "leaving SOURCE mid-playback must pause it"
     print("SampleImagePanel.activate_record_mode: switches to RECORD and "
           "pauses SOURCE playback -- OK")

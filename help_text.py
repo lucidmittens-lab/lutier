@@ -132,6 +132,33 @@ way a session's Stack is (see `session_io.py`); a CDL entry's underlying
 SOP/SAT values are the same `cdl.py` structures a CDL stage in the Stack
 uses (see **ASC CDL** under **Stack → Operators** below).
 
+## Source and Record
+
+Two viewers, side by side like an edit suite. **Source** (left) shows the
+clip you double-clicked in Media Libraries, ungraded, with its own
+transport; **Record** (right, the panel described under Viewer below) is
+the grading monitor — wipes, Scopes, Highlight and the color picker all
+follow it.
+
+In Source, mark In (I) and Out (O), then **Insert** (F9), **Overwrite**
+(F10) or **Append** (Shift+F12) the marked range into the loaded
+timeline at Record's playhead (a timeline is created in the current
+library if none is loaded). **Match Frame** (F, Viewer menu) loads the
+clip under Record's playhead into Source on the same frame.
+
+Both viewers: **J/K/L** shuttle (L or J again for 2×/4×/8×, K stops, K
+held + J/L steps a frame), Space play/pause, ←/→ one frame. Click a
+timecode, type and press Enter to jump: a full timecode, a partial one
+(replaces the right-hand digits — `1000` is 10s 00f), or `+`/`-` an
+offset (`+200` is two seconds on). Record's badge switches between
+**CLIP** (grade a single image or clip, no timeline needed) and
+**TIMELINE**.
+
+**Source:** `source_viewer.py`, `transport_logic.py`,
+`transport_icons.py`; edits are `timeline.py`'s
+`insert_clip_at_record_frame` / `overwrite_clip_at_record_frame` /
+`append_clip`.
+
 ## Viewer
 
 The source image preview, before/after wipe compare. Two roles:

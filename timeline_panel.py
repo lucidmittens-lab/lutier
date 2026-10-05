@@ -448,6 +448,24 @@ class TimelinePanel(QWidget):
         inserted_index = index if index is not None else len(self.timeline.clips) - 1
         self._refresh_list(keep_selection=inserted_index)
 
+    def still_hold_out_frame(self):
+        """out_frame for a still added at the default hold duration."""
+        rate = self.timeline.frame_rate if self.timeline is not None else tl.DEFAULT_FRAME_RATE
+        return max(0, int(round(DEFAULT_STILL_HOLD_SECONDS * rate)) - 1)
+
+    def apply_edit(self, mode, clip, record_frame):
+        """Source viewer edits: "insert" / "overwrite" at `record_frame`, or
+        "append" -- see timeline.Timeline's own methods. Selects the new clip."""
+        if self.timeline is None:
+            return
+        if mode == "insert":
+            index = self.timeline.insert_clip_at_record_frame(clip, record_frame)
+        elif mode == "overwrite":
+            index = self.timeline.overwrite_clip_at_record_frame(clip, record_frame)
+        else:
+            index = self.timeline.append_clip(clip)
+        self._refresh_list(keep_selection=index)
+
     def _on_rename_clicked(self):
         clip = self._selected_clip()
         if clip is None:

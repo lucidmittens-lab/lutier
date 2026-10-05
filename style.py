@@ -979,8 +979,21 @@ QToolButton#chooseFolderButton:hover {{
    digits don't jitter the label's own width as they change every tick
    during playback, same reason any numeric readout that updates in
    place wants a fixed-width face. */
-QLabel#videoTimecodeLabel {{
+QLabel#videoTimecodeLabel, QLineEdit#videoTimecodeLabel, QLineEdit#viewerTimecode {{
     font-family: Menlo, Consolas, monospace;
+}}
+
+/* Timecode readouts you can type into (sample_image_panel._TimecodeField,
+   source_viewer's TC field): look like labels until focused. */
+QLineEdit#videoTimecodeLabel, QLineEdit#viewerTimecode {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    padding: 1px 4px;
+}}
+QLineEdit#videoTimecodeLabel:focus, QLineEdit#viewerTimecode:focus {{
+    background: {_DARK_BASE};
+    border-color: palette(highlight);
 }}
 
 /* EDL sub-panel text (timeline_panel.py, per Tom: "add an EDL expression

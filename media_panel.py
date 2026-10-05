@@ -444,7 +444,8 @@ class _MediaTable(QTableWidget):
 
 
 class MediaPanel(QWidget):
-    load_as_sample_requested = Signal(object)      # a media_library.MediaEntry
+    load_as_sample_requested = Signal(object)      # a media_library.MediaEntry -- grade it in Record
+    open_in_source_requested = Signal(object)      # a media_library.MediaEntry -- view it in Source
     load_as_reference_requested = Signal(object)   # a media_library.MediaEntry
     add_to_timeline_requested = Signal(object)     # a media_library.MediaEntry
 
@@ -628,7 +629,8 @@ class MediaPanel(QWidget):
             menu.addAction("Delete", self._on_delete_clicked)
             menu.exec(self.table.viewport().mapToGlobal(pos))
             return
-        menu.addAction("Load as Source", self._on_load_as_sample_clicked)
+        menu.addAction("Open in Source Viewer", self._on_open_in_source_clicked)
+        menu.addAction("Grade in Record (no timeline)", self._on_load_as_sample_clicked)
         menu.addAction("Load as Reference", self._on_load_as_reference_clicked)
         menu.addAction("Add to Timeline", self._on_add_to_timeline_clicked)
         menu.addSeparator()
@@ -927,6 +929,11 @@ class MediaPanel(QWidget):
 
     # ---- load as sample/reference / rename / delete ----------------------
 
+    def _on_open_in_source_clicked(self, *_args):
+        entry = self._selected_entry()
+        if entry is not None:
+            self.open_in_source_requested.emit(entry)
+
     def _on_load_as_sample_clicked(self, *_args):
         entry = self._selected_entry()
         if entry is None:
@@ -1037,7 +1044,7 @@ class MediaPanel(QWidget):
         if timeline is not None:
             self.timeline_load_requested.emit(timeline)
         else:
-            self._on_load_as_sample_clicked()
+            self._on_open_in_source_clicked()
 
     def set_frame_rate_getter(self, getter):
         """`getter()` -> the frame rate a New Timeline starts at (MainWindow:

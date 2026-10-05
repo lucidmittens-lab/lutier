@@ -311,6 +311,39 @@ def test_timelines_load_from_and_unload_to_the_media_library():
           "and the open one survives save/open -- OK")
 
 
+def test_source_viewer_edits_land_at_the_record_playhead_and_match_frame_finds_them():
+    """Source/Record (Tom, 2026-10-05): Append/Insert/Overwrite from the
+    Source viewer edit the loaded timeline (creating one if none is
+    loaded) at Record's playhead; Match Frame loads the clip under the
+    playhead into Source on the same source frame."""
+    _app()
+    clip_path = str(Path(_workspace_tmp_dir.name) / "source_edit.mov")
+    _write_prores_mov(clip_path)  # 3 frames
+    win = MainWindow()
+    try:
+        assert win.timeline_panel.get_timeline() is None
+        spec = {"name": "Shot", "path": clip_path, "kind": "video",
+                "in_frame": 0, "out_frame": 2, "thumbnail": None}
+        win._on_source_edit_requested("append", spec)
+        timeline_obj = win.timeline_panel.get_timeline()
+        assert timeline_obj is not None and [c.frame_count for c in timeline_obj.clips] == [3]
+        win._on_source_edit_requested("append", dict(spec, name="Second"))
+        # Record playhead to frame 1, then insert a one-frame piece there.
+        win.sample_image._timeline_controller.seek_to_record_frame(1)
+        win._on_source_edit_requested("insert", dict(spec, name="Inserted", in_frame=2, out_frame=2))
+        assert [(c.name, c.frame_count) for c in timeline_obj.clips] == [
+            ("Shot", 1), ("Inserted", 1), ("Shot", 2), ("Second", 3)]
+
+        win.sample_image._timeline_controller.seek_to_record_frame(1)
+        win.match_frame()
+        assert win.source_viewer.player.path == clip_path
+        assert win.source_viewer.player.frame_index == 2  # the Inserted piece is source frame 2
+    finally:
+        win.close()
+    print("MainWindow: Source edits land at Record's playhead; Match Frame "
+          "finds the source frame -- OK")
+
+
 if __name__ == "__main__":
     test_rapid_stack_changes_coalesce_into_one_debounced_push()
     test_undo_flushes_a_pending_debounced_push_first()
@@ -322,5 +355,6 @@ if __name__ == "__main__":
     test_fork_structure_error_is_reported_without_a_bake()
     test_export_bakes_at_the_session_settings_and_they_follow_the_session()
     test_timelines_load_from_and_unload_to_the_media_library()
+    test_source_viewer_edits_land_at_the_record_playhead_and_match_frame_finds_them()
     print()
     print("All undo-debounce tests passed.")

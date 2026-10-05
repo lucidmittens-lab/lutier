@@ -208,6 +208,56 @@ class Timeline:
             running += clip.frame_count
         return None
 
+    # ---- edits from the Source viewer (Tom, 2026-10-05: source and record
+    # windows) -- Insert, Overwrite and Append, the three NLE basics. The
+    # timeline stays a gapless single track, so each one is expressed with
+    # splits at the edit point(s) plus list surgery.
+
+    def _index_at_record_frame(self, record_frame):
+        """Index of the clip boundary at `record_frame`, splitting the clip
+        it falls inside if needed (a frame past the end -> len(clips))."""
+        if record_frame <= 0:
+            return 0
+        self.split_clip_at_record_frame(record_frame)
+        running = 0
+        for index, clip in enumerate(self.clips):
+            if running >= record_frame:
+                return index
+            running += clip.frame_count
+        return len(self.clips)
+
+    def insert_clip_at_record_frame(self, clip, record_frame):
+        """Insert edit: `clip` goes in at `record_frame` (splitting the
+        clip there) and everything after moves later. Returns its index."""
+        index = self._index_at_record_frame(record_frame)
+        self.clips.insert(index, clip)
+        return index
+
+    def overwrite_clip_at_record_frame(self, clip, record_frame):
+        """Overwrite edit: `clip` replaces exactly its own duration from
+        `record_frame` on -- clips (or parts of clips) under it are
+        removed, the timeline's length only grows if it runs past the
+        end. Returns its index."""
+        start = self._index_at_record_frame(record_frame)
+        end = self._index_at_record_frame(record_frame + clip.frame_count)
+        del self.clips[start:end]
+        self.clips.insert(start, clip)
+        return start
+
+    def append_clip(self, clip):
+        """Append edit: `clip` goes after the last clip. Returns its index."""
+        self.clips.append(clip)
+        return len(self.clips) - 1
+
+    def record_start_of(self, clip_id):
+        """The record frame `clip_id` starts at."""
+        running = 0
+        for clip in self.clips:
+            if clip.id == clip_id:
+                return running
+            running += clip.frame_count
+        raise KeyError(f"No clip with id={clip_id}")
+
     def copy(self):
         return Timeline(clips=[c.copy() for c in self.clips], name=self.name,
                          frame_rate=self.frame_rate, timeline_id=self.id)

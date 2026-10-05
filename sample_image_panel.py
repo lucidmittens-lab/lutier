@@ -95,13 +95,15 @@ no file path is ever shown anywhere in this panel.
 import math
 from pathlib import Path
 
+import time
+
 import numpy as np
-from PySide6.QtCore import Signal, QTimer, Qt
-from PySide6.QtGui import QActionGroup, QKeySequence, QShortcut
+from PySide6.QtCore import Signal, QTimer, Qt, QSize
+from PySide6.QtGui import QActionGroup, QFontDatabase, QFontMetrics, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
     QMessageBox, QDialog, QComboBox, QCheckBox,
-    QToolButton, QMenu, QFrame,
+    QToolButton, QMenu, QFrame, QLineEdit,
 )
 
 from wipe_compare_widget import WipeCompareWidget
@@ -115,6 +117,8 @@ import gpu_stack_renderer
 import video_source
 import video_playback_controller
 import scopes_worker
+import transport_icons
+import transport_logic
 import timeline_playback_controller
 import timecode
 from casting_controller import CastingController
@@ -236,8 +240,31 @@ def _compose_highlight_overlay(graded_array, matte):
 # "❚❚", not "⏸": DejaVu Sans (and the other common UI fonts) have U+275A
 # but not U+23F8, which falls back to a math/emoji font with a different
 # line height -- see _fix_size_across_texts.
+# The Record viewer's two modes, as shown on its badge (internal names stay
+# "source"/"record").
+MODE_LABELS = {"source": "CLIP", "record": "TIMELINE"}
+
 _PLAY_GLYPH = "▶"
 _PAUSE_GLYPH = "❚❚"
+
+
+class _TimecodeField(QLineEdit):
+    """A timecode readout you can type into (Enter jumps): looks like a
+    label until focused; selects everything on focus so typing replaces."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("videoTimecodeLabel")
+        self.setFrame(False)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Fixed, not just capped: a timecode must never be squeezed to "22".
+        # Measured in the monospace font it's drawn in (style.py).
+        self.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        self.setFixedWidth(QFontMetrics(self.font()).horizontalAdvance("00:00:00:00") + 22)
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        QTimer.singleShot(0, self.selectAll)
 
 
 def _fix_size_across_texts(button, texts):
@@ -491,12 +518,15 @@ class SampleImagePanel(QWidget):
         self._viewer_mode_badge = QToolButton()
         self._viewer_mode_badge.setObjectName("viewerModeBadge")
         self._viewer_mode_badge.setCheckable(True)
-        self._viewer_mode_badge.setText("SOURCE")
+        # CLIP / TIMELINE (were SOURCE / RECORD -- renamed when the separate
+        # Source viewer arrived, source_viewer.py; this whole panel is now
+        # the Record viewer).
+        self._viewer_mode_badge.setText(MODE_LABELS["source"])
         self._viewer_mode_badge.setToolTip(
-            "Switch between SOURCE (the single loaded/selected clip) and "
-            "RECORD (the Timeline's own composited, multi-clip playback) "
-            "-- Play/Pause/Loop/Speed below always act on whichever one "
-            "this is currently set to.")
+            "Switch between CLIP (grade the single loaded/selected clip, no "
+            "timeline needed) and TIMELINE (the Timeline's own composited, "
+            "multi-clip playback) -- Play/Pause/Loop/Speed below always act "
+            "on whichever one this is currently set to.")
         self._viewer_mode_badge.toggled.connect(self._on_viewer_mode_toggled)
         viewer_mode_layout.addWidget(self._viewer_mode_badge, alignment=Qt.AlignmentFlag.AlignLeft)
 
@@ -621,6 +651,9 @@ class SampleImagePanel(QWidget):
         # falls back to whatever font has it (on Linux "⏸" came from STIX
         # Two Math, whose tall line height grew the whole transport bar
         # the moment Play was pressed).
+        # Icon first, so the fixed size below accounts for it.
+        self._video_play_button.setIcon(transport_icons.icon("play"))
+        self._video_play_button.setIconSize(QSize(18, 18))
         _fix_size_across_texts(self._video_play_button, (_PLAY_GLYPH, _PAUSE_GLYPH))
         self._video_play_button.setToolTip("Play/Pause (Space)")
         self._video_play_button.clicked.connect(self._on_video_play_pause_clicked)
@@ -644,6 +677,8 @@ class SampleImagePanel(QWidget):
         self._video_step_back_button = QToolButton()
         self._video_step_back_button.setObjectName("videoTransportButton")
         self._video_step_back_button.setText("◀│")
+        self._video_step_back_button.setIcon(transport_icons.icon('step_back'))
+        self._video_step_back_button.setIconSize(QSize(18, 18))
         self._video_step_back_button.setToolTip("Not yet supported for Timeline playback")
         self._video_step_back_button.setEnabled(False)
         self._video_step_back_button.clicked.connect(self._on_video_step_back_clicked)
@@ -652,6 +687,8 @@ class SampleImagePanel(QWidget):
         self._video_step_forward_button = QToolButton()
         self._video_step_forward_button.setObjectName("videoTransportButton")
         self._video_step_forward_button.setText("│▶")
+        self._video_step_forward_button.setIcon(transport_icons.icon('step_forward'))
+        self._video_step_forward_button.setIconSize(QSize(18, 18))
         self._video_step_forward_button.setToolTip("Not yet supported for Timeline playback")
         self._video_step_forward_button.setEnabled(False)
         self._video_step_forward_button.clicked.connect(self._on_video_step_forward_clicked)
@@ -663,6 +700,8 @@ class SampleImagePanel(QWidget):
         self._video_set_in_button = QToolButton()
         self._video_set_in_button.setObjectName("videoTransportButton")
         self._video_set_in_button.setText("[")
+        self._video_set_in_button.setIcon(transport_icons.icon('mark_in'))
+        self._video_set_in_button.setIconSize(QSize(18, 18))
         self._video_set_in_button.setToolTip("Set In point at the current frame (I)")
         self._video_set_in_button.clicked.connect(self._on_video_set_in_clicked)
         transport_layout.addWidget(self._video_set_in_button)
@@ -670,6 +709,8 @@ class SampleImagePanel(QWidget):
         self._video_set_out_button = QToolButton()
         self._video_set_out_button.setObjectName("videoTransportButton")
         self._video_set_out_button.setText("]")
+        self._video_set_out_button.setIcon(transport_icons.icon('mark_out'))
+        self._video_set_out_button.setIconSize(QSize(18, 18))
         self._video_set_out_button.setToolTip("Set Out point at the current frame (O)")
         self._video_set_out_button.clicked.connect(self._on_video_set_out_clicked)
         transport_layout.addWidget(self._video_set_out_button)
@@ -677,6 +718,8 @@ class SampleImagePanel(QWidget):
         self._video_clear_in_out_button = QToolButton()
         self._video_clear_in_out_button.setObjectName("videoTransportButton")
         self._video_clear_in_out_button.setText("⊘")
+        self._video_clear_in_out_button.setIcon(transport_icons.icon('clear_marks'))
+        self._video_clear_in_out_button.setIconSize(QSize(18, 18))
         self._video_clear_in_out_button.setToolTip("Clear In/Out (reset to the full clip)")
         self._video_clear_in_out_button.clicked.connect(self._on_video_clear_in_out_clicked)
         transport_layout.addWidget(self._video_clear_in_out_button)
@@ -693,6 +736,8 @@ class SampleImagePanel(QWidget):
         self._video_add_to_sequence_button = QToolButton()
         self._video_add_to_sequence_button.setObjectName("videoTransportButton")
         self._video_add_to_sequence_button.setText("➕")
+        self._video_add_to_sequence_button.setIcon(transport_icons.icon('append'))
+        self._video_add_to_sequence_button.setIconSize(QSize(18, 18))
         self._video_add_to_sequence_button.setToolTip(
             "Add the marked In/Out range (or the whole clip, if nothing's "
             "marked) to the Sequence as a new Timeline clip")
@@ -702,6 +747,8 @@ class SampleImagePanel(QWidget):
         self._video_loop_button = QToolButton()
         self._video_loop_button.setObjectName("videoTransportButton")
         self._video_loop_button.setText("⟲")
+        self._video_loop_button.setIcon(transport_icons.icon('loop'))
+        self._video_loop_button.setIconSize(QSize(18, 18))
         self._video_loop_button.setToolTip("Loop playback -- the clip in SOURCE mode, the Timeline in RECORD mode")
         self._video_loop_button.setCheckable(True)
         self._video_loop_button.toggled.connect(self._on_video_loop_toggled)
@@ -745,8 +792,11 @@ class SampleImagePanel(QWidget):
         # why mixed-fps-aware timecode isn't attempted here -- explicitly
         # out of scope for this pass); the single-clip Source case uses
         # that clip's own frame_rate, same as before this merge.
-        self._source_timecode_label = QLabel("")
-        self._source_timecode_label.setObjectName("videoTimecodeLabel")
+        # Type-to-jump timecode fields (same entry rules as the Source
+        # viewer, transport_logic.parse_timecode_entry) -- QLineEdits that
+        # look like labels until clicked; text()/setText() as before.
+        self._source_timecode_label = _TimecodeField()
+        self._source_timecode_label.returnPressed.connect(self._on_source_timecode_entered)
         self._source_timecode_label.setToolTip(
             "Position within whichever source is currently active: the "
             "single loaded/selected clip (SOURCE mode) or the Timeline's "
@@ -754,9 +804,10 @@ class SampleImagePanel(QWidget):
         transport_layout.addSpacing(4)
         transport_layout.addWidget(self._source_timecode_label)
 
-        self._record_timecode_label = QLabel("")
-        self._record_timecode_label.setObjectName("videoTimecodeLabel")
-        self._record_timecode_label.setToolTip("Position within the whole Timeline")
+        self._record_timecode_label = _TimecodeField()
+        self._record_timecode_label.setToolTip(
+            "Position within the whole Timeline -- type a timecode and press Enter to jump")
+        self._record_timecode_label.returnPressed.connect(self._on_record_timecode_entered)
         transport_layout.addSpacing(8)
         transport_layout.addWidget(self._record_timecode_label)
 
@@ -792,6 +843,137 @@ class SampleImagePanel(QWidget):
         QShortcut(QKeySequence(Qt.Key.Key_O), self, self._on_video_set_out_clicked)
         QShortcut(QKeySequence(Qt.Key.Key_Home), self, self._on_video_jump_to_in_clicked)
         QShortcut(QKeySequence(Qt.Key.Key_End), self, self._on_video_jump_to_out_clicked)
+        # J/K/L shuttle -- plain key events (K must be HELD for K+J/L frame
+        # steps), see keyPressEvent/_shuttle_key.
+        self._shuttle = transport_logic.Shuttle()
+        self._k_held = False
+        self._reverse_timer = QTimer(self)
+        self._reverse_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._reverse_timer.timeout.connect(self._on_reverse_tick)
+        self._reverse_clock = None  # (perf_counter start, start position, speed)
+
+    # ---- J/K/L shuttle (transport_logic.Shuttle) ----------------------------
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if event.isAutoRepeat() and key in (Qt.Key.Key_J, Qt.Key.Key_K, Qt.Key.Key_L):
+            return
+        if key == Qt.Key.Key_K:
+            self._k_held = True
+            self._shuttle_key("k")
+        elif key in (Qt.Key.Key_J, Qt.Key.Key_L):
+            self._shuttle_key("j" if key == Qt.Key.Key_J else "l")
+        else:
+            super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        if event.key() == Qt.Key.Key_K and not event.isAutoRepeat():
+            self._k_held = False
+        super().keyReleaseEvent(event)
+
+    def _shuttle_key(self, key):
+        """L forward (2x/4x/8x on repeats), J reverse, K stop; K held + J/L
+        steps one frame -- on whichever mode (CLIP/TIMELINE) is active."""
+        controller = self._active_transport_controller()
+        if key == "k":
+            self._shuttle.press_k()
+            self._stop_reverse()
+            controller.pause()
+            self._update_video_play_button_text()
+            return
+        press = self._shuttle.press_l if key == "l" else self._shuttle.press_j
+        action, value = press(k_held=self._k_held)
+        if action == "step":
+            self._stop_reverse()
+            controller.pause()
+            (self._on_video_step_forward_clicked if value > 0 else self._on_video_step_back_clicked)()
+        elif value > 0:
+            self._stop_reverse()
+            controller.set_speed(float(value))
+            if not controller.is_playing:
+                controller.play()
+        else:
+            controller.pause()
+            self._start_reverse(-value)
+        self._update_video_play_button_text()
+
+    def _current_position(self):
+        """(position, frame_rate) in the active mode: the clip frame (CLIP)
+        or the record frame (TIMELINE); (None, 0) if there's nothing."""
+        if self._viewer_mode == "record":
+            timeline_obj = self._timeline_getter() if self._timeline_getter else None
+            position = self._timeline_controller.current_record_frame()
+            return position, (timeline_obj.frame_rate if timeline_obj is not None else 0)
+        if self._video_source is None:
+            return None, 0
+        return self._video_frame_index, self._video_source.frame_rate
+
+    def _seek_active(self, position, downres=False):
+        if self._viewer_mode == "record":
+            self._timeline_controller.seek_to_record_frame(max(0, position), downres=downres)
+        elif self._video_source is not None:
+            last = max(0, (self._video_source.frame_count or 1) - 1)
+            self.seek_video_frame(max(0, min(position, last)), downres=downres)
+
+    def _start_reverse(self, speed):
+        position, rate = self._current_position()
+        if position is None or not rate:
+            return
+        self._reverse_clock = (time.perf_counter(), position, speed, rate)
+        self._reverse_timer.start(max(1, round(1000.0 / rate)))
+
+    def _stop_reverse(self):
+        self._reverse_timer.stop()
+        self._reverse_clock = None
+
+    def _on_reverse_tick(self):
+        """Reverse shuttle: seek backwards on the clock (frames due since it
+        started), at the scrub resolution -- drops frames rather than
+        falling behind; stops at the first frame."""
+        if self._reverse_clock is None:
+            return
+        started, origin, speed, rate = self._reverse_clock
+        target = origin - int((time.perf_counter() - started) * rate * speed)
+        if target <= 0:
+            self._seek_active(0)
+            self._shuttle.press_k()
+            self._stop_reverse()
+            return
+        self._seek_active(target, downres=True)
+
+    def _on_source_timecode_entered(self):
+        """Typed into the Source TC field: a position in the current clip."""
+        self.setFocus()
+        if self._viewer_mode == "record":
+            timeline_obj = self._timeline_getter() if self._timeline_getter else None
+            source_frame = self._timeline_controller.current_source_frame()
+            record = self._timeline_controller.current_record_frame()
+            if timeline_obj is None or source_frame is None or record is None:
+                return
+            target = transport_logic.parse_timecode_entry(
+                self._source_timecode_label.text(), source_frame, timeline_obj.frame_rate)
+            if target is not None:
+                self._seek_active(record + (target - source_frame))
+            return
+        position, rate = self._current_position()
+        if position is None:
+            return
+        target = transport_logic.parse_timecode_entry(self._source_timecode_label.text(), position, rate)
+        if target is not None:
+            self._seek_active(target)
+
+    def _on_record_timecode_entered(self):
+        """Typed into the Record TC field: a position in the whole timeline."""
+        self.setFocus()
+        timeline_obj = self._timeline_getter() if self._timeline_getter else None
+        record = self._timeline_controller.current_record_frame()
+        if timeline_obj is None or not timeline_obj.clips:
+            return
+        target = transport_logic.parse_timecode_entry(
+            self._record_timecode_label.text(), record or 0, timeline_obj.frame_rate)
+        if target is not None:
+            self.activate_record_mode()
+            self._seek_active(target)
 
     def populate_menu(self, menu):
         """Add this panel's actions to `menu` -- shared by the "..." corner
@@ -1195,8 +1377,9 @@ class SampleImagePanel(QWidget):
         self._update_video_play_button_text()
 
     def _update_video_play_button_text(self):
-        self._video_play_button.setText(
-            _PAUSE_GLYPH if self._active_transport_controller().is_playing else _PLAY_GLYPH)
+        playing = self._active_transport_controller().is_playing
+        self._video_play_button.setText(_PAUSE_GLYPH if playing else _PLAY_GLYPH)
+        self._video_play_button.setIcon(transport_icons.icon("pause" if playing else "play"))
 
     def activate_record_mode(self):
         """Public switch to RECORD mode, for a caller outside this panel
@@ -1252,7 +1435,7 @@ class SampleImagePanel(QWidget):
         if mode == self._viewer_mode:
             return
         self._viewer_mode = mode
-        self._viewer_mode_badge.setText("RECORD" if mode == "record" else "SOURCE")
+        self._viewer_mode_badge.setText(MODE_LABELS[mode])
         self._viewer_mode_badge.blockSignals(True)
         self._viewer_mode_badge.setChecked(mode == "record")
         self._viewer_mode_badge.blockSignals(False)

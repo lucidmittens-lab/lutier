@@ -67,6 +67,12 @@ class VideoSource:
         if self._stream.duration and self._stream.time_base and self.frame_rate:
             seconds = float(self._stream.duration * self._stream.time_base)
             return max(1, round(seconds * self.frame_rate))
+        # Matroska/WebM put the length on the CONTAINER only (stream.frames
+        # 0, stream.duration None) -- without this every .mkv reported 0
+        # frames: no duration, and seeking/timeline lengths broke.
+        if self._container.duration and self.frame_rate:
+            seconds = self._container.duration / av.time_base
+            return max(1, round(seconds * self.frame_rate))
         return 0
 
     def decode_next_frame(self, max_dimension=None):
