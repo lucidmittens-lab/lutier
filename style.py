@@ -590,15 +590,17 @@ def build_dark_palette():
         # resolves correctly on the Qt 6.11 this app actually runs on.
         QPalette.ColorRole.Accent: get_tertiary_color(),
     }
-    for group in active_and_inactive:
+    # Disabled gets every role too: a bare QPalette()'s Disabled group is
+    # Qt's LIGHT default, so leaving it unset turned any disabled panel's
+    # background near-white (Stack Params during playback, which locks
+    # it -- see StackPanel.set_locked_for_playback).
+    for group in active_and_inactive + (QPalette.ColorGroup.Disabled,):
         for role, color in role_colors.items():
             palette.setColor(group, role, QColor(color))
 
     # Disabled group -- text roles dimmed to _HINT_TEXT (matches the
     # existing `:disabled` QSS rules' own color choice, see
-    # QPushButton:disabled below), backgrounds left the same as
-    # active/inactive since this app's :disabled QSS rules already
-    # explicitly set backgrounds themselves where it matters.
+    # QPushButton:disabled below); backgrounds stay the dark ones above.
     for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text,
                  QPalette.ColorRole.ButtonText):
         palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(_HINT_TEXT))
