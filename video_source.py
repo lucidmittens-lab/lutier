@@ -45,7 +45,12 @@ class VideoSource:
 
         self.width = self._stream.width
         self.height = self._stream.height
-        rate = self._stream.average_rate
+        # average_rate comes back 0/0 for some MXF muxes (ARRI ALEXA Mini
+        # LF ProRes 4444, confirmed 2026-10-05) -- with frame_rate 0 the
+        # clip had no duration/frame count and seek_to_frame returned
+        # None. guessed_rate (ffmpeg's own r_frame_rate/codec fallback)
+        # still has the real 24/1.
+        rate = self._stream.average_rate or self._stream.guessed_rate
         self.frame_rate = float(rate) if rate else 0.0
         self.frame_count = self._detect_frame_count()
         self.duration = (self.frame_count / self.frame_rate) if self.frame_rate else 0.0
