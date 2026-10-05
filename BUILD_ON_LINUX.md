@@ -113,7 +113,69 @@ the 3D view, scrubbing playback). Software-rendered llvmpipe proves the
 GUI *works*, not that it's fast or color-correct -- that's still
 specifically what running a build on your own PC is for.
 
-## 3. A real distributable build (PyInstaller/AppImage)
+## 3. Setting a real-GPU Linux box up as the test bed
+
+For a machine with an actual monitor and GPU attached (not this sandbox)
+that Claude Code also runs on directly -- the setup that gets the most
+out of real hardware, per Tom (2026-10-05): "I have Claude code installed
+on a Linux box. How can I set it up to best be our test bed."
+
+**Feature-level/regression testing needs nothing new.** This repo's own
+test suite already drives clicks, drags, and drops entirely in-process,
+independent of whatever display backend is running underneath --
+`PySide6.QtTest.QTest.mousePress/mouseMove/mouseRelease` posts real Qt
+events straight into the widget's event queue (see
+`test_timeline_track_widget.py`'s drag-to-trim/reorder tests for the
+established pattern), and the cross-panel Media Panel -> Timeline
+drag-and-drop is tested by constructing a `QDragEnterEvent`/`QDropEvent`
+directly and calling `widget.dragEnterEvent(event)`/`dropEvent(event)`
+rather than simulating a real OS-level drag gesture (same file, the
+`test_drop_emits_media_entry_drop_requested_*` tests). Both patterns
+work identically under `QT_QPA_PLATFORM=offscreen`, the sandbox's
+Xvfb+software-GL setup (section 2 above), or a real display -- nothing
+about them depends on real hardware, so there's no reason to duplicate
+this work on the Linux box specifically.
+
+**What a real display + GPU uniquely adds is true black-box testing:**
+launching the actual `python3 main_window.py` process the way you'd run
+it yourself and interacting with it from OUTSIDE that process -- no
+Python object handles into the running widgets, closer to how a real
+user hits it, and the only way to exercise things that only manifest in
+the full running app: real GPU-driven rendering (actual driver output,
+not llvmpipe -- this is what makes it worth judging color/shader
+correctness on), real frame timing/performance, real window-manager
+focus/raise/drag-and-drop behavior (Qt's own `QDrag.exec()` runs a
+genuinely different, nested native event loop than the synthetic
+`QDropEvent` tests above exercise), and real input-device feel.
+
+For that, one more tool belongs on this box specifically (no point
+installing it in a sandbox with nothing to click):
+
+```
+sudo apt install xdotool imagemagick   # xdotool: real click/drag/type; `import`: screenshot a real window
+```
+
+`xdotool` is X11-only -- check `echo $XDG_SESSION_TYPE` first. Qt apps
+typically still run as ordinary X11 clients through XWayland even on a
+Wayland session (so this usually works either way), but on a pure
+Wayland-native setup `xdotool` can't see the window at all; `ydotool` is
+the Wayland-native equivalent if that turns out to be necessary, with
+more setup (a running `ydotoold` daemon) and overall less mature tooling.
+
+Basic pattern for driving the real app as a black box:
+
+```
+python3 main_window.py &
+APP_PID=$!
+sleep 2
+WIN=$(xdotool search --name "LUTier" | head -1)   # setWindowTitle("LUTier") -- main_window.py
+xdotool windowactivate "$WIN"
+xdotool mousemove --window "$WIN" 400 300 click 1
+import -window "$WIN" /tmp/check.png
+kill "$APP_PID"
+```
+
+## 4. A real distributable build (PyInstaller/AppImage)
 
 Not set up yet -- deliberately deferred until running from source is
 confirmed solid on your end. `setup.py`'s py2app approach doesn't apply
