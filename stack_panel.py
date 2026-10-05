@@ -111,7 +111,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QMessageBox, QComboBox, QSpinBox, QDoubleSpinBox,
     QGroupBox, QSlider, QCheckBox, QStackedWidget, QInputDialog,
     QDialog, QDialogButtonBox, QFrame, QToolButton, QAbstractItemView, QMenu,
-    QSizePolicy, QButtonGroup, QGraphicsOpacityEffect,
+    QSizePolicy, QButtonGroup, QGraphicsOpacityEffect, QScrollArea,
 )
 
 import stack as st
@@ -1767,7 +1767,19 @@ class StackPanel(QObject):
         self._build_matte_shape_inspector()
         self._build_fork_split_inspector()
         self._build_fork_merge_inspector()
-        layout.addWidget(self.inspector_stack, stretch=1)
+        # Scroll area, so the dock's floor isn't the current page's FULL
+        # minimum height: unwrapped, selecting most operators (CAMier DRT
+        # ~713px, ASC CDL ~567px of inspector alone) pushed MainWindow's
+        # own minimumSizeHint past a 1080p-logical screen's available
+        # height (measured 2026-10-05, 4K@200% GNOME), so the window grew
+        # itself off the bottom of the screen just from loading a LUT.
+        # _CurrentPageStackedWidget still matters inside it -- it's what
+        # makes the scroll range track the page actually showing.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(self.inspector_stack)
+        layout.addWidget(scroll, stretch=1)
 
     # ---- global settings (grid size + domain, formerly Resize/Bounds) ----
     # Own popup dialog rather than inline in Stack Params -- see this

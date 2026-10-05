@@ -40,14 +40,15 @@ symptom if one's missing is Qt refusing to start with "could not load
 the Qt platform plugin 'xcb'". Everything else in the list above -- GL,
 fontconfig, dbus, ICE/SM, Xrender, Xi -- was already present.)
 
-On Fedora/RHEL/Rocky (dnf), the equivalent package names -- **not yet
-verified on an actual RHEL-family machine**, mapped from the Ubuntu names
-above by Qt's own known xcb-plugin dependency list:
+On Fedora/RHEL/Rocky (dnf) -- verified on Rocky Linux 10.2 on
+2026-10-04 (all were already present on a stock Workstation install;
+there is no separate `xcb-util-xkb` package, `libxcb-xkb.so` ships in
+`libxcb` itself):
 
 ```
 sudo dnf install \
   xcb-util-cursor xcb-util-wm xcb-util xcb-util-image \
-  xcb-util-keysyms xcb-util-renderutil xcb-util-xkb \
+  xcb-util-keysyms xcb-util-renderutil libxcb \
   libxkbcommon-x11 libxkbcommon \
   mesa-libGL mesa-libEGL libglvnd-glx \
   fontconfig dbus-libs libICE libSM libXrender libXi
@@ -61,9 +62,58 @@ missing `.so`) will usually name the exact library to track down.
 ## 1. Install Python dependencies and run
 
 ```
-pip3 install -r requirements.txt
-python3 main_window.py
+python3 -m venv .venv          # .venv/ is gitignored
+.venv/bin/pip install -r requirements.txt pytest
+./run_linux.sh                 # the app
+./run_linux.sh test            # the pytest suite (offscreen)
 ```
+
+`run_linux.sh` exists because of two real-GPU-desktop gotchas found on
+a Rocky 10.2 / NVIDIA RTX 3080 Ti / GNOME Wayland box (2026-10-04):
+
+- **Wayland + NVIDIA gives an OpenGL ES context.** Native-Wayland Qt
+  goes through EGL and gets `OpenGL ES 3.2 NVIDIA`, so every GLSL 1.20
+  shader fails (`error C0201: unsupported version 120`). Running through
+  XWayland (`QT_QPA_PLATFORM=xcb`) gets desktop GL 4.6 compatibility
+  profile instead, and that works. On top of that, PyOpenGL picks its
+  *EGL* backend whenever `XDG_SESSION_TYPE=wayland`, which doesn't match
+  Qt's GLX context under xcb (`OpenGL.error.Error: Attempt to retrieve
+  context when no valid context`), so `PYOPENGL_PLATFORM=glx` is needed
+  as well. The launcher sets both.
+- **The offscreen test suite segfaults if `DISPLAY` is set.** Qt's
+  `offscreen` plugin uses GLX opportunistically when a display is
+  available, so `QOpenGLWidget` tests (e.g. `test_gl_reparent_safety.py`)
+  crash in the NVIDIA driver instead of getting the no-GL stub that the
+  suite was written against. `run_linux.sh test` unsets
+  `DISPLAY`/`WAYLAND_DISPLAY` first. Result: 1231 passed, and 7 failed
+  in `test_airplay_output_sink.py`, which is expected because those
+  tests need macOS/PyObjC.
+
+The GL-dependent tests (`test_gpu_*.py`, `test_wipe_compare_widget*.py`)
+need a real context, so run them against the actual display/GPU:
+
+```
+QT_QPA_PLATFORM=xcb PYOPENGL_PLATFORM=glx .venv/bin/python -m pytest -q \
+  test_gpu_*.py test_wipe_compare_widget*.py test_gl_reparent_safety.py
+```
+
+First real-GPU run (2026-10-05) found, and fixed:
+
+- **Viewer drew into the bottom-left quarter at 200% display scaling** --
+  `WipeCompareWidget` passed logical sizes to a device-pixel
+  framebuffer. Now multiplied by `devicePixelRatioF()`.
+- **Window grew off the bottom of the screen on loading a LUT** -- the
+  Parameters inspector had no scroll area, so its current page's full
+  height became the window's minimum. Now scrolls.
+- **Black row+column grid in the Lanczos resample on NVIDIA** -- the
+  kernel's `x == 0.0` guard missed a tiny nonzero x at texel centers,
+  giving NaN. Now an epsilon guard.
+
+Still failing on NVIDIA, *not* fixed yet: 4 GPU LUT tests
+(`test_gpu_lut_shader.py`, `test_gpu_stack_renderer.py`'s LUT cases) at
+~1.1e-3 vs a 1e-3 tolerance. That's hardware trilinear filtering's
+~8-bit fixed-point weights on a deliberately rough random 9³ test LUT;
+Apple/llvmpipe filter in full float, so it never showed before.
 
 `requirements.txt` is already fully cross-platform (PySide6, pyqtgraph,
 PyOpenGL, scipy, colour-science, colour-clf-io, numpy, Pillow,

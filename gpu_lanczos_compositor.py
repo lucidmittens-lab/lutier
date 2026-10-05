@@ -53,7 +53,12 @@ _MAX_FILTER_SCALE = 8.0  # see module docstring's "ADAPTIVE MINIFICATION SUPPORT
 _LANCZOS_GLSL = """
 const float PI = 3.14159265358979;
 float lanczos3(float x) {
-    if (x == 0.0) return 1.0;
+    // Not `x == 0.0`: on NVIDIA (RTX 3080 Ti, 2026-10-05) a tap landing
+    // exactly on a texel center came out as a tiny NONZERO x, the 0/0-ish
+    // ratio below went NaN, and every such pixel rendered black -- a full
+    // row+column grid at integer zoom. Within 1e-4 the true value is 1.0
+    // to ~1e-8, so the epsilon costs nothing.
+    if (abs(x) < 1e-4) return 1.0;
     if (abs(x) >= 3.0) return 0.0;
     float px = PI * x;
     return 3.0 * sin(px) * sin(px / 3.0) / (px * px);

@@ -852,18 +852,26 @@ class WipeCompareWidget(QOpenGLWidget):
         before_texture, before_size = self._before_state.ensure_texture(self._gpu_stack_renderer)
         after_texture, after_size = self._after_state.ensure_texture(self._gpu_stack_renderer)
 
+        # Everything the compositor gets is in DEVICE pixels: paintGL's
+        # target framebuffer is width()*devicePixelRatio wide, so passing
+        # logical sizes on a scaled (HiDPI) display drew the image into
+        # only the bottom-left 1/dpr of the viewer -- reproduced on a 4K
+        # Linux/GNOME desktop at 200% scaling (2026-10-05).
+        dpr = self.devicePixelRatioF()
         canvas_rect = self._canvas_rect()
         canvas_rect_qt = (
-            (canvas_rect.left(), canvas_rect.top(), canvas_rect.width(), canvas_rect.height())
+            (canvas_rect.left() * dpr, canvas_rect.top() * dpr,
+             canvas_rect.width() * dpr, canvas_rect.height() * dpr)
             if canvas_rect is not None else None)
 
-        widget_w = max(1, self.width())
-        widget_h = max(1, self.height())
+        widget_w = max(1, round(self.width() * dpr))
+        widget_h = max(1, round(self.height() * dpr))
         self._wipe_compositor.render(
             before_texture=before_texture, before_size=before_size,
             after_texture=after_texture, after_size=after_size,
             widget_w=widget_w, widget_h=widget_h,
-            image_rect_qt=(image_rect.left(), image_rect.top(), image_rect.width(), image_rect.height()),
+            image_rect_qt=(image_rect.left() * dpr, image_rect.top() * dpr,
+                           image_rect.width() * dpr, image_rect.height() * dpr),
             wipe_enabled=self._wipe_enabled, divider_fraction=self._wipe_fraction,
             background_color=background_color, placeholder_color=placeholder_color,
             canvas_rect_qt=canvas_rect_qt)
