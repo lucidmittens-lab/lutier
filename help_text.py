@@ -132,6 +132,32 @@ way a session's Stack is (see `session_io.py`); a CDL entry's underlying
 SOP/SAT values are the same `cdl.py` structures a CDL stage in the Stack
 uses (see **ASC CDL** under **Stack → Operators** below).
 
+## Color Management
+
+Every image goes through one pipeline, shown above the Stack's stage
+list (**Input → Working → Display**):
+
+1. **Input color space** — each Media Library entry has one (the **Input
+   Space** column; right-click → **Input Color Space**). Camera footage
+   is suggested from its metadata (ARRI, Sony, RED, Blackmagic,
+   Panasonic); anything else starts as **Same as working space** (no
+   conversion). Timeline clips use their entry's input space.
+2. **Working space** — set in **File > Project Settings**; the Stack runs
+   in it. A stage whose own *Working Color Space* is different is
+   converted into that space, applied and converted back (its row shows
+   "in <space>"); a DRT stage converts in only, and nothing after a DRT
+   is converted.
+3. **Display transform** — also in Project Settings (off by default):
+   the ACES Output Transform for a display and view. Record views
+   through it; it steps aside automatically while the Stack contains a
+   DRT stage of its own.
+
+LUT export bakes the grade alone (working space in and out), or — with
+**Full chain** ticked in the Export dialog — input transform → grade →
+display as a single show LUT. Everything above runs on the GPU.
+
+**Source:** `colour_pipeline.py` (`build_effective_stack`).
+
 ## Source and Record
 
 Two viewers, side by side like an edit suite. **Source** (left) shows the

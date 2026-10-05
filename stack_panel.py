@@ -109,6 +109,7 @@ from PySide6.QtWidgets import (
 )
 
 import stack as st
+import colour_pipeline
 import matte_combine
 import matte_shape
 import aces_drt
@@ -564,6 +565,19 @@ class _ElidingLabel(QLabel):
         return QSize(fm.horizontalAdvance("…m"), super().minimumSizeHint().height())
 
 
+# The project working space, for rows' "in <space>" notes (see
+# _row_label_text) -- set by StackPanel.set_default_working_colourspace.
+_project_working_space = DEFAULT_WORKING_COLOURSPACE
+
+
+def _row_label_text(stage):
+    """A row's label: the stage's own, plus where it works when that's not
+    the project working space ("CDL · in ARRI LogC4") -- the pipeline's
+    order of operations made visible (colour_pipeline.py)."""
+    note = colour_pipeline.stage_space_note(stage, _project_working_space)
+    return f"{stage.label}  ·  {note}" if note else stage.label
+
+
 class _StageRowWidget(QFrame):
     """One stage's "card" in the stack list (see StackPanel._refresh_list).
     A bordered card per stage, a directly clickable enabled indicator, and
@@ -763,7 +777,7 @@ class _StageRowWidget(QFrame):
         # _elide()) since a full-width row can run out of space too, per
         # Tom: the delete button at the row's far end should stay visible
         # regardless of panel width, not get pushed off past it.
-        self.label_widget = _ElidingLabel(stage.label)
+        self.label_widget = _ElidingLabel(_row_label_text(stage))
         self.label_widget.setObjectName("stageLabel")
         # Transparent to mouse events -- otherwise a click on the label
         # text itself is swallowed by the QLabel rather than reaching this
@@ -915,7 +929,7 @@ class _StageRowWidget(QFrame):
         entry, undo/redo) needs to update the displayed value without
         re-firing valueChanged straight back into
         StackPanel._on_row_opacity_changed."""
-        self.label_widget.setText(stage.label)
+        self.label_widget.setText(_row_label_text(stage))
         self.opacity_spin.blockSignals(True)
         self.opacity_spin.setValue(round(stage.opacity * 100))
         self.opacity_spin.blockSignals(False)
@@ -1555,6 +1569,15 @@ class StackPanel(QObject):
         layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
 
         self._build_mode_toggle_row(layout)
+
+        # The color pipeline around this Stack: input -> working -> display
+        # (colour_pipeline.py) -- MainWindow keeps it current via
+        # set_pipeline_summary.
+        self.pipeline_label = QLabel()
+        self.pipeline_label.setObjectName("stackPipelineLabel")
+        self.pipeline_label.setWordWrap(True)
+        self.pipeline_label.setStyleSheet(f"color: {HINT_TEXT_HEX}; font-size: 10px;")
+        layout.addWidget(self.pipeline_label)
 
         # _StackListWidget (not plain QListWidget) -- adds card-style rows
         # with a clickable enable toggle per stage, drag-to-reorder, and
@@ -2389,8 +2412,20 @@ class StackPanel(QObject):
     def set_default_working_colourspace(self, name):
         """Project Settings' working color space -- applies to stages
         added from now on; existing stages keep whatever they were set
-        to (each one's own Working Color Space combo still overrides)."""
+        to (each one's own Working Color Space combo still overrides).
+        Also what rows' "in <space>" notes compare against."""
+        global _project_working_space
         self._default_working_colourspace = name
+        if name != _project_working_space:
+            _project_working_space = name
+            self._refresh_list()
+
+    def set_pipeline_summary(self, input_space, working_space, display_text):
+        """The "Input -> Working -> Display" line above the stage list."""
+        text = (f"Input: {input_space or 'working space'}  →  Working: {working_space}"
+                f"  →  Display: {display_text}")
+        if self.pipeline_label.text() != text:
+            self.pipeline_label.setText(text)
 
     def _on_add_printer_lights_clicked(self):
         stage = st.make_printer_lights_stage(

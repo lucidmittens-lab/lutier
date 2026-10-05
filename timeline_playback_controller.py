@@ -126,6 +126,10 @@ class TimelineController(QObject):
         self._frame_server = FrameServer(DECODE_PROXY_MAX_DIMENSION)
         self._clock_start = None       # perf_counter() when playback (re)started
         self._frames_advanced = 0      # frames moved since the clock started
+        # (clip, composed Stack) -> the Stack to render: MainWindow wraps it
+        # in the clip's input transform and the display transform
+        # (colour_pipeline.py). Identity until set.
+        self._pipeline = None
         self.loop_enabled = False
         self.speed = DEFAULT_SPEED
         self._base_interval_ms = None
@@ -351,6 +355,13 @@ class TimelineController(QObject):
             self._video_source.close()
             self._video_source = None
 
+    def set_pipeline(self, pipeline):
+        self._pipeline = pipeline
+
+    def _render_stack(self, clip):
+        composed = st.compose_stacks(clip.stack, self._current_sequence_stack())
+        return self._pipeline(clip, composed) if self._pipeline else composed
+
     def _current_sequence_stack(self):
         getter = self._sequence_stack_getter
         return getter() if getter else st.Stack()
@@ -381,7 +392,7 @@ class TimelineController(QObject):
         decode -- play()/_advance_to_next_clip never pass it, only an
         active RECORD-mode scrub burst does."""
         self._close_video_source()
-        composed = st.compose_stacks(clip.stack, self._current_sequence_stack())
+        composed = self._render_stack(clip)
         max_dimension = (
             DECODE_PROXY_MAX_DIMENSION // RECORD_SEEK_DOWNRES_FACTOR if downres
             else DECODE_PROXY_MAX_DIMENSION)
@@ -476,7 +487,7 @@ class TimelineController(QObject):
             return
         self._frames_advanced += next_offset - self._frame_in_clip
         self._frame_in_clip = next_offset
-        composed = st.compose_stacks(clip.stack, self._current_sequence_stack())
+        composed = self._render_stack(clip)
         push_graded_frame_to_viewer(self._panel, composed, frame, playing=self._playing)
         self.frame_changed.emit()
 

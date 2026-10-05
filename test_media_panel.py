@@ -253,12 +253,19 @@ def test_right_click_on_an_already_selected_row_keeps_the_multi_selection():
     # elsewhere in this file.
     import media_panel as media_panel_module
 
+    class _FakeAction:
+        def __getattr__(self, _name):  # setCheckable, setChecked, ...
+            return lambda *a, **k: None
+
     class _FakeMenu:
         def __init__(self, *a, **k):
             pass
 
         def addAction(self, *a, **k):
-            pass
+            return _FakeAction()
+
+        def addMenu(self, *a, **k):
+            return _FakeMenu()
 
         def addSeparator(self):
             pass

@@ -74,10 +74,10 @@ class MediaEntry:
     """One catalogued media file: a name, its on-disk path, and enough
     metadata to display/sort it in media_panel.py's table -- never a
     decoded pixel array (see module docstring). source_colourspace is the
-    declared source color space if one was set at import time (None means
-    Unmanaged, same meaning as SampleImagePanel's own
-    _source_colourspace) -- ignored/None for a video entry, same asymmetry
-    the old image_library.py already had. width/height are None only for
+    source's INPUT color space (colour_pipeline.py): what it's converted
+    from into the project working space, for stills and video alike --
+    suggested from camera metadata at import, None = already in the
+    working space. width/height are None only for
     an entry whose header probe failed at import (still catalogued, just
     without a Resolution column value) -- see media_panel.py's import
     error handling."""

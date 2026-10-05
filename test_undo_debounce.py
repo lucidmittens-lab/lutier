@@ -344,6 +344,40 @@ def test_source_viewer_edits_land_at_the_record_playhead_and_match_frame_finds_t
           "finds the source frame -- OK")
 
 
+def test_record_renders_through_the_input_and_display_transforms():
+    """colour_pipeline.py wired into Record: the loaded clip's input space
+    leads the effective stack, the project display transform ends it
+    (and steps aside for a DRT in the Stack), the Stack shows the
+    pipeline, and changing an entry's input space reaches its clips."""
+    _app()
+    clip_path = str(Path(_workspace_tmp_dir.name) / "pipeline.mov")
+    _write_prores_mov(clip_path)
+    win = MainWindow()
+    try:
+        entry = win.media_panel.library.add_entry(MediaEntry(
+            "Shot", clip_path, media_kind="video", frame_count=3, frame_rate=24.0,
+            source_colourspace="ARRI LogC4"))
+        win.sample_image.load_video(clip_path)
+        kinds = [s.kind for s in win._composed_preview_stack().stages]
+        assert kinds == ["colorspace"], kinds
+        assert "ARRI LogC4" in win.stack_panel.pipeline_label.text()
+
+        win._set_project_canvas(cv.replace_canvas(win._canvas, display_drt="aces"))
+        assert [s.kind for s in win._composed_preview_stack().stages] == ["colorspace", "aces_drt"]
+        win.stack_panel._on_add_custom_drt_clicked()
+        assert "aces_drt" not in [s.kind for s in win._composed_preview_stack().stages]
+
+        win.media_panel.add_to_timeline_requested.emit(entry)
+        clip = win.timeline_panel.get_timeline().clips[0]
+        assert clip.input_colourspace == "ARRI LogC4"
+        win.media_panel.set_input_colourspace([entry], None)
+        assert clip.input_colourspace is None
+    finally:
+        win.close()
+    print("MainWindow: Record renders through the input and display "
+          "transforms -- OK")
+
+
 if __name__ == "__main__":
     test_rapid_stack_changes_coalesce_into_one_debounced_push()
     test_undo_flushes_a_pending_debounced_push_first()
@@ -356,5 +390,6 @@ if __name__ == "__main__":
     test_export_bakes_at_the_session_settings_and_they_follow_the_session()
     test_timelines_load_from_and_unload_to_the_media_library()
     test_source_viewer_edits_land_at_the_record_playhead_and_match_frame_finds_them()
+    test_record_renders_through_the_input_and_display_transforms()
     print()
     print("All undo-debounce tests passed.")

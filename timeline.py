@@ -74,7 +74,7 @@ class TimelineClip:
     Timeline's own frame_rate."""
 
     def __init__(self, name, source_path, media_kind, in_frame, out_frame,
-                 stack=None, clip_id=None, thumbnail=None):
+                 stack=None, clip_id=None, thumbnail=None, input_colourspace=None):
         self.id = clip_id if clip_id is not None else next_clip_id()
         self.name = name
         self.source_path = source_path
@@ -83,6 +83,10 @@ class TimelineClip:
         self.out_frame = int(out_frame)
         self.stack = stack if stack is not None else st.Stack()
         self.thumbnail = thumbnail
+        # The source's input color space (colour_pipeline.py) -- copied
+        # from its Media Library entry when added; None = already in the
+        # project working space.
+        self.input_colourspace = input_colourspace
 
     @property
     def frame_count(self):
@@ -100,7 +104,8 @@ class TimelineClip:
         without retroactively changing the original."""
         return TimelineClip(
             self.name, self.source_path, self.media_kind, self.in_frame, self.out_frame,
-            stack=self.stack.copy(), clip_id=self.id, thumbnail=self.thumbnail)
+            stack=self.stack.copy(), clip_id=self.id, thumbnail=self.thumbnail,
+            input_colourspace=self.input_colourspace)
 
     def __repr__(self):
         return (f"TimelineClip(id={self.id}, name={self.name!r}, media_kind={self.media_kind!r}, "
@@ -197,11 +202,13 @@ class Timeline:
                 first = TimelineClip(
                     clip.name, clip.source_path, clip.media_kind,
                     clip.in_frame, split_point - 1,
-                    stack=clip.stack.copy(), thumbnail=clip.thumbnail)
+                    stack=clip.stack.copy(), thumbnail=clip.thumbnail,
+                    input_colourspace=clip.input_colourspace)
                 second = TimelineClip(
                     clip.name, clip.source_path, clip.media_kind,
                     split_point, clip.out_frame,
-                    stack=clip.stack.copy(), thumbnail=clip.thumbnail)
+                    stack=clip.stack.copy(), thumbnail=clip.thumbnail,
+                    input_colourspace=clip.input_colourspace)
                 self.clips[index] = first
                 self.clips.insert(index + 1, second)
                 return first, second

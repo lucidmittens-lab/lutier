@@ -408,7 +408,7 @@ class TimelinePanel(QWidget):
         out_frame = self._full_range_out_frame(entry)
         self.add_clip_with_range(
             entry.name, entry.source_path, entry.media_kind, 0, out_frame,
-            thumbnail=entry.thumbnail)
+            thumbnail=entry.thumbnail, input_colourspace=entry.source_colourspace)
 
     def insert_clip_from_library_entry_at(self, entry, index):
         """Same full-source-range clip construction as add_clip_from_
@@ -421,7 +421,7 @@ class TimelinePanel(QWidget):
         out_frame = self._full_range_out_frame(entry)
         self.add_clip_with_range(
             entry.name, entry.source_path, entry.media_kind, 0, out_frame,
-            thumbnail=entry.thumbnail, index=index)
+            thumbnail=entry.thumbnail, index=index, input_colourspace=entry.source_colourspace)
 
     def _full_range_out_frame(self, entry):
         if entry.media_kind == "video":
@@ -429,7 +429,8 @@ class TimelinePanel(QWidget):
         frame_rate = self.timeline.frame_rate if self.timeline is not None else tl.DEFAULT_FRAME_RATE
         return max(0, int(round(DEFAULT_STILL_HOLD_SECONDS * frame_rate)) - 1)
 
-    def add_clip_with_range(self, name, source_path, media_kind, in_frame, out_frame, thumbnail=None, index=None):
+    def add_clip_with_range(self, name, source_path, media_kind, in_frame, out_frame, thumbnail=None,
+                            index=None, input_colourspace=None):
         """Target of SampleImagePanel's add_source_range_to_timeline_
         requested signal (wired in main_window.py, per Tom: "will be
         necessary to be able to mark desired ranges and add to
@@ -443,7 +444,8 @@ class TimelinePanel(QWidget):
             self._timeline_creator()  # creates one and load_timeline()s it
         if self.timeline is None:
             return
-        clip = tl.TimelineClip(name, source_path, media_kind, in_frame, out_frame, thumbnail=thumbnail)
+        clip = tl.TimelineClip(name, source_path, media_kind, in_frame, out_frame, thumbnail=thumbnail,
+                               input_colourspace=input_colourspace)
         self.timeline.add_clip(clip, index=index)
         inserted_index = index if index is not None else len(self.timeline.clips) - 1
         self._refresh_list(keep_selection=inserted_index)

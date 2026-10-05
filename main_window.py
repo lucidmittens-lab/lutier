@@ -232,6 +232,7 @@ from sample_image_panel import SampleImagePanel
 from stack_panel import StackPanel
 from bake_settings_form import BakeSettingsForm, describe_bake_settings
 from source_viewer import SourceViewerPanel
+import colour_pipeline
 import timeline as tl
 import timecode
 from scopes_panel import ScopesPanel
@@ -762,6 +763,36 @@ class _ProjectSettingsForm(QWidget):
             self.working_space_combo.addItems(aces_drt.list_working_colourspaces())
         row("Working Color Space", self.working_space_combo)
 
+        # Display transform (colour_pipeline.py): what Record views the
+        # working-space image through. Off by default.
+        self.display_drt_combo = QComboBox()
+        self.display_drt_combo.addItem("None (view the working space)", "none")
+        self.display_drt_combo.addItem("ACES Output Transform", "aces")
+        row("Display Transform", self.display_drt_combo)
+        self._displays = dict(colour_pipeline.available_displays())
+        self.display_combo = QComboBox()
+        self.display_combo.addItems(list(self._displays))
+        row("Display", self.display_combo)
+        self.view_combo = QComboBox()
+        row("View", self.view_combo)
+        self.display_combo.currentTextChanged.connect(self._refresh_views)
+        self.display_drt_combo.currentIndexChanged.connect(self._refresh_display_enabled)
+        self._refresh_views(self.display_combo.currentText())
+        self._refresh_display_enabled()
+
+    def _refresh_views(self, display):
+        current = self.view_combo.currentText()
+        self.view_combo.clear()
+        self.view_combo.addItems(self._displays.get(display, []))
+        idx = self.view_combo.findText(current)
+        if idx >= 0:
+            self.view_combo.setCurrentIndex(idx)
+
+    def _refresh_display_enabled(self):
+        on = self.display_drt_combo.currentData() != "none"
+        self.display_combo.setEnabled(on)
+        self.view_combo.setEnabled(on)
+
     def set_canvas(self, c):
         self.width_spin.setValue(c.width)
         self.height_spin.setValue(c.height)
@@ -775,6 +806,15 @@ class _ProjectSettingsForm(QWidget):
             self.working_space_combo.addItem(c.working_colourspace)
             idx = self.working_space_combo.count() - 1
         self.working_space_combo.setCurrentIndex(idx)
+        self.display_drt_combo.setCurrentIndex(max(0, self.display_drt_combo.findData(c.display_drt)))
+        idx = self.display_combo.findText(c.display_name)
+        if idx >= 0:
+            self.display_combo.setCurrentIndex(idx)
+        self._refresh_views(self.display_combo.currentText())
+        idx = self.view_combo.findText(c.display_view)
+        if idx >= 0:
+            self.view_combo.setCurrentIndex(idx)
+        self._refresh_display_enabled()
 
     def canvas_or_report_error(self, parent):
         """The CanvasSettings these fields describe, or None after
@@ -790,7 +830,10 @@ class _ProjectSettingsForm(QWidget):
                 width=self.width_spin.value(), height=self.height_spin.value(),
                 bit_depth=self.bit_depth_combo.currentData(),
                 pixel_aspect_ratio=self.par_spin.value(), frame_rate=frame_rate,
-                working_colourspace=self.working_space_combo.currentText())
+                working_colourspace=self.working_space_combo.currentText(),
+                display_drt=self.display_drt_combo.currentData() or "none",
+                display_name=self.display_combo.currentText() or cv.DEFAULT_DISPLAY_NAME,
+                display_view=self.view_combo.currentText() or cv.DEFAULT_DISPLAY_VIEW)
         except ValueError as e:
             QMessageBox.critical(parent, "Invalid project settings", str(e))
             return None
@@ -1319,6 +1362,8 @@ class MainWindow(QMainWindow):
         # Sequence together, not whichever ONE of them the Sequence/Shot
         # toggle currently has loaded for editing).
         self.sample_image.set_stack_getter(self._composed_preview_stack)
+        self.sample_image._timeline_controller.set_pipeline(self._timeline_pipeline)
+        self.media_panel.input_colourspace_changed.connect(self._on_input_colourspace_changed)
         # Matte Highlight mode (per Tom: "a way to preview the mask
         # similar to resolve's highlight mode") -- same pull-based
         # convention as set_stack_getter just above; toggling Highlight
@@ -2851,6 +2896,41 @@ class MainWindow(QMainWindow):
 
     # ---- Sequence/Shot toggle (see stack_panel.py's own docstring) -------
 
+    def _display_transform(self):
+        c = self._canvas
+        return colour_pipeline.DisplayTransform(c.display_drt, c.display_name, c.display_view)
+
+    def _effective_stack(self, user_stack, input_colourspace):
+        """The Stack Record actually renders (colour_pipeline.py): the
+        source's input transform, each stage in its own space, and the
+        project's display transform, around `user_stack`."""
+        return colour_pipeline.build_effective_stack(
+            user_stack, self._canvas.working_colourspace, input_colourspace, self._display_transform())
+
+    def _input_colourspace_for_path(self, path):
+        """The input color space of the Media Library entry for `path`, or
+        None (not in a library / already in the working space)."""
+        if not path:
+            return None
+        for library in self.media_panel.get_pool().libraries:
+            for entry in library.entries:
+                if entry.source_path == path:
+                    return entry.source_colourspace
+        return None
+
+    def _timeline_pipeline(self, clip, composed):
+        return self._effective_stack(composed, clip.input_colourspace)
+
+    def _on_input_colourspace_changed(self, entry):
+        """A Media Library entry's input space changed: every timeline clip
+        of that file follows it, and Record re-renders."""
+        for library in self.media_panel.get_pool().libraries:
+            for timeline_obj in library.timelines:
+                for clip in timeline_obj.clips:
+                    if clip.source_path == entry.source_path:
+                        clip.input_colourspace = entry.source_colourspace
+        self.sample_image.refresh_preview()
+
     def _composed_preview_stack(self):
         """The Viewer's own live-preview stack -- ALWAYS the currently
         selected Timeline clip's own grade composed with the Sequence
@@ -2875,8 +2955,21 @@ class MainWindow(QMainWindow):
         clip = self.timeline_panel.get_selected_clip()
         sequence_stack = self.stack_panel.get_sequence_stack()
         if clip is None:
-            return sequence_stack
-        return st.compose_stacks(clip.stack, sequence_stack)
+            input_space = self._input_colourspace_for_path(self.sample_image.current_path)
+            user_stack = sequence_stack
+        else:
+            input_space = clip.input_colourspace
+            user_stack = st.compose_stacks(clip.stack, sequence_stack)
+        self._refresh_pipeline_summary(input_space)
+        return self._effective_stack(user_stack, input_space)
+
+    def _refresh_pipeline_summary(self, input_space):
+        c = self._canvas
+        if c.display_drt == "aces":
+            display = f"{c.display_view} ({c.display_name.replace(' - Display', '')})"
+        else:
+            display = "none (working space)"
+        self.stack_panel.set_pipeline_summary(input_space, c.working_colourspace, display)
 
     def _on_sequence_mode_requested(self):
         """The user clicked "Sequence" -- wrapped in _restoring_stack_
@@ -3131,6 +3224,18 @@ class MainWindow(QMainWindow):
             self._bake_settings_form = BakeSettingsForm(self.stack_panel.get_stack)
             self._bake_settings_form.settings_changed.connect(self._set_bake_settings)
             lut_group_layout.addWidget(self._bake_settings_form)
+            # Full chain (colour_pipeline.py): bake the source's input
+            # transform and the project display transform around the
+            # grade -- a camera-log -> display "show LUT" for set/dailies.
+            # Off: the grade only, working space in and out.
+            self.export_full_chain_checkbox = QCheckBox(
+                "Full chain: include input and display transforms (show LUT)")
+            self.export_full_chain_checkbox.setToolTip(
+                "Bakes Input -> grade -> Display, as Record shows it. Unchecked: the "
+                "grade only, in the project working space.")
+            self.export_full_chain_checkbox.toggled.connect(
+                lambda _on: self.export_specs_label.setText(self._export_specs_text()))
+            lut_group_layout.addWidget(self.export_full_chain_checkbox)
             outer.addWidget(lut_group)
 
             # Three top-level checkboxes (per Tom), in this order -- each
@@ -3226,6 +3331,7 @@ class MainWindow(QMainWindow):
         self._canvas = canvas
         self._canvas_confirmed = True
         self._apply_canvas_to_viewer()
+        self.sample_image.refresh_preview()  # display transform / working space may have changed
 
     def _prompt_project_setup(self):
         """The New Project prompt (Tom, 2026-10-05: "default to launching
@@ -3553,6 +3659,9 @@ class MainWindow(QMainWindow):
         what's about to be exported."""
         stack = self.stack_panel.get_stack()
         lines = [describe_bake_settings(self._bake_settings)]
+        full_chain = getattr(self, "export_full_chain_checkbox", None)
+        if full_chain is not None and full_chain.isChecked():
+            lines.append(self.stack_panel.pipeline_label.text())
 
         if stack.stages:
             plural = "" if len(stack.stages) == 1 else "s"
@@ -3577,8 +3686,12 @@ class MainWindow(QMainWindow):
                 self, "Empty stack",
                 "Add stages to the Stack first.")
             return None
+        full_chain = getattr(self, "export_full_chain_checkbox", None)
         try:
-            lut = self.stack_panel.get_baked_lut(self._bake_settings)
+            if full_chain is not None and full_chain.isChecked():
+                lut = st.bake_stack_to_lut3d(self._composed_preview_stack(), self._bake_settings)
+            else:
+                lut = self.stack_panel.get_baked_lut(self._bake_settings)
         except Exception as e:  # noqa: BLE001 -- surface any bake failure to the user
             QMessageBox.critical(self, "Bake failed", str(e))
             return None

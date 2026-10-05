@@ -185,7 +185,15 @@ from media_library import MediaEntry, MediaLibrary, MediaPool, DEFAULT_LIBRARY_N
 from atomic_write import atomic_open
 
 SESSION_FORMAT = "lutier-session"
-SESSION_VERSION = 14
+SESSION_VERSION = 15
+
+# VERSION 15 (Tom, 2026-10-05: Baselight-style color management,
+# colour_pipeline.py): Timeline clips carry "input_colourspace" (from
+# their Media Library entry's source_colourspace, now used for video too),
+# and the canvas gains the display transform (display_drt/name/view). All
+# default to "no conversion" when absent, so older files render as before
+# -- except stages whose own Working Color Space differs from the project
+# space, which now convert in and out instead of assuming (Tom's choice).
 
 # VERSION 14 (Tom, 2026-10-05: library side panel; timelines as library
 # items): "media_library" + "timeline" become one "media_pool" section --
@@ -922,6 +930,7 @@ def timeline_to_session_dict(timeline):
             "in_frame": clip.in_frame,
             "out_frame": clip.out_frame,
             "thumbnail": clip.thumbnail,
+            "input_colourspace": clip.input_colourspace,
             "stack": stack_dict,
         })
     return {"name": timeline.name, "frame_rate": timeline.frame_rate, "clips": clips}, warnings
@@ -955,6 +964,7 @@ def timeline_from_session_dict(data):
             name, entry.get("source_path"), entry.get("media_kind", "video"),
             entry.get("in_frame", 0), entry.get("out_frame", 0),
             stack=stack, thumbnail=entry.get("thumbnail"),
+            input_colourspace=entry.get("input_colourspace"),
         ))
     return timeline, warnings
 

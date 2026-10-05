@@ -50,6 +50,13 @@ DEFAULT_FRAME_RATE = 24.0
 # from aces_drt.list_working_colourspaces(); ACEScct matches the old
 # per-stage defaults.
 DEFAULT_WORKING_COLOURSPACE = "ACEScct"
+# The project's display transform (colour_pipeline.py): applied after the
+# Stack in the Record viewer. Off by default (per Tom); "aces" uses the
+# ACES output transform for display/view below.
+DEFAULT_DISPLAY_DRT = "none"
+DISPLAY_DRTS = ("none", "aces")
+DEFAULT_DISPLAY_NAME = "Rec.1886 Rec.709 - Display"
+DEFAULT_DISPLAY_VIEW = "ACES 1.0 - SDR Video"
 
 
 @dataclass(frozen=True)
@@ -66,6 +73,9 @@ class CanvasSettings:
     pixel_aspect_ratio: float = DEFAULT_PIXEL_ASPECT_RATIO
     frame_rate: float = DEFAULT_FRAME_RATE
     working_colourspace: str = DEFAULT_WORKING_COLOURSPACE
+    display_drt: str = DEFAULT_DISPLAY_DRT
+    display_name: str = DEFAULT_DISPLAY_NAME
+    display_view: str = DEFAULT_DISPLAY_VIEW
 
     def __post_init__(self):
         if self.bit_depth not in BIT_DEPTHS:
@@ -110,6 +120,9 @@ def canvas_to_session_dict(canvas):
         "width": canvas.width, "height": canvas.height, "bit_depth": canvas.bit_depth,
         "pixel_aspect_ratio": canvas.pixel_aspect_ratio, "frame_rate": canvas.frame_rate,
         "working_colourspace": canvas.working_colourspace,
+        "display_drt": canvas.display_drt,
+        "display_name": canvas.display_name,
+        "display_view": canvas.display_view,
     }
 
 
@@ -125,4 +138,7 @@ def canvas_from_session_dict(data):
         pixel_aspect_ratio=data.get("pixel_aspect_ratio", DEFAULT_PIXEL_ASPECT_RATIO),
         frame_rate=data.get("frame_rate", DEFAULT_FRAME_RATE),
         working_colourspace=data.get("working_colourspace", DEFAULT_WORKING_COLOURSPACE),
+        display_drt=data.get("display_drt", DEFAULT_DISPLAY_DRT),
+        display_name=data.get("display_name", DEFAULT_DISPLAY_NAME),
+        display_view=data.get("display_view", DEFAULT_DISPLAY_VIEW),
     )

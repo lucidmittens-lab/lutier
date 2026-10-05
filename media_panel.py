@@ -103,6 +103,7 @@ import timeline as tl
 import hover_inspector
 import media_cache
 import media_probe
+import colour_pipeline
 import thumbnail
 import video_source
 import timecode
@@ -303,8 +304,11 @@ COLUMNS = (
     _Column("format", "Format", lambda e: _text_cell(e.metadata.get("format")), False, 90),
     _Column("size", "Size", _size_cell, False, 76, numeric=True),
     _Column("modified", "Date Modified", _modified_cell, False, 130, numeric=True),
-    _Column("colorspace", "Color Space",
-            lambda e: ("" if e.is_video else (e.source_colourspace or "Unmanaged"), None), False, 100),
+    # The source's INPUT color space (colour_pipeline.py) -- what Record
+    # converts from into the project working space. Shown by default: it's
+    # the first thing to check on camera footage.
+    _Column("colorspace", "Input Space",
+            lambda e: (e.source_colourspace or "Working space", None), True, 120),
     _Column("filename", "File Name",
             lambda e: _text_cell(e.source_filename or (Path(e.source_path).name if e.source_path else "")),
             False, 160),
@@ -321,7 +325,7 @@ COLUMN_COLORSPACE = COLUMN_KEYS.index("colorspace")
 COLUMN_PATH = COLUMN_KEYS.index("path")
 # Bumped when the default column set changes, so a remembered layout from
 # before (which just recorded the old defaults) gives way to the new ones.
-HEADER_STATE_VERSION = 2
+HEADER_STATE_VERSION = 3  # 3: Input Space on by default
 # Never hideable -- a row with no visible name is unidentifiable.
 _ALWAYS_VISIBLE = {"name"}
 
@@ -458,6 +462,9 @@ class MediaPanel(QWidget):
     # unloads the Timeline panel if it's the loaded one.
     timeline_renamed = Signal(object)
     timeline_deleted = Signal(object)
+    # An entry's input color space was changed here (media_library.MediaEntry)
+    # -- MainWindow updates timeline clips of that file and the viewers.
+    input_colourspace_changed = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -633,6 +640,7 @@ class MediaPanel(QWidget):
         menu.addAction("Grade in Record (no timeline)", self._on_load_as_sample_clicked)
         menu.addAction("Load as Reference", self._on_load_as_reference_clicked)
         menu.addAction("Add to Timeline", self._on_add_to_timeline_clicked)
+        self._add_input_space_menu(menu)
         menu.addSeparator()
         menu.addAction("Rename...", self._on_rename_clicked)
         menu.addAction("Delete", self._on_delete_clicked)
@@ -759,8 +767,7 @@ class MediaPanel(QWidget):
                 start_tc, _ = _timecode_cell(entry, 0)
                 end_tc, _ = _timecode_cell(entry, max(0, (entry.frame_count or 1) - 1))
                 lines.append(f"Start: {start_tc}  End: {end_tc}")
-        else:
-            lines.append(f"Color space: {entry.source_colourspace or 'Unmanaged'}")
+        lines.append(f"Input: {entry.source_colourspace or 'working space'}")
         # Probed format details, whether or not their columns are showing.
         details = [entry.metadata.get("codec"), _bit_depth_cell(entry)[0],
                    _chroma_cell(entry)[0], _audio_cell(entry)[0]]
@@ -898,10 +905,12 @@ class MediaPanel(QWidget):
                 f"media-library-{name}", thumbnail.make_thumbnail_png_bytes(array))
         except Exception:  # noqa: BLE001 -- a thumbnail failure shouldn't block cataloging the file
             pass
+        metadata = _probe_or_empty(path, is_video=False)
         return MediaEntry(
             name, str(path), source_filename=Path(path).name,
+            source_colourspace=colour_pipeline.suggest_input_colourspace(metadata),
             media_kind="still", width=width, height=height,
-            thumbnail=thumb_descriptor, metadata=_probe_or_empty(path, is_video=False))
+            thumbnail=thumb_descriptor, metadata=metadata)
 
     def _build_video_entry(self, path):
         """Opens `path` just long enough to read its stream metadata (no
@@ -920,14 +929,54 @@ class MediaPanel(QWidget):
         if first_frame is not None:
             thumb_descriptor = media_cache.store_thumbnail(
                 f"media-library-{name}", thumbnail.make_thumbnail_png_bytes(first_frame))
+        metadata = _probe_or_empty(path, is_video=True)
         return MediaEntry(
             name, str(path), source_filename=Path(path).name,
+            source_colourspace=colour_pipeline.suggest_input_colourspace(metadata),
             media_kind="video", width=width, height=height,
             frame_count=frame_count, frame_rate=frame_rate,
-            duration=duration, thumbnail=thumb_descriptor,
-            metadata=_probe_or_empty(path, is_video=True))
+            duration=duration, thumbnail=thumb_descriptor, metadata=metadata)
 
     # ---- load as sample/reference / rename / delete ----------------------
+
+    # Common camera/delivery spaces first; the rest of the config after.
+    _COMMON_INPUT_SPACES = (
+        "ARRI LogC4", "ARRI LogC3 (EI800)", "S-Log3 S-Gamut3.Cine", "S-Log3 Venice S-Gamut3.Cine",
+        "Log3G10 REDWideGamutRGB", "BMDFilm WideGamut Gen5", "V-Log V-Gamut", "Apple Log",
+        "ACES2065-1", "ACEScct", "Camera Rec.709", "sRGB Encoded Rec.709 (sRGB)",
+        "Gamma 2.4 Encoded Rec.709", "Linear Rec.709 (sRGB)")
+
+    def _add_input_space_menu(self, menu):
+        """"Input Color Space" submenu for the selected entries (see
+        colour_pipeline.py) -- checked on the current one."""
+        entries = self._selected_entries()
+        if not entries:
+            return
+        current = entries[0].source_colourspace
+        submenu = menu.addMenu("Input Color Space")
+        available = colour_pipeline.available_input_colourspaces()
+
+        def add(label, value):
+            action = submenu.addAction(label, lambda: self.set_input_colourspace(entries, value))
+            action.setCheckable(True)
+            action.setChecked(value == current)
+
+        add("Same as working space", None)
+        submenu.addSeparator()
+        common = [s for s in self._COMMON_INPUT_SPACES if s in available]
+        for space in common:
+            add(space, space)
+        more = submenu.addMenu("All color spaces")
+        for space in available:
+            action = more.addAction(space, lambda s=space: self.set_input_colourspace(entries, s))
+            action.setCheckable(True)
+            action.setChecked(space == current)
+
+    def set_input_colourspace(self, entries, space):
+        for entry in entries:
+            entry.source_colourspace = space
+            self.input_colourspace_changed.emit(entry)
+        self._refresh_table(keep_selection_id=entries[0].id if entries else None)
 
     def _on_open_in_source_clicked(self, *_args):
         entry = self._selected_entry()
