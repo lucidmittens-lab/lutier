@@ -14,6 +14,7 @@ import tempfile
 
 import av
 import numpy as np
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 import stack as st
@@ -195,6 +196,13 @@ def test_tick_notifies_scopes_for_a_gpu_eligible_stack():
     controller = VideoPlaybackController(panel)
     controller.play()
     controller._tick()
+    # While playing, the Scopes sample is graded on scopes_worker.py's
+    # thread and delivered back as a queued signal -- wait for it (up to
+    # its rate limit plus a margin) instead of expecting it inline.
+    for _ in range(40):
+        if seen:
+            break
+        QTest.qWait(25)
 
     # Checked BEFORE pause() -- pause() re-parks via its own seek/recompute
     # path, which legitimately emits after_image_changed again and would

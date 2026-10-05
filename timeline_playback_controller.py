@@ -59,14 +59,17 @@ clip can coexist without stepping on each other.
 Same "own QObject, own QTimer" shape as VideoPlaybackController/
 CastingController.
 """
-from PySide6.QtCore import QObject, QTimer, Signal
+import time
+
+from PySide6.QtCore import QObject, QTimer, Signal, Qt
 
 import app_logic
 import stack as st
 import video_source
+from frame_server import FrameServer, Segment
 from video_playback_controller import (
     DECODE_PROXY_MAX_DIMENSION, DEFAULT_SPEED,
-    push_graded_frame_to_viewer,
+    push_graded_frame_to_viewer, _cancel_async_scopes,
 )
 
 TIMELINE_PLAYBACK_STATUS_TEXT = "TIMELINE PLAYBACK — grade locked"
@@ -115,8 +118,14 @@ class TimelineController(QObject):
         self._timeline_getter = timeline_getter
         self._sequence_stack_getter = sequence_stack_getter
         self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._timer.timeout.connect(self._on_timer)
         self._playing = False
+        # Decodes ahead on a worker thread while playing (frame_server.py);
+        # _tick takes from it and only decodes itself on a miss.
+        self._frame_server = FrameServer(DECODE_PROXY_MAX_DIMENSION)
+        self._clock_start = None       # perf_counter() when playback (re)started
+        self._frames_advanced = 0      # frames moved since the clock started
         self.loop_enabled = False
         self.speed = DEFAULT_SPEED
         self._base_interval_ms = None
@@ -227,6 +236,9 @@ class TimelineController(QObject):
         self._playing = True
         self._panel.status_label.setText(TIMELINE_PLAYBACK_STATUS_TEXT)
         self._base_interval_ms = max(1, round(1000.0 / timeline_obj.frame_rate))
+        self._restart_frame_server(timeline_obj, self._clip_index, self._frame_in_clip + self._frame_step())
+        self._clock_start = time.perf_counter()
+        self._frames_advanced = 0
         self._timer.start(self._tick_interval_ms())
         self.playback_started.emit()
 
@@ -241,7 +253,9 @@ class TimelineController(QObject):
         if not self._playing:
             return
         self._timer.stop()
+        self._frame_server.stop()
         self._playing = False
+        _cancel_async_scopes(self._panel)
         self.playback_stopped.emit()
 
     def stop(self):
@@ -256,6 +270,8 @@ class TimelineController(QObject):
         if was_playing:
             self._timer.stop()
             self._playing = False
+        self._frame_server.stop()
+        _cancel_async_scopes(self._panel)
         self._close_video_source()
         self._clip_index = 0
         self._frame_in_clip = 0
@@ -278,6 +294,47 @@ class TimelineController(QObject):
         self.speed = speed
         if self._playing and self._base_interval_ms is not None:
             self._timer.setInterval(self._tick_interval_ms())
+            # The worker's stride depends on speed, and the clock restarts.
+            timeline_obj = self._timeline_getter() if self._timeline_getter else None
+            if timeline_obj is not None and timeline_obj.clips:
+                self._restart_frame_server(
+                    timeline_obj, self._clip_index, self._frame_in_clip + self._frame_step())
+            self._clock_start = time.perf_counter()
+            self._frames_advanced = 0
+
+    @staticmethod
+    def _segments(timeline_obj):
+        return [Segment(c.source_path, c.media_kind, c.in_frame, c.frame_count)
+                for c in timeline_obj.clips]
+
+    def _restart_frame_server(self, timeline_obj, clip_index, frame_in_clip):
+        """Decode ahead from (clip_index, frame_in_clip) -- rolled over
+        into the next clip if it's past this one's end."""
+        clips = timeline_obj.clips
+        while clip_index < len(clips) and frame_in_clip >= clips[clip_index].frame_count:
+            frame_in_clip -= clips[clip_index].frame_count
+            clip_index += 1
+        if clip_index >= len(clips):
+            if not self.loop_enabled:
+                self._frame_server.stop()
+                return
+            clip_index, frame_in_clip = 0, 0
+        self._frame_server.restart(self._segments(timeline_obj), clip_index, frame_in_clip,
+                                   step=self._frame_step(), loop=self.loop_enabled)
+
+    def _on_timer(self):
+        """The playback clock: advance by however many frames are DUE
+        since play started (at least the normal step), so a slow moment
+        drops frames and playback stays in time instead of slowing down.
+        Not exact (see _tick): never blocks the UI thread on a decoder."""
+        timeline_obj = self._timeline_getter() if self._timeline_getter else None
+        rate = timeline_obj.frame_rate if timeline_obj is not None else 0
+        step = self._frame_step()
+        advance = step
+        if self._clock_start is not None and rate:
+            due = int((time.perf_counter() - self._clock_start) * rate * self.speed)
+            advance = max(step, due - self._frames_advanced)
+        self._tick(advance=advance, exact=False)
 
     def _tick_interval_ms(self):
         if self._base_interval_ms is None:
@@ -298,7 +355,7 @@ class TimelineController(QObject):
         getter = self._sequence_stack_getter
         return getter() if getter else st.Stack()
 
-    def _enter_clip(self, clip_index, clip, frame_in_clip=0, downres=False):
+    def _enter_clip(self, clip_index, clip, frame_in_clip=0, downres=False, prefetched=None):
         """Opens/decodes whatever `clip` needs (the clip at `clip_index`)
         and pushes ITS frame at `frame_in_clip` (an offset from clip.
         in_frame) to the Viewer -- returns False (Viewer left untouched,
@@ -328,7 +385,12 @@ class TimelineController(QObject):
         max_dimension = (
             DECODE_PROXY_MAX_DIMENSION // RECORD_SEEK_DOWNRES_FACTOR if downres
             else DECODE_PROXY_MAX_DIMENSION)
-        if clip.media_kind == "video":
+        if prefetched is not None:
+            # Already decoded ahead by the frame server -- no file open or
+            # seek on the UI thread at a cut. A later miss opens the
+            # source lazily (_decode_here).
+            push_graded_frame_to_viewer(self._panel, composed, prefetched, playing=self._playing)
+        elif clip.media_kind == "video":
             try:
                 source = video_source.VideoSource(clip.source_path)
             except Exception:  # noqa: BLE001 -- missing/moved/corrupt file, same as any other re-decode path
@@ -376,53 +438,66 @@ class TimelineController(QObject):
         preceding = sum(c.frame_count for c in timeline_obj.clips[:self._clip_index])
         return preceding + self._frame_in_clip
 
-    def _tick(self):
+    def _tick(self, advance=None, exact=True):
+        """Advance `advance` frames (default: one normal step, or several
+        at speed > 1) and show that frame -- crossing into the next clip
+        at the end of this one. `exact` (direct calls, tests): always
+        lands on exactly that frame, decoding it here if the frame server
+        doesn't have it. Not exact (_on_timer): takes the newest decoded
+        frame up to the target instead, and holds the current frame if
+        nothing's decoded yet -- never blocks on a decoder."""
         timeline_obj = self._timeline_getter() if self._timeline_getter else None
         if timeline_obj is None or not timeline_obj.clips or self._clip_index >= len(timeline_obj.clips):
             self.stop()
             return
         clip = timeline_obj.clips[self._clip_index]
-        step = self._frame_step()
-        next_offset = self._frame_in_clip + step
-
+        advance = self._frame_step() if advance is None else advance
+        next_offset = self._frame_in_clip + advance
+        if next_offset > clip.frame_count - 1:
+            self._frames_advanced += clip.frame_count - self._frame_in_clip
+            self._advance_to_next_clip(timeline_obj)
+            return
         if clip.media_kind == "still":
-            # Held frozen -- already pushed once by _enter_clip (see that
-            # method's own docstring). Just count ticks toward this
-            # clip's own frame_count; nothing to decode or re-push.
-            if next_offset > clip.frame_count - 1:
-                self._advance_to_next_clip(timeline_obj)
-                return
+            # Held, not re-decoded -- _enter_clip already pushed its image.
             self._frame_in_clip = next_offset
+            self._frames_advanced += advance
             self.frame_changed.emit()
             return
-
-        source = self._video_source
-        if source is None:
-            self.stop()
-            return
-        if next_offset > clip.frame_count - 1:
-            self._advance_to_next_clip(timeline_obj)
-            return
-        if step == 1:
-            frame = source.decode_next_frame(max_dimension=DECODE_PROXY_MAX_DIMENSION)
-        else:
-            # speed > 1 -- a SEEK straight to the target offset rather
-            # than stepping through intermediate frames whose results
-            # would just be discarded, same reasoning as
-            # VideoPlaybackController's own _tick.
-            frame = source.seek_to_frame(
-                clip.in_frame + next_offset, max_dimension=DECODE_PROXY_MAX_DIMENSION)
+        frame = self._frame_server.take(self._clip_index, next_offset)
+        if frame is None and not exact:
+            latest = self._frame_server.take_latest_up_to(self._clip_index, next_offset)
+            if latest is None:
+                return  # nothing decoded yet -- hold; the clock keeps running
+            next_offset, frame = latest
         if frame is None:
-            # End of stream earlier than clip.out_frame promised
-            # (frame_count is an estimate for some containers -- see
-            # video_source.py's own docstring) -- treat it the same as
-            # reaching the clip's own last frame.
+            frame = self._decode_here(timeline_obj, clip, next_offset)
+        if frame is None:  # ran out early (frame_count was an estimate)
             self._advance_to_next_clip(timeline_obj)
             return
+        self._frames_advanced += next_offset - self._frame_in_clip
         self._frame_in_clip = next_offset
         composed = st.compose_stacks(clip.stack, self._current_sequence_stack())
-        push_graded_frame_to_viewer(self._panel, composed, frame)
+        push_graded_frame_to_viewer(self._panel, composed, frame, playing=self._playing)
         self.frame_changed.emit()
+
+    def _decode_here(self, timeline_obj, clip, offset):
+        """The old synchronous decode, for a frame-server miss: opens this
+        clip's source here if needed, decodes `offset`, and restarts the
+        server just past it while playing."""
+        source = self._video_source
+        if source is None:
+            try:
+                source = self._video_source = video_source.VideoSource(clip.source_path)
+            except Exception:  # noqa: BLE001 -- missing/moved file, same as _enter_clip
+                return None
+            frame = source.seek_to_frame(clip.in_frame + offset, max_dimension=DECODE_PROXY_MAX_DIMENSION)
+        elif offset == self._frame_in_clip + 1:
+            frame = source.decode_next_frame(max_dimension=DECODE_PROXY_MAX_DIMENSION)
+        else:
+            frame = source.seek_to_frame(clip.in_frame + offset, max_dimension=DECODE_PROXY_MAX_DIMENSION)
+        if frame is not None and self._playing:
+            self._restart_frame_server(timeline_obj, self._clip_index, offset + self._frame_step())
+        return frame
 
     def _advance_to_next_clip(self, timeline_obj):
         next_index = self._clip_index + 1
@@ -432,7 +507,8 @@ class TimelineController(QObject):
                 return
             next_index = 0
         clip = timeline_obj.clips[next_index]
-        if not self._enter_clip(next_index, clip, frame_in_clip=0):
+        prefetched = self._frame_server.take(next_index, 0)
+        if not self._enter_clip(next_index, clip, frame_in_clip=0, prefetched=prefetched):
             # Couldn't open the next clip (missing file, say) -- stop
             # rather than get stuck ticking on a broken source forever.
             self.stop()

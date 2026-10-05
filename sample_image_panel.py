@@ -114,6 +114,7 @@ from floating_dialog import make_floating_tool_window, show_floating
 import gpu_stack_renderer
 import video_source
 import video_playback_controller
+import scopes_worker
 import timeline_playback_controller
 import timecode
 from casting_controller import CastingController
@@ -513,6 +514,10 @@ class SampleImagePanel(QWidget):
         self._viewer_mode_frame.setProperty("viewerMode", "source")
 
         self._build_video_transport_bar(layout)
+        # Grades the Scopes sample off the UI thread during playback (see
+        # scopes_worker.py and video_playback_controller.push_graded_frame_to_viewer).
+        self._scopes_worker = scopes_worker.ScopesWorker(self)
+        self._scopes_worker.result_ready.connect(self._on_async_scopes_result)
         self._playback_controller = video_playback_controller.VideoPlaybackController(self, parent=self)
         self._playback_controller.frame_changed.connect(self._on_video_frame_changed)
         self._playback_controller.playback_stopped.connect(self._on_video_playback_stopped)
@@ -2007,6 +2012,10 @@ class SampleImagePanel(QWidget):
             action.setChecked(action_key == key)
             action.blockSignals(False)
         self._render_wipe()
+
+    def _on_async_scopes_result(self, array, token):
+        if token == self._scopes_worker.token:  # not cancelled since it was submitted
+            self._set_current_after_array(array)
 
     def _set_current_after_array(self, array):
         """Single place that updates the "last after result" and notifies

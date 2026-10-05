@@ -8,14 +8,13 @@ plain (H,W,3) float32 [0,1] numpy arrays, matching every other
 image-shaped array convention in this app (image_io.read_image_as_array,
 custom_drt.py, the GPU RGBA32F texture pipeline).
 
-DECODE PRECISION -- deliberately 8-bit (PyAV's "rgb24" pixel format) for
-this v1, even for higher-bit-depth sources (ProRes/DNxHR 10/12-bit etc):
-getting a genuinely bit-depth-aware decode right (chroma subsampling,
-color range/matrix handling, HDR pixel format families) is a real rabbit
-hole well beyond image_io.py's still-image case, where OIIO's own already
--correct, already-tested container conventions did the hard part. Scoped
-down deliberately rather than shipping an unverified guess -- true
-bit-depth-aware video decode is a documented follow-up, not an oversight.
+DECODE PRECISION -- 16-bit (PyAV's "rgb48le"), so 10/12-bit camera
+sources (ProRes 4444, DNxHR) keep their precision through grading
+instead of being quantized to 8 bits first. Measured 2026-10-05 on a 4K
+ProRes 4444 ARRI clip: no slower than the old 8-bit "rgb24" path (the
+cost is decode + scale, not the output depth). Matrix/range conversion
+is still ffmpeg's own swscale defaults for the stream -- color
+management of the decoded RGB is the stack's job.
 
 Same rule as every other backend module in this app: no PySide6 import
 here, fully testable without a display. Realtime PLAYBACK (a QTimer loop
@@ -141,8 +140,8 @@ class VideoSource:
         return frame
 
     def _frame_to_array(self, frame):
-        rgb = frame.to_ndarray(format="rgb24")
-        return rgb.astype(np.float32) / 255.0
+        rgb = frame.to_ndarray(format="rgb48le")
+        return rgb.astype(np.float32) * np.float32(1.0 / 65535.0)
 
     def close(self):
         self._container.close()
