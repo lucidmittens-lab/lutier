@@ -71,7 +71,7 @@ class MediaEntry:
     def __init__(self, name, source_path, source_colourspace=None,
                  source_filename=None, entry_id=None, media_kind="still",
                  width=None, height=None, frame_count=None, frame_rate=None,
-                 duration=None, thumbnail=None):
+                 duration=None, thumbnail=None, metadata=None):
         self.id = entry_id if entry_id is not None else next_entry_id()
         self.name = name
         self.source_path = source_path
@@ -84,6 +84,9 @@ class MediaEntry:
         self.frame_rate = frame_rate
         self.duration = duration
         self.thumbnail = thumbnail
+        # media_probe.probe()'s header metadata (codec, timecode, camera,
+        # ...) backing the table's extra columns -- see that module.
+        self.metadata = dict(metadata) if metadata else {}
 
     @property
     def is_video(self):
@@ -96,6 +99,7 @@ class MediaEntry:
             media_kind=self.media_kind, width=self.width, height=self.height,
             frame_count=self.frame_count, frame_rate=self.frame_rate,
             duration=self.duration, thumbnail=self.thumbnail,
+            metadata=self.metadata,
         )
 
     def __repr__(self):

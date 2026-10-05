@@ -92,3 +92,34 @@ def _drop_frame_timecode(frame_index, frame_rate):
 
     hours, minutes, seconds, frames = _hms(adjusted, fr)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d};{frames:02d}"
+
+
+def timecode_to_frames(text, frame_rate):
+    """Inverse of frames_to_timecode: "HH:MM:SS:FF" / "HH:MM:SS;FF" ->
+    0-based frame count, or None if `text` doesn't parse or frame_rate
+    <= 0. Drop-frame is read from the string itself (a ";" or "." before
+    the frames field, the SMPTE marking a camera/container writes), not
+    auto-detected from frame_rate -- a source that wrote non-drop at
+    29.97 means non-drop. Callers formatting a related timecode (e.g.
+    a clip's End TC from its Start TC) should pass the same
+    is_drop_frame_timecode(text) to frames_to_timecode."""
+    if frame_rate <= 0 or not text:
+        return None
+    parts = text.strip().replace(";", ":").replace(".", ":").split(":")
+    if len(parts) != 4:
+        return None
+    try:
+        hours, minutes, seconds, frames = (int(p) for p in parts)
+    except ValueError:
+        return None
+    fr = round(frame_rate)
+    nominal = ((hours * 60 + minutes) * 60 + seconds) * fr + frames
+    if not is_drop_frame_timecode(text):
+        return nominal
+    drop_frames = round(frame_rate * 0.066666)
+    total_minutes = hours * 60 + minutes
+    return nominal - drop_frames * (total_minutes - total_minutes // 10)
+
+
+def is_drop_frame_timecode(text):
+    return bool(text) and (";" in text or "." in text)

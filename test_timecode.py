@@ -2,7 +2,7 @@
 
 Fully Qt-free.
 """
-from timecode import frames_to_timecode
+from timecode import frames_to_timecode, timecode_to_frames, is_drop_frame_timecode
 
 
 def test_non_drop_frame_basic_values():
@@ -89,6 +89,29 @@ def test_zero_or_negative_frame_rate_returns_zero_timecode():
           "00:00:00:00 rather than raising -- OK")
 
 
+def test_timecode_to_frames_inverts_frames_to_timecode():
+    for rate in (23.976, 24, 25, 29.97, 30, 59.94):
+        for frame in (0, 1, 1799, 1800, 17982, 107892, 215784):
+            text = frames_to_timecode(frame, rate)
+            assert timecode_to_frames(text, rate) == frame, (rate, frame, text)
+    print("timecode_to_frames: inverts frames_to_timecode, drop and non-drop -- OK")
+
+
+def test_timecode_to_frames_reads_drop_frame_from_the_separator():
+    # A source that wrote ":" at 29.97 is non-drop, whatever the rate says.
+    assert timecode_to_frames("00:01:00:02", 29.97) == 30 * 60 + 2
+    assert timecode_to_frames("00:01:00;02", 29.97) == 1800
+    assert is_drop_frame_timecode("00:01:00;02") and not is_drop_frame_timecode("00:01:00:02")
+    print("timecode_to_frames: drop-frame comes from the ';' separator -- OK")
+
+
+def test_timecode_to_frames_rejects_garbage():
+    for text in ("", None, "1:00", "aa:bb:cc:dd"):
+        assert timecode_to_frames(text, 24) is None
+    assert timecode_to_frames("00:00:01:00", 0) is None
+    print("timecode_to_frames: unparseable text or no rate -> None -- OK")
+
+
 if __name__ == "__main__":
     test_non_drop_frame_basic_values()
     test_non_drop_frame_at_25_and_30fps()
@@ -100,5 +123,8 @@ if __name__ == "__main__":
     test_explicit_drop_frame_override()
     test_wraps_at_24_hours()
     test_zero_or_negative_frame_rate_returns_zero_timecode()
+    test_timecode_to_frames_inverts_frames_to_timecode()
+    test_timecode_to_frames_reads_drop_frame_from_the_separator()
+    test_timecode_to_frames_rejects_garbage()
     print()
     print("All timecode tests passed.")

@@ -868,6 +868,29 @@ def test_media_library_from_session_list_reprobes_missing_width_height():
           "header -- OK")
 
 
+def test_media_library_metadata_round_trips_and_is_reprobed_when_missing():
+    """MediaEntry.metadata (media_probe's header fields behind the Media
+    Libraries columns) is saved as-is; an entry saved before it existed
+    gets it from a header probe on load instead of blank columns."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "swatch.png")
+        Image.fromarray(np.full((4, 6, 3), 128, dtype=np.uint8)).save(path)
+        library = MediaLibrary()
+        library.add_entry(MediaEntry("Swatch", path, width=6, height=4,
+                                     metadata={"codec": "Saved Value", "bit_depth": 8}))
+        data = session_io.media_library_to_session_list(library)
+        reloaded, warnings = session_io.media_library_from_session_list(data)
+        assert warnings == [] and reloaded.entries[0].metadata == {"codec": "Saved Value", "bit_depth": 8}
+
+        del data[0]["metadata"]
+        reprobed, warnings = session_io.media_library_from_session_list(data)
+        assert warnings == []
+        assert reprobed.entries[0].metadata["format"] == "PNG"
+        assert reprobed.entries[0].metadata["bit_depth"] == 8
+    print("media_library session: metadata round-trips, and a pre-metadata "
+          "entry is re-probed on load -- OK")
+
+
 def test_media_library_video_entry_session_round_trip():
     """Media Library Phase 2/VERSION 12: a video entry (media_kind=
     "video") persists its width/height/frame_count/frame_rate/duration/
@@ -1530,6 +1553,7 @@ if __name__ == "__main__":
     test_session_io_never_imports_a_full_raster_decoder()
     test_media_library_session_round_trip_via_real_file()
     test_media_library_from_session_list_reprobes_missing_width_height()
+    test_media_library_metadata_round_trips_and_is_reprobed_when_missing()
     test_media_library_video_entry_session_round_trip()
     test_media_library_from_session_list_defaults_media_kind_for_old_files()
     test_media_library_from_session_list_skips_missing_file_with_warning()

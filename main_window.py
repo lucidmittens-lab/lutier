@@ -2356,6 +2356,7 @@ class MainWindow(QMainWindow):
             "window_size": [size.width(), size.height()],
             "maximized": self.isMaximized(),
             "dock_state_b64": base64.b64encode(bytes(self.saveState())).decode("ascii"),
+            "media_table_columns": self.media_panel.get_header_state(),
         }
 
     def load_workspace_state(self, workspace):
@@ -2400,6 +2401,7 @@ class MainWindow(QMainWindow):
                 self.showMaximized()
             else:
                 self.showNormal()
+        self.media_panel.restore_header_state((workspace or {}).get("media_table_columns"))
         window_size = (workspace or {}).get("window_size")
         if window_size and len(window_size) == 2:
             try:
@@ -2487,6 +2489,7 @@ class MainWindow(QMainWindow):
         self.resize(*DEFAULT_WORKSPACE_STATE["window_size"])
         self.showMaximized()
         self._build_default_dock_layout()
+        self.media_panel.reset_columns()
         self._snapshot_all_docked_state()
         self._settling_default_layout = True
         QTimer.singleShot(1000, self._finish_launch_settling)

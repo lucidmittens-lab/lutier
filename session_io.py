@@ -166,6 +166,7 @@ from app_logic import load_lut_any_format, create_identity_lut, get_image_native
 import stack as st
 import canvas as cv
 import video_source
+import media_probe
 import cdl
 import color_warper
 import custom_drt
@@ -1170,6 +1171,7 @@ def media_library_to_session_list(library):
             "frame_rate": entry.frame_rate,
             "duration": entry.duration,
             "thumbnail": entry.thumbnail,
+            "metadata": entry.metadata,
         }
         for entry in library.entries
         if entry.source_path  # nothing to reconstruct from otherwise
@@ -1222,6 +1224,17 @@ def media_library_from_session_list(entries_data):
         except Exception as e:  # noqa: BLE001 -- one bad entry shouldn't sink the rest
             warnings.append(f'Skipped Media Library entry "{name}": {e}')
             continue
+        # Saved before the Media Libraries table grew its probed columns
+        # (codec, timecode, camera, ...) -- fill them in from the file's
+        # header now, same header-only probe as width/height above. A
+        # failure here just leaves those columns blank, never skips an
+        # entry that's otherwise loadable.
+        metadata = data.get("metadata")
+        if metadata is None:
+            try:
+                metadata = media_probe.probe(path, is_video=media_kind == "video")
+            except Exception:  # noqa: BLE001 -- see comment above
+                metadata = {}
         library.entries.append(MediaEntry(
             name, path,
             source_colourspace=data.get("source_colourspace"),
@@ -1233,6 +1246,7 @@ def media_library_from_session_list(entries_data):
             frame_rate=data.get("frame_rate"),
             duration=data.get("duration"),
             thumbnail=data.get("thumbnail"),
+            metadata=metadata,
         ))
     return library, warnings
 

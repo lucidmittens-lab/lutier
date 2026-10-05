@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMenu
 
 from media_library import MediaEntry, MEDIA_ENTRY_DRAG_MIME_TYPE
-from media_panel import MediaPanel, COLUMN_NAME, COLUMN_THUMBNAIL
+from media_panel import MediaPanel, COLUMN_NAME, COLUMN_THUMBNAIL, COLUMN_KEYS, COLUMNS
 
 
 def _app():
@@ -354,6 +354,114 @@ def test_filter_survives_a_refresh_after_import():
           "after Import) -- OK")
 
 
+def _arri_like_entry():
+    return MediaEntry(
+        "A001C004", "/media/A001C004.mxf", media_kind="video", width=4448, height=3096,
+        frame_count=48, frame_rate=24.0, duration=2.0,
+        metadata={"start_timecode": "00:42:45:19", "codec": "ProRes 4444", "bit_depth": 12,
+                  "chroma": "4:4:4", "has_alpha": False, "audio_channels": 5,
+                  "audio_sample_rate": 48000, "camera": "ARRI ALEXA Mini LF",
+                  "format": "MXF", "file_size": 1106604116})
+
+
+def _cell_text(panel, row, key):
+    return panel.table.item(row, COLUMN_KEYS.index(key)).text()
+
+
+def test_probed_columns_show_formatted_metadata():
+    _app()
+    panel = MediaPanel()
+    panel.library.add_entry(_arri_like_entry())
+    panel._refresh_table()
+    expected = {
+        "start_tc": "00:42:45:19", "end_tc": "00:42:47:18", "frames": "48", "fps": "24",
+        "codec": "ProRes 4444", "bit_depth": "12-bit", "chroma": "4:4:4",
+        "audio": "5 ch, 48 kHz", "camera": "ARRI ALEXA Mini LF", "format": "MXF",
+        "size": "1.0 GB", "filename": "A001C004.mxf",
+    }
+    for key, text in expected.items():
+        assert _cell_text(panel, 0, key) == text, (key, _cell_text(panel, 0, key))
+    print("MediaPanel: probed metadata columns show formatted values -- OK")
+
+
+def test_hover_info_uses_the_embedded_start_timecode():
+    _app()
+    panel = MediaPanel()
+    panel.library.add_entry(_arri_like_entry())
+    panel._refresh_table()
+    info = panel._hover_info_for_item(panel.table.item(0, 0))
+    assert "Start: 00:42:45:19  End: 00:42:47:18" in info, info
+    assert "ProRes 4444 · 12-bit · 4:4:4 · 5 ch, 48 kHz" in info, info
+    print("MediaPanel: hover card uses the clip's embedded start timecode -- OK")
+
+
+def test_start_tc_sorts_by_frame_not_text():
+    _app()
+    panel = MediaPanel()
+    for name, tc in (("late", "10:00:00:00"), ("early", "09:59:59:23"), ("none", None)):
+        metadata = {"start_timecode": tc} if tc else {}
+        panel.library.add_entry(MediaEntry(
+            name, f"/tmp/{name}.mov", media_kind="video", frame_count=24,
+            frame_rate=24.0, duration=1.0, metadata=metadata))
+    panel._refresh_table()
+    panel.table.sortItems(COLUMN_KEYS.index("start_tc"), Qt.SortOrder.AscendingOrder)
+    names = [panel.table.item(r, COLUMN_NAME).text() for r in range(3)]
+    assert names == ["none", "early", "late"], names
+    print("MediaPanel: Start TC sorts by frame number -- OK")
+
+
+def test_default_column_visibility_follows_columns_spec():
+    _app()
+    panel = MediaPanel()
+    for index, column in enumerate(COLUMNS):
+        assert panel.table.isColumnHidden(index) == (not column.visible), column.key
+    print("MediaPanel: columns start shown/hidden per COLUMNS -- OK")
+
+
+def test_header_state_round_trips_order_visibility_and_width():
+    _app()
+    panel = MediaPanel()
+    header = panel.table.horizontalHeader()
+    codec = COLUMN_KEYS.index("codec")
+    camera = COLUMN_KEYS.index("camera")
+    header.moveSection(header.visualIndex(codec), 1)
+    panel.table.setColumnHidden(camera, False)
+    panel.table.setColumnHidden(COLUMN_KEYS.index("path"), True)
+    panel.table.setColumnWidth(camera, 222)
+    state = panel.get_header_state()
+
+    restored = MediaPanel()
+    restored.restore_header_state(state)
+    assert restored.get_header_state() == state
+    assert restored.table.horizontalHeader().visualIndex(codec) == 1
+    assert not restored.table.isColumnHidden(camera)
+    assert restored.table.columnWidth(camera) == 222
+    print("MediaPanel: header order/visibility/width survive "
+          "get_header_state -> restore_header_state -- OK")
+
+
+def test_restoring_an_older_header_state_keeps_new_columns_at_their_defaults():
+    _app()
+    panel = MediaPanel()
+    # Saved before "camera" (default hidden) and "fps" (default shown)
+    # existed, and naming a column that has since been removed.
+    old_keys = [k for k in COLUMN_KEYS if k not in ("camera", "fps")] + ["removed_column"]
+    panel.restore_header_state({"order": old_keys, "hidden": ["kind", "removed_column"], "widths": {}})
+    assert panel.table.isColumnHidden(COLUMN_KEYS.index("kind"))
+    assert panel.table.isColumnHidden(COLUMN_KEYS.index("camera"))
+    assert not panel.table.isColumnHidden(COLUMN_KEYS.index("fps"))
+    print("MediaPanel: an older saved layout restores, new columns keep "
+          "their defaults -- OK")
+
+
+def test_name_column_cannot_be_hidden_by_a_saved_state():
+    _app()
+    panel = MediaPanel()
+    panel.restore_header_state({"order": list(COLUMN_KEYS), "hidden": ["name"]})
+    assert not panel.table.isColumnHidden(COLUMN_NAME)
+    print("MediaPanel: Name stays visible whatever a saved layout says -- OK")
+
+
 if __name__ == "__main__":
     test_hover_info_includes_start_and_end_timecode_for_video()
     test_hover_info_omits_timecode_for_a_still()
@@ -372,5 +480,12 @@ if __name__ == "__main__":
     test_filter_hides_non_matching_rows_by_name_or_path()
     test_clearing_the_filter_shows_every_row_again()
     test_filter_survives_a_refresh_after_import()
+    test_probed_columns_show_formatted_metadata()
+    test_hover_info_uses_the_embedded_start_timecode()
+    test_start_tc_sorts_by_frame_not_text()
+    test_default_column_visibility_follows_columns_spec()
+    test_header_state_round_trips_order_visibility_and_width()
+    test_restoring_an_older_header_state_keeps_new_columns_at_their_defaults()
+    test_name_column_cannot_be_hidden_by_a_saved_state()
     print()
     print("All media_panel tests passed.")

@@ -19,9 +19,12 @@ _on_context_menu_requested).
 Renamed from image_library_panel.py -- same panel, same dock slot, same
 on-screen title ("Media Libraries"), but the old QListWidget icon-row
 list is replaced here with a QTableWidget so the entries' own columns
-(Kind, Resolution, Duration, Color Space, Path) are directly visible and
-sortable, matching the "columned database" framing this rewrite is
-built around.
+are directly visible and sortable, matching the "columned database"
+framing this rewrite is built around. The full column set (COLUMNS:
+timecode, codec, bit depth, audio, camera, file size, ... -- mostly
+from media_probe.py's header metadata) can be shown/hidden and
+reordered from the header, and that layout is remembered with the
+workspace (get_header_state).
 
 SORTING AND ROW IDENTITY -- with setSortingEnabled(True), the table's row
 order no longer matches self.library.entries' order (a still-QListWidget
@@ -83,6 +86,7 @@ machine, (6) Ctrl/Shift-clicking selects multiple rows and Delete/Add to
 Timeline act on all of them, (7) the filter box actually hides non-
 matching rows live as you type.
 """
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QMimeData, Signal, Qt
@@ -97,6 +101,7 @@ from app_logic import load_image_as_array, get_image_native_size
 from media_library import MediaLibrary, MediaEntry, MEDIA_ENTRY_DRAG_MIME_TYPE
 import hover_inspector
 import media_cache
+import media_probe
 import thumbnail
 import video_source
 import timecode
@@ -120,10 +125,6 @@ IMAGE_FILE_FILTER = (
     ";;All files (*)"
 )
 
-COLUMN_THUMBNAIL, COLUMN_NAME, COLUMN_KIND, COLUMN_RESOLUTION, \
-    COLUMN_DURATION, COLUMN_COLORSPACE, COLUMN_PATH = range(7)
-COLUMN_HEADERS = ("", "Name", "Kind", "Resolution", "Duration", "Color Space", "Path")
-
 ENTRY_ID_ROLE = Qt.ItemDataRole.UserRole  # carried on every row's column-0 item, see module docstring
 SORT_KEY_ROLE = Qt.ItemDataRole.UserRole + 1  # numeric sort key, see _NumericItem
 
@@ -132,6 +133,170 @@ def _format_duration(seconds):
     seconds = max(0, round(seconds))
     minutes, secs = divmod(seconds, 60)
     return f"{minutes}:{secs:02d}"
+
+
+def _format_size(num_bytes):
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+
+
+def _start_frame(entry):
+    """The clip's first frame as an absolute frame number from its
+    embedded start timecode (0 when it has none) -- what Start/End TC
+    display and sort by."""
+    tc = entry.metadata.get("start_timecode")
+    frames = timecode.timecode_to_frames(tc, entry.frame_rate or 0) if tc else None
+    return frames or 0
+
+
+def _timecode_cell(entry, offset_frames):
+    """(text, sort_key) for Start TC (offset 0) or End TC (offset
+    frame_count - 1). Video only; a clip with no embedded timecode
+    starts at 00:00:00:00, the same as every NLE shows it."""
+    if not entry.is_video or not entry.frame_rate:
+        return "", None
+    tc = entry.metadata.get("start_timecode")
+    frame = _start_frame(entry) + offset_frames
+    drop = timecode.is_drop_frame_timecode(tc) if tc else None
+    return timecode.frames_to_timecode(frame, entry.frame_rate, drop_frame=drop), frame
+
+
+def _bit_depth_cell(entry):
+    bits = entry.metadata.get("bit_depth")
+    if not bits:
+        return "", None
+    is_float = entry.metadata.get("is_float")
+    # Float after integer at the same width (16-bit half after 16-bit int).
+    return f"{bits}-bit float" if is_float else f"{bits}-bit", bits + (0.5 if is_float else 0)
+
+
+def _chroma_cell(entry):
+    chroma = entry.metadata.get("chroma", "")
+    if chroma and entry.metadata.get("has_alpha"):
+        chroma = {"RGB": "RGBA", "Mono": "Mono + Alpha"}.get(chroma, f"{chroma}:4")
+    return chroma, None
+
+
+def _audio_cell(entry):
+    channels = entry.metadata.get("audio_channels")
+    if not channels:
+        return "", None
+    rate = entry.metadata.get("audio_sample_rate")
+    text = f"{channels} ch" + (f", {rate / 1000:g} kHz" if rate else "")
+    return text, channels
+
+
+def _fps_cell(entry):
+    if not entry.is_video or not entry.frame_rate:
+        return "", None
+    return f"{round(entry.frame_rate, 3):g}", entry.frame_rate
+
+
+def _resolution_cell(entry):
+    if entry.width and entry.height:
+        return f"{entry.width}x{entry.height}", entry.width * entry.height
+    return "", None
+
+
+def _duration_cell(entry):
+    if entry.is_video and entry.duration:
+        return _format_duration(entry.duration), entry.duration
+    return "", None
+
+
+def _frames_cell(entry):
+    if entry.is_video and entry.frame_count:
+        return str(entry.frame_count), entry.frame_count
+    return "", None
+
+
+def _par_cell(entry):
+    par = entry.metadata.get("pixel_aspect_ratio")
+    return (f"{par:.4g}", par) if par else ("", None)
+
+
+def _size_cell(entry):
+    size = entry.metadata.get("file_size")
+    return (_format_size(size), size) if size is not None else ("", None)
+
+
+def _modified_cell(entry):
+    mtime = entry.metadata.get("file_modified")
+    if mtime is None:
+        return "", None
+    return datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M"), mtime
+
+
+def _text_cell(value):
+    return value or "", None
+
+
+def _probe_or_empty(path, is_video):
+    """media_probe.probe for an import -- the file already opened fine
+    for its size/thumbnail by the time this runs, so a failure here only
+    costs the extra columns, never the import itself."""
+    try:
+        return media_probe.probe(path, is_video=is_video)
+    except Exception:  # noqa: BLE001 -- see docstring
+        return {}
+
+
+class _Column:
+    """One Media Libraries table column. `cell(entry)` returns (text,
+    sort_key): a non-None sort_key makes the cell a _NumericItem (so
+    "10:02" sorts after "1:05"); None sorts by the text itself.
+    `visible` is the default before the user picks columns from the
+    header's right-click menu (see _on_header_context_menu)."""
+
+    def __init__(self, key, header, cell, visible, width, numeric=False):
+        self.key, self.header, self.cell = key, header, cell
+        self.visible, self.width, self.numeric = visible, width, numeric
+
+
+# Logical order is the default left-to-right order; the user can drag
+# columns around and show/hide them (see MediaPanel.get_header_state).
+# Thumbnail stays logical column 0: it carries the entry id (ENTRY_ID_ROLE).
+COLUMNS = (
+    _Column("thumbnail", "", lambda e: ("", None), True, 56),
+    _Column("name", "Name", lambda e: _text_cell(e.name), True, 160),
+    _Column("kind", "Kind", lambda e: ("Video" if e.is_video else "Still", None), True, 56),
+    _Column("resolution", "Resolution", _resolution_cell, True, 90, numeric=True),
+    _Column("duration", "Duration", _duration_cell, True, 70, numeric=True),
+    _Column("start_tc", "Start TC", lambda e: _timecode_cell(e, 0), True, 96, numeric=True),
+    _Column("end_tc", "End TC",
+            lambda e: _timecode_cell(e, max(0, (e.frame_count or 1) - 1)), False, 96, numeric=True),
+    _Column("frames", "Frames", _frames_cell, False, 64, numeric=True),
+    _Column("fps", "FPS", _fps_cell, True, 56, numeric=True),
+    _Column("codec", "Codec", lambda e: _text_cell(e.metadata.get("codec")), True, 110),
+    _Column("bit_depth", "Bit Depth", _bit_depth_cell, True, 80, numeric=True),
+    _Column("chroma", "Chroma", _chroma_cell, False, 64),
+    _Column("audio", "Audio", _audio_cell, False, 96, numeric=True),
+    _Column("pixel_aspect", "Pixel Aspect", _par_cell, False, 80, numeric=True),
+    _Column("camera", "Camera", lambda e: _text_cell(e.metadata.get("camera")), False, 140),
+    _Column("format", "Format", lambda e: _text_cell(e.metadata.get("format")), False, 90),
+    _Column("size", "Size", _size_cell, False, 76, numeric=True),
+    _Column("modified", "Date Modified", _modified_cell, False, 130, numeric=True),
+    _Column("colorspace", "Color Space",
+            lambda e: ("" if e.is_video else (e.source_colourspace or "Unmanaged"), None), True, 100),
+    _Column("filename", "File Name",
+            lambda e: _text_cell(e.source_filename or (Path(e.source_path).name if e.source_path else "")),
+            False, 160),
+    _Column("path", "Path", lambda e: _text_cell(e.source_path), True, 200),
+)
+COLUMN_KEYS = tuple(c.key for c in COLUMNS)
+COLUMN_HEADERS = tuple(c.header for c in COLUMNS)
+COLUMN_THUMBNAIL = COLUMN_KEYS.index("thumbnail")
+COLUMN_NAME = COLUMN_KEYS.index("name")
+COLUMN_KIND = COLUMN_KEYS.index("kind")
+COLUMN_RESOLUTION = COLUMN_KEYS.index("resolution")
+COLUMN_DURATION = COLUMN_KEYS.index("duration")
+COLUMN_COLORSPACE = COLUMN_KEYS.index("colorspace")
+COLUMN_PATH = COLUMN_KEYS.index("path")
+# Never hideable -- a row with no visible name is unidentifiable.
+_ALWAYS_VISIBLE = {"name"}
 
 
 class _NumericItem(QTableWidgetItem):
@@ -232,12 +397,14 @@ class MediaPanel(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(True)
-        self.table.setColumnWidth(COLUMN_THUMBNAIL, 56)
-        self.table.setColumnWidth(COLUMN_NAME, 160)
-        self.table.setColumnWidth(COLUMN_KIND, 56)
-        self.table.setColumnWidth(COLUMN_RESOLUTION, 90)
-        self.table.setColumnWidth(COLUMN_DURATION, 70)
-        self.table.setColumnWidth(COLUMN_COLORSPACE, 100)
+        # Drag a header to reorder; right-click it to show/hide columns
+        # (most of COLUMNS start hidden -- see _on_header_context_menu).
+        header.setSectionsMovable(True)
+        header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._on_header_context_menu)
+        for index, column in enumerate(COLUMNS):
+            self.table.setColumnWidth(index, column.width)
+            self.table.setColumnHidden(index, not column.visible)
         # Double-click defaults to "Load as Source" -- the more common of
         # the two roles (every existing Import/Export Still workflow
         # already assumes a Source image), same "double-click is the fast
@@ -314,6 +481,65 @@ class MediaPanel(QWidget):
         menu.addAction("Delete", self._on_delete_clicked)
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
+    def _on_header_context_menu(self, pos):
+        """Right-click on the column header: a checkable entry per column,
+        in the header's current left-to-right order, plus a reset back to
+        COLUMNS' defaults."""
+        header = self.table.horizontalHeader()
+        menu = QMenu(header)
+        for visual in range(header.count()):
+            index = header.logicalIndex(visual)
+            column = COLUMNS[index]
+            action = menu.addAction(column.header or "Thumbnail")
+            action.setCheckable(True)
+            action.setChecked(not self.table.isColumnHidden(index))
+            action.setEnabled(column.key not in _ALWAYS_VISIBLE)
+            action.toggled.connect(
+                lambda checked, i=index: self.table.setColumnHidden(i, not checked))
+        menu.addSeparator()
+        menu.addAction("Reset Columns", self.reset_columns)
+        menu.exec(header.mapToGlobal(pos))
+
+    def reset_columns(self):
+        header = self.table.horizontalHeader()
+        for index, column in enumerate(COLUMNS):
+            header.moveSection(header.visualIndex(index), index)
+            self.table.setColumnWidth(index, column.width)
+            self.table.setColumnHidden(index, not column.visible)
+
+    def get_header_state(self):
+        """The table's column layout for the remembered workspace (see
+        MainWindow.get_workspace_state) -- keyed by column key, not by
+        QHeaderView.saveState()'s positional blob, so a layout saved
+        before a column was added still restores (the new column just
+        takes its COLUMNS default)."""
+        header = self.table.horizontalHeader()
+        order = [COLUMN_KEYS[header.logicalIndex(v)] for v in range(header.count())]
+        return {
+            "order": order,
+            "hidden": [k for i, k in enumerate(COLUMN_KEYS) if self.table.isColumnHidden(i)],
+            "widths": {k: self.table.columnWidth(i) for i, k in enumerate(COLUMN_KEYS)
+                       if not self.table.isColumnHidden(i)},
+        }
+
+    def restore_header_state(self, state):
+        """Inverse of get_header_state. Unknown keys (a column since
+        removed) are ignored; a None/malformed state leaves the defaults."""
+        if not isinstance(state, dict):
+            return
+        self.reset_columns()
+        header = self.table.horizontalHeader()
+        known = [k for k in state.get("order", []) if k in COLUMN_KEYS]
+        for visual, key in enumerate(known):
+            header.moveSection(header.visualIndex(COLUMN_KEYS.index(key)), visual)
+        hidden = set(state.get("hidden", [])) - _ALWAYS_VISIBLE
+        for index, key in enumerate(COLUMN_KEYS):
+            if key in known or key in hidden:  # otherwise new since saved: keep default
+                self.table.setColumnHidden(index, key in hidden)
+        for key, width in (state.get("widths") or {}).items():
+            if key in COLUMN_KEYS and isinstance(width, int) and width > 0:
+                self.table.setColumnWidth(COLUMN_KEYS.index(key), width)
+
     # ---- table ------------------------------------------------------------
 
     def _entry_id_at_row(self, row):
@@ -372,12 +598,19 @@ class MediaPanel(QWidget):
             if entry.duration:
                 lines.append(f"Duration: {_format_duration(entry.duration)}")
             if entry.frame_rate:
-                start_tc = timecode.frames_to_timecode(0, entry.frame_rate)
-                end_frame = max(0, (entry.frame_count or 1) - 1)
-                end_tc = timecode.frames_to_timecode(end_frame, entry.frame_rate)
+                start_tc, _ = _timecode_cell(entry, 0)
+                end_tc, _ = _timecode_cell(entry, max(0, (entry.frame_count or 1) - 1))
                 lines.append(f"Start: {start_tc}  End: {end_tc}")
         else:
             lines.append(f"Color space: {entry.source_colourspace or 'Unmanaged'}")
+        # Probed format details, whether or not their columns are showing.
+        details = [entry.metadata.get("codec"), _bit_depth_cell(entry)[0],
+                   _chroma_cell(entry)[0], _audio_cell(entry)[0]]
+        details = [d for d in details if d]
+        if details:
+            lines.append(" · ".join(details))
+        if entry.metadata.get("camera"):
+            lines.append(entry.metadata["camera"])
         return "\n".join(lines)
 
     def _refresh_table(self, keep_selection_id=None):
@@ -431,26 +664,12 @@ class MediaPanel(QWidget):
                 thumb_item.setIcon(pixmap)
         self.table.setItem(row, COLUMN_THUMBNAIL, thumb_item)
 
-        self.table.setItem(row, COLUMN_NAME, QTableWidgetItem(entry.name))
-        self.table.setItem(row, COLUMN_KIND, QTableWidgetItem(
-            "Video" if entry.is_video else "Still"))
-
-        if entry.width and entry.height:
-            res_text = f"{entry.width}x{entry.height}"
-            res_key = entry.width * entry.height
-        else:
-            res_text, res_key = "", None
-        self.table.setItem(row, COLUMN_RESOLUTION, _NumericItem(res_text, res_key))
-
-        if entry.is_video and entry.duration:
-            dur_text, dur_key = _format_duration(entry.duration), entry.duration
-        else:
-            dur_text, dur_key = "", None
-        self.table.setItem(row, COLUMN_DURATION, _NumericItem(dur_text, dur_key))
-
-        space_text = "" if entry.is_video else (entry.source_colourspace or "Unmanaged")
-        self.table.setItem(row, COLUMN_COLORSPACE, QTableWidgetItem(space_text))
-        self.table.setItem(row, COLUMN_PATH, QTableWidgetItem(entry.source_path or ""))
+        for index, column in enumerate(COLUMNS):
+            if index == COLUMN_THUMBNAIL:
+                continue
+            text, sort_key = column.cell(entry)
+            item = _NumericItem(text, sort_key) if column.numeric else QTableWidgetItem(text)
+            self.table.setItem(row, index, item)
 
     # ---- import (ingest a real file) -------------------------------------
 
@@ -486,7 +705,7 @@ class MediaPanel(QWidget):
         entry = MediaEntry(
             name, str(path), source_filename=Path(path).name,
             media_kind="still", width=width, height=height,
-            thumbnail=thumb_descriptor)
+            thumbnail=thumb_descriptor, metadata=_probe_or_empty(path, is_video=False))
         self.library.add_entry(entry)
         self._refresh_table(keep_selection_id=entry.id)
 
@@ -516,7 +735,8 @@ class MediaPanel(QWidget):
             name, str(path), source_filename=Path(path).name,
             media_kind="video", width=width, height=height,
             frame_count=frame_count, frame_rate=frame_rate,
-            duration=duration, thumbnail=thumb_descriptor)
+            duration=duration, thumbnail=thumb_descriptor,
+            metadata=_probe_or_empty(path, is_video=True))
         self.library.add_entry(entry)
         self._refresh_table(keep_selection_id=entry.id)
 
