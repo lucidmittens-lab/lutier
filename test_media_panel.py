@@ -6,6 +6,7 @@ import sys
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMenu
 
+import timeline as tl
 from media_library import MediaEntry, MEDIA_ENTRY_DRAG_MIME_TYPE
 from media_panel import MediaPanel, COLUMN_NAME, COLUMN_THUMBNAIL, COLUMN_KEYS, COLUMNS
 
@@ -82,10 +83,10 @@ def test_populate_menu_only_has_import_not_per_item_actions():
     panel = MediaPanel()
     menu = QMenu()
     panel.populate_menu(menu)
-    texts = [a.text() for a in menu.actions()]
-    assert texts == ["Import..."]
-    print("MediaPanel.populate_menu: only Import... remains -- "
-          "Load as Source/Load as Reference/Rename/Delete moved off it -- OK")
+    texts = [a.text() for a in menu.actions() if not a.isSeparator()]
+    assert texts == ["Import...", "New Timeline", "New Library..."]
+    print("MediaPanel.populate_menu: panel-level actions only (Import, New "
+          "Timeline, New Library) -- per-item actions are on the context menu -- OK")
 
 
 def test_context_menu_selects_the_clicked_row_before_popping_up():
@@ -462,6 +463,58 @@ def test_name_column_cannot_be_hidden_by_a_saved_state():
     print("MediaPanel: Name stays visible whatever a saved layout says -- OK")
 
 
+def test_library_side_panel_switches_the_target_library():
+    _app()
+    panel = MediaPanel()
+    first = panel.library
+    panel.library.add_entry(MediaEntry("In First", "/tmp/a.png"))
+    second = panel.pool.add_library("Selects")
+    panel._refresh_library_list()
+    panel.library_list.setCurrentRow(1)
+    assert panel.library is second
+    assert panel.table.rowCount() == 0
+    panel.library.add_entry(MediaEntry("In Second", "/tmp/b.png"))
+    panel._refresh_table()
+    assert panel.library_list.item(1).text() == "Selects (1)"
+    panel.library_list.setCurrentRow(0)
+    assert panel.library is first
+    assert [panel.table.item(r, COLUMN_NAME).text() for r in range(panel.table.rowCount())] == ["In First"]
+    print("MediaPanel: the side panel picks which library the table shows "
+          "and imports land in -- OK")
+
+
+def test_timelines_show_as_rows_and_open_on_double_click():
+    _app()
+    panel = MediaPanel()
+    opened = []
+    panel.timeline_load_requested.connect(opened.append)
+    timeline = panel.new_timeline()
+    assert opened == [timeline] and timeline in panel.library.timelines
+    timeline.add_clip(tl.TimelineClip("Shot", "/a.mov", "video", 0, 47))
+    panel.set_loaded_timeline(timeline)
+    row = 0
+    assert _cell_text(panel, row, "kind") == "Timeline"
+    assert _cell_text(panel, row, "frames") == "48"
+    assert panel.table.item(row, COLUMN_THUMBNAIL).text() == "▶"  # loaded marker
+    assert panel._entry_id_at_row(row) is None  # never treated as a media entry
+    opened.clear()
+    panel._on_row_double_clicked(panel.table.item(row, COLUMN_NAME))
+    assert opened == [timeline]
+    print("MediaPanel: timelines are library rows; double-click asks to "
+          "load one -- OK")
+
+
+def test_new_timeline_names_are_unique_and_use_the_project_rate():
+    _app()
+    panel = MediaPanel()
+    panel.set_frame_rate_getter(lambda: 25.0)
+    first, second = panel.new_timeline(), panel.new_timeline()
+    assert (first.name, second.name) == ("Timeline", "Timeline 2")
+    assert first.frame_rate == 25.0
+    print("MediaPanel: New Timeline names are unique and use the project "
+          "edit rate -- OK")
+
+
 if __name__ == "__main__":
     test_hover_info_includes_start_and_end_timecode_for_video()
     test_hover_info_omits_timecode_for_a_still()
@@ -487,5 +540,8 @@ if __name__ == "__main__":
     test_header_state_round_trips_order_visibility_and_width()
     test_restoring_an_older_header_state_keeps_new_columns_at_their_defaults()
     test_name_column_cannot_be_hidden_by_a_saved_state()
+    test_library_side_panel_switches_the_target_library()
+    test_timelines_show_as_rows_and_open_on_double_click()
+    test_new_timeline_names_are_unique_and_use_the_project_rate()
     print()
     print("All media_panel tests passed.")

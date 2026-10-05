@@ -181,11 +181,18 @@ from stack_memory import StackMemory, StackMemoryLibrary, GalleryStill, GalleryS
 from timeline import Timeline, TimelineClip, DEFAULT_FRAME_RATE
 from cdl_library import CDLEntry, CDLLibrary
 from lut_library import LUTLibraryEntry, LUTLibrary
-from media_library import MediaEntry, MediaLibrary
+from media_library import MediaEntry, MediaLibrary, MediaPool, DEFAULT_LIBRARY_NAME
 from atomic_write import atomic_open
 
 SESSION_FORMAT = "lutier-session"
-SESSION_VERSION = 13
+SESSION_VERSION = 14
+
+# VERSION 14 (Tom, 2026-10-05: library side panel; timelines as library
+# items): "media_library" + "timeline" become one "media_pool" section --
+# named libraries, each with entries AND timelines, plus the position of
+# the timeline loaded in the Timeline panel (media_pool_to_session_data).
+# An older file's single library/timeline load as one "Media" library
+# holding that timeline (media_pool_from_session_data).
 
 # VERSION 13 (Tom, 2026-10-05: decouple the LUT domain from the stack):
 # grid size/domain move out of the "stack" dict into a session-level
@@ -1254,6 +1261,71 @@ def media_library_from_session_list(entries_data):
     return library, warnings
 
 
+def media_pool_to_session_data(pool, loaded_timeline=None):
+    """MediaPool -> ({"libraries": [...], "loaded_timeline": ...},
+    warnings). Each library is {"name", "entries", "timelines"} (entries
+    as media_library_to_session_list, timelines as timeline_to_session_
+    dict); "loaded_timeline" is the {"library", "timeline"} POSITION of
+    the timeline open in the Timeline panel, or None -- positions, not
+    ids, same reason as everywhere else in this module (ids are
+    per-process counters)."""
+    warnings, libraries, loaded = [], [], None
+    for li, library in enumerate(pool.libraries):
+        timelines = []
+        for ti, timeline in enumerate(library.timelines):
+            data, timeline_warnings = timeline_to_session_dict(timeline)
+            warnings.extend(timeline_warnings)
+            timelines.append(data)
+            if timeline is loaded_timeline:
+                loaded = {"library": li, "timeline": ti}
+        libraries.append({"name": library.name,
+                          "entries": media_library_to_session_list(library),
+                          "timelines": timelines})
+    return {"libraries": libraries, "loaded_timeline": loaded}, warnings
+
+
+def media_pool_from_session_data(data, legacy_entries=None, legacy_timeline=None):
+    """Inverse of media_pool_to_session_data. Returns (pool,
+    loaded_timeline_or_None, warnings). A session saved before
+    libraries existed has no "media_pool" section: its single
+    "media_library" list (`legacy_entries`) becomes one library named
+    DEFAULT_LIBRARY_NAME, and its single "timeline" (`legacy_timeline`)
+    becomes a timeline in that library, loaded -- unless it had no clips,
+    in which case nothing is loaded (an empty default timeline was
+    always present before, so it isn't worth keeping as an item)."""
+    warnings = []
+    if not data:
+        library, entry_warnings = media_library_from_session_list(legacy_entries or [])
+        warnings.extend(entry_warnings)
+        library.name = DEFAULT_LIBRARY_NAME
+        loaded = None
+        if legacy_timeline and legacy_timeline.get("clips"):
+            loaded, timeline_warnings = timeline_from_session_dict(legacy_timeline)
+            warnings.extend(timeline_warnings)
+            library.add_timeline(loaded)
+        return MediaPool([library]), loaded, warnings
+
+    libraries = []
+    for library_data in data.get("libraries", []):
+        library, entry_warnings = media_library_from_session_list(library_data.get("entries", []))
+        warnings.extend(entry_warnings)
+        library.name = library_data.get("name") or DEFAULT_LIBRARY_NAME
+        for timeline_data in library_data.get("timelines", []):
+            timeline, timeline_warnings = timeline_from_session_dict(timeline_data)
+            warnings.extend(timeline_warnings)
+            library.add_timeline(timeline)
+        libraries.append(library)
+    pool = MediaPool(libraries)
+    loaded = None
+    position = data.get("loaded_timeline")
+    if position:
+        try:
+            loaded = pool.libraries[position["library"]].timelines[position["timeline"]]
+        except (IndexError, KeyError, TypeError):
+            warnings.append("The previously open timeline couldn't be found; none is loaded.")
+    return pool, loaded, warnings
+
+
 def bake_settings_to_session_dict(settings):
     return {"size": settings.size, "domain_min": list(settings.domain_min),
             "domain_max": list(settings.domain_max)}
@@ -1278,7 +1350,7 @@ def bake_settings_from_session_dict(data, legacy_stack_data=None):
 
 def save_session(path, stack, sample_image_state, stack_memory_library=None,
                   gallery_still_library=None, cdl_library=None, lut_library=None,
-                  media_library=None, undo_history=None, canvas=None, timeline=None,
+                  media_pool=None, undo_history=None, canvas=None, loaded_timeline=None,
                   bake_settings=None):
     """sample_image_state: whatever SampleImagePanel.get_session_state()
     returned (a dict, or None if no image is currently loaded).
@@ -1293,18 +1365,17 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
     Gallery, per Tom, so this now lives on StackMemoriesPanel too, same
     panel as gallery_still_library above). lut_library: whatever
     LUTLibraryPanel.get_library() returned (a lut_library.LUTLibrary, or
-    None to save with no LUT Library entries). media_library: whatever
-    MediaPanel.get_library() returned (a media_library.MediaLibrary,
-    or None to save with no Media Library entries). undo_history: the
+    None to save with no LUT Library entries). media_pool: whatever
+    MediaPanel.get_pool() returned (a media_library.MediaPool -- every
+    library with its entries and timelines), or None for one empty
+    library. loaded_timeline: the timeline.Timeline open in the
+    Timeline panel (one of media_pool's), or None. undo_history: the
     MainWindow's undo_history.UndoHistory for the working Stack, or None
     to save with no persisted undo history (e.g. for callers -- tests,
     Stack Memory export -- that have no undo history of their own; see
     this module's VERSION 8 note). canvas: a canvas.CanvasSettings, or
     None to save with no canvas section at all (loads back as
-    canvas.DEFAULT_CANVAS -- see VERSION 9 note). timeline: a
-    timeline.Timeline (see this module's own VERSION 11 note), or None
-    to save with no Continuity Grading Timeline at all (loads back as a
-    brand-new, empty Timeline -- see timeline_from_session_dict).
+    canvas.DEFAULT_CANVAS -- see VERSION 9 note).
 
     No `workspace` parameter as of VERSION 7 (see this module's docstring)
     -- workspace layout is saved/loaded independently now, via
@@ -1337,11 +1408,9 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
         if undo_history is not None else (None, [])
     )
     warnings.extend(undo_warnings)
-    timeline_data, timeline_warnings = (
-        timeline_to_session_dict(timeline)
-        if timeline is not None else (None, [])
-    )
-    warnings.extend(timeline_warnings)
+    media_pool_data, pool_warnings = media_pool_to_session_data(
+        media_pool if media_pool is not None else MediaPool(), loaded_timeline)
+    warnings.extend(pool_warnings)
     data = {
         "format": SESSION_FORMAT,
         "version": SESSION_VERSION,
@@ -1361,16 +1430,12 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
             lut_library_to_session_list(lut_library)
             if lut_library is not None else []
         ),
-        "media_library": (
-            media_library_to_session_list(media_library)
-            if media_library is not None else []
-        ),
+        "media_pool": media_pool_data,
         "undo_history": undo_history_data,
         "canvas": (
             cv.canvas_to_session_dict(canvas)
             if canvas is not None else None
         ),
-        "timeline": timeline_data,
     }
     with atomic_open(path, "w") as f:
         json.dump(data, f, indent=2)
@@ -1380,7 +1445,7 @@ def save_session(path, stack, sample_image_state, stack_memory_library=None,
 def load_session(path):
     """Returns (stack, bake_settings, sample_image_state_or_None,
     stack_memory_library, gallery_still_library, cdl_library, lut_library,
-    media_library, undo_history_state, canvas, timeline, warnings).
+    media_pool, undo_history_state, canvas, loaded_timeline, warnings).
     Raises ValueError if `path` isn't a LUTier session file at all (wrong
     format/not JSON) -- that's a hard failure, unlike a single
     unreconstructable stage/memory/LUT Library/Media Library entry. Files
@@ -1412,10 +1477,10 @@ def load_session(path):
     with canvas=None), same convention every prior version bump follows
     (see VERSION 9 note above).
 
-    timeline is a timeline.Timeline -- a brand-new, empty Timeline for
-    any file with no "timeline" key at all (version < 11, or a version
-    11+ file saved with timeline=None), same convention (see VERSION 11
-    note above)."""
+    media_pool is a media_library.MediaPool and loaded_timeline the one
+    of its timelines to open in the Timeline panel, or None -- see
+    media_pool_from_session_data for how a pre-VERSION-14 file (one
+    "media_library" list and one "timeline") maps onto them."""
     with open(path, "r") as f:
         data = json.load(f)
     if data.get("format") != SESSION_FORMAT:
@@ -1432,9 +1497,11 @@ def load_session(path):
     lut_library, lut_library_warnings = lut_library_from_session_list(
         data.get("lut_library", []))
     warnings = warnings + lut_library_warnings
-    media_library, media_library_warnings = media_library_from_session_list(
-        data.get("media_library", data.get("image_library", [])))
-    warnings = warnings + media_library_warnings
+    media_pool, loaded_timeline, pool_warnings = media_pool_from_session_data(
+        data.get("media_pool"),
+        legacy_entries=data.get("media_library", data.get("image_library", [])),
+        legacy_timeline=data.get("timeline"))
+    warnings = warnings + pool_warnings
     sample_image_state = data.get("sample_image")
 
     undo_history_state = None
@@ -1447,9 +1514,6 @@ def load_session(path):
 
     canvas = cv.canvas_from_session_dict(data.get("canvas"))
 
-    timeline, timeline_warnings = timeline_from_session_dict(data.get("timeline"))
-    warnings = warnings + timeline_warnings
-
     return (stack, bake_settings, sample_image_state, memory_library, gallery_still_library,
-            cdl_library, lut_library, media_library, undo_history_state, canvas,
-            timeline, warnings)
+            cdl_library, lut_library, media_pool, undo_history_state, canvas,
+            loaded_timeline, warnings)

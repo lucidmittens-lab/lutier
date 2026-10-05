@@ -38,6 +38,17 @@ thumbnail.make_thumbnail_png_bytes -- None for an entry created before
 this field existed (old session load) or whose thumbnail generation
 failed.
 
+LIBRARIES AND TIMELINES (Tom, 2026-10-05: "media library should have a
+side panel to select the target library" / "the timeline should be a
+media library element that can be loaded or unloaded"): a session holds
+a MediaPool of named MediaLibrary bins, each with its own media entries
+AND timelines (timeline.Timeline). MediaPanel's side panel picks the
+current library, which is where imports, drops and New Timeline land.
+A timeline stays in its library whether or not it's loaded; the
+Timeline panel edits the loaded one in place (the same object), so
+there's nothing to sync back. Entry and timeline ids are process-unique
+counters, so MediaPool.find_entry/find_timeline can search every library.
+
 Qt-free, fully testable without a display -- same convention as
 lut_library.py/cdl_library.py/stack_memory.py.
 """
@@ -54,6 +65,9 @@ MEDIA_KINDS = ("still", "video")
 MEDIA_ENTRY_DRAG_MIME_TYPE = "application/x-lutier-media-entry-id"
 
 next_entry_id = id_counter.make_next_entry_id()
+next_library_id = id_counter.make_next_entry_id()
+
+DEFAULT_LIBRARY_NAME = "Media"
 
 
 class MediaEntry:
@@ -112,10 +126,28 @@ class MediaEntry:
 
 
 class MediaLibrary:
-    """An ordered list of MediaEntry entries."""
+    """One named bin: an ordered list of MediaEntry entries plus the
+    timelines that live in it (see module docstring, LIBRARIES AND
+    TIMELINES)."""
 
-    def __init__(self, entries=None):
+    def __init__(self, entries=None, name=DEFAULT_LIBRARY_NAME, timelines=None, library_id=None):
+        self.id = library_id if library_id is not None else next_library_id()
+        self.name = name
         self.entries = list(entries) if entries is not None else []
+        self.timelines = list(timelines) if timelines is not None else []
+
+    def is_empty(self):
+        return not self.entries and not self.timelines
+
+    def add_timeline(self, timeline):
+        self.timelines.append(timeline)
+        return timeline
+
+    def remove_timeline(self, timeline_id):
+        before = len(self.timelines)
+        self.timelines = [t for t in self.timelines if t.id != timeline_id]
+        if len(self.timelines) == before:
+            raise KeyError(f"No timeline with id={timeline_id} in library {self.name!r}")
 
     def add_entry(self, entry):
         """Add an already-built MediaEntry directly -- used by
@@ -137,3 +169,59 @@ class MediaLibrary:
             if entry.id == entry_id:
                 return entry
         raise KeyError(f"No Media Library entry with id={entry_id}")
+
+
+class MediaPool:
+    """Every MediaLibrary in a session, in side-panel order. Always holds
+    at least one library -- removing the last one isn't allowed, so
+    there's always somewhere for an import or drop to land."""
+
+    def __init__(self, libraries=None):
+        self.libraries = list(libraries) if libraries else [MediaLibrary()]
+
+    def add_library(self, name):
+        library = MediaLibrary(name=name)
+        self.libraries.append(library)
+        return library
+
+    def remove_library(self, library_id):
+        if len(self.libraries) <= 1:
+            raise ValueError("A session needs at least one library.")
+        before = len(self.libraries)
+        self.libraries = [lib for lib in self.libraries if lib.id != library_id]
+        if len(self.libraries) == before:
+            raise KeyError(f"No library with id={library_id}")
+
+    def find_library(self, library_id):
+        for library in self.libraries:
+            if library.id == library_id:
+                return library
+        raise KeyError(f"No library with id={library_id}")
+
+    def find_entry(self, entry_id):
+        for library in self.libraries:
+            for entry in library.entries:
+                if entry.id == entry_id:
+                    return entry
+        raise KeyError(f"No Media Library entry with id={entry_id}")
+
+    def find_timeline(self, timeline_id):
+        """(library, timeline) for `timeline_id`."""
+        for library in self.libraries:
+            for timeline in library.timelines:
+                if timeline.id == timeline_id:
+                    return library, timeline
+        raise KeyError(f"No timeline with id={timeline_id}")
+
+    def is_empty(self):
+        return all(library.is_empty() for library in self.libraries)
+
+    @staticmethod
+    def unique_name(base, existing):
+        """`base`, or "base 2", "base 3", ... -- first one not in `existing`."""
+        if base not in existing:
+            return base
+        n = 2
+        while f"{base} {n}" in existing:
+            n += 1
+        return f"{base} {n}"

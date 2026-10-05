@@ -79,7 +79,7 @@ with a clip selected removes it.
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QMessageBox, QInputDialog, QToolButton,
-    QMenu, QPlainTextEdit, QScrollBar,
+    QMenu, QPlainTextEdit, QScrollBar, QLabel,
 )
 
 import edl as edl_module
@@ -123,10 +123,20 @@ class TimelinePanel(QWidget):
     # own, same "the other panel's data stays the other panel's" split
     # every other cross-panel signal in this app already follows.
     media_entry_drop_requested = Signal(int, int)
+    # The loaded timeline changed: a timeline.Timeline, or None after
+    # unload_timeline -- MediaPanel marks which library item is open.
+    loaded_timeline_changed = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.timeline = tl.Timeline()
+        # The timeline open for editing -- one of the Media Libraries'
+        # timelines (media_library.py, LIBRARIES AND TIMELINES), edited in
+        # place -- or None when nothing is loaded.
+        self.timeline = None
+        # Called to create-and-load a timeline when a clip is added with
+        # none loaded (MainWindow makes it in the current library) -- see
+        # set_timeline_creator.
+        self._timeline_creator = None
         # The last clip clip_selected was actually fired for -- see
         # _sync_selected_clip's own docstring in _refresh_list on why this
         # cache (not a before/after _selected_clip() comparison) is what
@@ -140,6 +150,19 @@ class TimelinePanel(QWidget):
     def _build_layout(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
+
+        header = QHBoxLayout()
+        header.setContentsMargins(4, 0, 4, 0)
+        self.timeline_name_label = QLabel()
+        header.addWidget(self.timeline_name_label, stretch=1)
+        self.unload_button = QToolButton()
+        self.unload_button.setObjectName("panelMenuButton")
+        self.unload_button.setAutoRaise(True)
+        self.unload_button.setText("⏏")
+        self.unload_button.setToolTip("Unload this timeline (it stays in its Media Library)")
+        self.unload_button.clicked.connect(self.unload_timeline)
+        header.addWidget(self.unload_button)
+        layout.addLayout(header)
 
         self.track_widget = TimelineTrackWidget(self.timeline)
         self.track_widget.clip_selected.connect(self._on_widget_clip_selected)
@@ -277,6 +300,7 @@ class TimelinePanel(QWidget):
         menu.addAction("Split at Playhead", self.split_at_playhead)
         menu.addSeparator()
         menu.addAction("Clear Timeline", self._on_clear_clicked)
+        menu.addAction("Unload Timeline", self.unload_timeline)
 
     def _on_context_menu_requested_for_clip(self, clip, global_pos):
         # The widget has already selected `clip` (and fired clip_selected,
@@ -314,7 +338,7 @@ class TimelinePanel(QWidget):
         Tom: "the transport is still a little tricky to interact
         with")."""
         clip = self._selected_clip()
-        if clip is None:
+        if clip is None or self.timeline is None:
             return None
         for index, candidate in enumerate(self.timeline.clips):
             if candidate.id == clip.id:
@@ -348,7 +372,7 @@ class TimelinePanel(QWidget):
         of the two resulting clips afterward, same "land on something
         sensible" convention add_clip_with_range's own keep_selection
         already follows."""
-        if self._record_frame_getter is None:
+        if self._record_frame_getter is None or self.timeline is None:
             return
         record_frame = self._record_frame_getter()
         if record_frame is None:
@@ -399,7 +423,8 @@ class TimelinePanel(QWidget):
     def _full_range_out_frame(self, entry):
         if entry.media_kind == "video":
             return max(0, (entry.frame_count or 1) - 1)
-        return max(0, int(round(DEFAULT_STILL_HOLD_SECONDS * self.timeline.frame_rate)) - 1)
+        frame_rate = self.timeline.frame_rate if self.timeline is not None else tl.DEFAULT_FRAME_RATE
+        return max(0, int(round(DEFAULT_STILL_HOLD_SECONDS * frame_rate)) - 1)
 
     def add_clip_with_range(self, name, source_path, media_kind, in_frame, out_frame, thumbnail=None, index=None):
         """Target of SampleImagePanel's add_source_range_to_timeline_
@@ -411,6 +436,10 @@ class TimelinePanel(QWidget):
         at the end, same as before this parameter existed) -- the only
         place that ever constructs a TimelineClip and adds it, shared by
         every caller above so they all stay in sync."""
+        if self.timeline is None and self._timeline_creator is not None:
+            self._timeline_creator()  # creates one and load_timeline()s it
+        if self.timeline is None:
+            return
         clip = tl.TimelineClip(name, source_path, media_kind, in_frame, out_frame, thumbnail=thumbnail)
         self.timeline.add_clip(clip, index=index)
         inserted_index = index if index is not None else len(self.timeline.clips) - 1
@@ -436,7 +465,7 @@ class TimelinePanel(QWidget):
         (module docstring), just a single duration knob per Tom's own
         request."""
         clip = self._selected_clip()
-        if clip is None or clip.media_kind != "still":
+        if clip is None or clip.media_kind != "still" or self.timeline is None:
             return
         current_seconds = clip.frame_count / self.timeline.frame_rate
         seconds, ok = QInputDialog.getDouble(
@@ -449,7 +478,7 @@ class TimelinePanel(QWidget):
 
     def _on_remove_clicked(self):
         clip = self._selected_clip()
-        if clip is None:
+        if clip is None or self.timeline is None:
             return
         reply = QMessageBox.question(
             self, "Remove Clip",
@@ -463,7 +492,7 @@ class TimelinePanel(QWidget):
         self._refresh_list()
 
     def _on_clear_clicked(self):
-        if not self.timeline.clips:
+        if self.timeline is None or not self.timeline.clips:
             return
         reply = QMessageBox.question(
             self, "Clear Timeline",
@@ -487,8 +516,10 @@ class TimelinePanel(QWidget):
         selection if the previously-selected clip no longer exists, and
         fires clip_selected/timeline_changed as needed."""
         self.track_widget.set_timeline(self.timeline)
-        if keep_selection is not None and 0 <= keep_selection < len(self.timeline.clips):
-            self.track_widget.set_selected_clip_id(self.timeline.clips[keep_selection].id)
+        self._refresh_loaded_state()
+        clips = self.timeline.clips if self.timeline is not None else []
+        if keep_selection is not None and 0 <= keep_selection < len(clips):
+            self.track_widget.set_selected_clip_id(clips[keep_selection].id)
         elif self.track_widget.selected_clip() is None and self.track_widget.selected_clip_id is not None:
             self.track_widget.set_selected_clip_id(None)
         # set_selected_clip_id above deliberately doesn't re-emit
@@ -514,14 +545,48 @@ class TimelinePanel(QWidget):
         edl.py) -- called on every mutation (_refresh_list/_on_clips_
         reordered), not just while the sub-panel happens to be expanded,
         so it's already current the moment it IS expanded."""
+        if self.timeline is None:
+            self.edl_text_view.clear()
+            return
         self.edl_text_view.setPlainText(
             edl_module.generate_edl(self.timeline, title=self.timeline.name or "Timeline"))
 
     # ---- session save/load (see session_io.py) -----------------------------
 
+    def _refresh_loaded_state(self):
+        loaded = self.timeline is not None
+        self.timeline_name_label.setText(
+            self.timeline.name if loaded else
+            "No timeline loaded -- double-click one in Media Libraries, "
+            "or add a clip to start a new one")
+        self.timeline_name_label.setEnabled(loaded)
+        for widget in (self.unload_button, self.split_button, self.zoom_out_button,
+                       self.zoom_fit_button, self.zoom_in_button):
+            widget.setEnabled(loaded)
+
+    def set_timeline_creator(self, creator):
+        """`creator()` makes a new timeline and load_timeline()s it --
+        called when a clip is added with nothing loaded."""
+        self._timeline_creator = creator
+
     def get_timeline(self):
+        """The loaded timeline.Timeline, or None."""
         return self.timeline
 
     def load_timeline(self, timeline):
+        """Open `timeline` (or None) for editing -- the same object that
+        lives in its Media Library, edited in place."""
+        changed = timeline is not self.timeline
         self.timeline = timeline
         self._refresh_list()
+        if changed:
+            self.loaded_timeline_changed.emit(timeline)
+
+    def unload_timeline(self):
+        """Close the loaded timeline; it stays in its Media Library."""
+        self.load_timeline(None)
+
+    def refresh_timeline_name(self):
+        """After the loaded timeline is renamed elsewhere (Media Libraries)."""
+        self._refresh_loaded_state()
+        self._refresh_edl_text()

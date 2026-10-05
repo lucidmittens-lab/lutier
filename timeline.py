@@ -39,6 +39,9 @@ import stack as st
 # counter trick, which exists only to keep two DIFFERENT row kinds from
 # colliding in the same union list.
 next_clip_id = id_counter.make_next_entry_id()
+# Timelines are Media Library items (media_library.MediaLibrary.timelines)
+# and need their own identity there, separate from their clips'.
+next_timeline_id = id_counter.make_next_entry_id()
 
 # Paces (1) a still-kind clip's own hold duration -- a still has no native
 # frame rate of its own, so its in_frame/out_frame are counted at THIS
@@ -113,7 +116,8 @@ class Timeline:
     inventing a parallel vocabulary for what's structurally the same
     "ordered collection of id-identified things" problem."""
 
-    def __init__(self, clips=None, name="Timeline", frame_rate=DEFAULT_FRAME_RATE):
+    def __init__(self, clips=None, name="Timeline", frame_rate=DEFAULT_FRAME_RATE, timeline_id=None):
+        self.id = timeline_id if timeline_id is not None else next_timeline_id()
         self.clips = list(clips) if clips is not None else []
         self.name = name
         self.frame_rate = frame_rate
@@ -149,6 +153,11 @@ class Timeline:
         clip = self.clips.pop(idx)
         new_index = max(0, min(new_index, len(self.clips)))
         self.clips.insert(new_index, clip)
+
+    @property
+    def duration(self):
+        """Seconds at this Timeline's own frame_rate."""
+        return self.total_frame_count() / self.frame_rate if self.frame_rate else 0.0
 
     def total_frame_count(self):
         """Sum of every clip's own frame_count, at this Timeline's own
@@ -201,7 +210,7 @@ class Timeline:
 
     def copy(self):
         return Timeline(clips=[c.copy() for c in self.clips], name=self.name,
-                         frame_rate=self.frame_rate)
+                         frame_rate=self.frame_rate, timeline_id=self.id)
 
     def __repr__(self):
         return f"Timeline(name={self.name!r}, clips={len(self.clips)})"

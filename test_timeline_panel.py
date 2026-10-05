@@ -12,6 +12,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from media_library import MediaEntry
+import timeline as tl
 from timeline_panel import TimelinePanel, DEFAULT_STILL_HOLD_SECONDS
 
 
@@ -23,8 +24,12 @@ def _app():
 
 
 def _panel():
+    """A panel with an empty timeline loaded -- a fresh TimelinePanel has
+    none (timelines are Media Library items, loaded on demand)."""
     _app()
-    return TimelinePanel()
+    panel = TimelinePanel()
+    panel.load_timeline(tl.Timeline())
+    return panel
 
 
 def test_add_clip_from_library_entry_video_uses_the_full_frame_range():
@@ -355,7 +360,7 @@ def test_populate_menu_has_split_and_clear_actions():
     panel.populate_menu(menu)
 
     texts = [a.text() for a in menu.actions() if not a.isSeparator()]
-    assert texts == ["Split at Playhead", "Clear Timeline"]
+    assert texts == ["Split at Playhead", "Clear Timeline", "Unload Timeline"]
     print("TimelinePanel.populate_menu: exposes Split at Playhead "
           "alongside Clear Timeline, both standing actions needing no "
           "selection -- OK")

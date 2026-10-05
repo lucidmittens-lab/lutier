@@ -244,7 +244,6 @@ import media_cache
 import stack as st
 import canvas as cv
 import aces_drt
-import timeline as tl
 import image_io
 import video_export
 import video_source
@@ -252,7 +251,7 @@ import gpu_stack_renderer
 from stack_memory import StackMemoryLibrary, GalleryStillLibrary
 from cdl_library import CDLLibrary
 from lut_library import LUTLibrary
-from media_library import MediaLibrary
+from media_library import MediaPool
 from undo_history import UndoHistory
 from help_text import USER_MANUAL_MARKDOWN
 from floating_dialog import make_floating_tool_window, show_floating
@@ -1342,6 +1341,17 @@ class MainWindow(QMainWindow):
             self.sample_image.load_reference_from_library_entry)
         self.media_panel.add_to_timeline_requested.connect(
             self.timeline_panel.add_clip_from_library_entry)
+        # Timelines are Media Library items (media_library.py, LIBRARIES
+        # AND TIMELINES): opening one loads it into the Timeline panel;
+        # adding a clip with none loaded makes a new one in the current
+        # library first.
+        self.media_panel.timeline_load_requested.connect(self._load_timeline)
+        self.media_panel.timeline_unload_requested.connect(lambda: self._load_timeline(None))
+        self.media_panel.timeline_renamed.connect(self._on_library_timeline_renamed)
+        self.media_panel.timeline_deleted.connect(self._on_library_timeline_deleted)
+        self.media_panel.set_frame_rate_getter(lambda: self._canvas.frame_rate)
+        self.timeline_panel.loaded_timeline_changed.connect(self.media_panel.set_loaded_timeline)
+        self.timeline_panel.set_timeline_creator(self.media_panel.new_timeline)
         # Add to Sequence (per Tom: "will be necessary to be able to
         # mark desired ranges and add to sequence") -- the Viewer's own
         # marked-range counterpart to the Media Library's always-full-
@@ -1799,8 +1809,7 @@ class MainWindow(QMainWindow):
                 or self.stack_memories_panel.get_gallery_library().stills
                 or self.stack_memories_panel.get_cdl_library().entries
                 or self.lut_library_panel.get_library().entries
-                or self.media_panel.get_library().entries
-                or self.timeline_panel.get_timeline().clips):
+                or not self.media_panel.get_pool().is_empty()):
             reply = QMessageBox.question(
                 self, "New Session",
                 "Discard the current stack, Galleries, "
@@ -1845,7 +1854,7 @@ class MainWindow(QMainWindow):
         self.stack_memories_panel.load_gallery_library(GalleryStillLibrary())
         self.stack_memories_panel.load_cdl_library(CDLLibrary())
         self.lut_library_panel.load_library(LUTLibrary())
-        self.media_panel.load_library(MediaLibrary())
+        self.media_panel.load_pool(MediaPool())
         self._canvas = cv.DEFAULT_CANVAS
         self._canvas_confirmed = False
         self._bake_settings = st.DEFAULT_BAKE_SETTINGS
@@ -1855,7 +1864,7 @@ class MainWindow(QMainWindow):
         # to clip 0 so a later Play doesn't try to resume into a clip
         # index that belonged to the just-discarded Timeline.
         self.sample_image._timeline_controller.stop()
-        self.timeline_panel.load_timeline(tl.Timeline())
+        self.timeline_panel.load_timeline(None)
         self._apply_canvas_to_viewer()
         # Empty, like a fresh launch (no bundled test image) -- the menu
         # path follows up with the New Project prompt, see
@@ -1873,7 +1882,7 @@ class MainWindow(QMainWindow):
             return
         try:
             (new_stack, bake_settings, sample_image_state, memory_library, gallery_still_library,
-             cdl_library, lut_library, media_library, undo_history_state,
+             cdl_library, lut_library, media_pool, undo_history_state,
              loaded_canvas, loaded_timeline, warnings) = session_io.load_session(path)
         except Exception as e:  # noqa: BLE001 -- surface any read/parse failure to the user
             QMessageBox.critical(self, "Failed to open session", str(e))
@@ -1910,7 +1919,7 @@ class MainWindow(QMainWindow):
         self.stack_memories_panel.load_gallery_library(gallery_still_library)
         self.stack_memories_panel.load_cdl_library(cdl_library)
         self.lut_library_panel.load_library(lut_library)
-        self.media_panel.load_library(media_library)
+        self.media_panel.load_pool(media_pool)
         if sample_image_state is not None:
             self.sample_image.load_session_state(sample_image_state)
         else:
@@ -1972,9 +1981,9 @@ class MainWindow(QMainWindow):
                 gallery_still_library=self.stack_memories_panel.get_gallery_library(),
                 cdl_library=self.stack_memories_panel.get_cdl_library(),
                 lut_library=self.lut_library_panel.get_library(),
-                media_library=self.media_panel.get_library(),
+                media_pool=self.media_panel.get_pool(),
                 undo_history=self._undo_history, canvas=self._canvas,
-                timeline=self.timeline_panel.get_timeline(),
+                loaded_timeline=self.timeline_panel.get_timeline(),
                 bake_settings=self._bake_settings)
         except Exception as e:  # noqa: BLE001 -- surface any write failure to the user
             QMessageBox.critical(self, "Failed to save session", str(e))
@@ -2919,10 +2928,29 @@ class MainWindow(QMainWindow):
         TimelinePanel._selected_clip's own KeyError guards use elsewhere
         for a vanished row."""
         try:
-            entry = self.media_panel.library.find(entry_id)
+            entry = self.media_panel.find_entry(entry_id)
         except KeyError:
             return
         self.timeline_panel.insert_clip_from_library_entry_at(entry, index)
+
+    def _load_timeline(self, timeline):
+        """Open `timeline` (a Media Library timeline, or None to unload) in
+        the Timeline panel. Stops Timeline playback first and drops any
+        Shot-mode clip selection, same as New/Open Session do when they
+        replace the timeline."""
+        if timeline is self.timeline_panel.get_timeline():
+            return
+        self.sample_image._timeline_controller.stop()
+        self.stack_panel.notify_selected_clip_changed(None)
+        self.timeline_panel.load_timeline(timeline)
+
+    def _on_library_timeline_renamed(self, timeline):
+        if timeline is self.timeline_panel.get_timeline():
+            self.timeline_panel.refresh_timeline_name()
+
+    def _on_library_timeline_deleted(self, timeline):
+        if timeline is self.timeline_panel.get_timeline():
+            self._load_timeline(None)
 
     def _update_undo_redo_actions(self):
         # Force both off while Shot mode is active (see stack_panel.py's

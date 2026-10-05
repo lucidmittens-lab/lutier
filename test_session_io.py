@@ -32,7 +32,7 @@ import timeline as tl
 import thumbnail
 import media_cache
 from lut_library import LUTLibraryEntry, LUTLibrary
-from media_library import MediaEntry, MediaLibrary
+from media_library import MediaEntry, MediaLibrary, MediaPool
 from undo_history import UndoHistory
 
 
@@ -748,7 +748,7 @@ def test_save_and_load_session_round_trips_lut_library_and_embedded_stage():
         assert np.allclose(
             loaded_stack.stages[0].params["lut"].table,
             embedded_stage.params["lut"].table)
-        assert loaded_media_library.entries == []
+        assert loaded_media_library.is_empty()
     print("save_session/load_session: a LUT Library entry and an "
           "'embedded' Stack stage both survive a real file round trip -- "
           "OK")
@@ -996,8 +996,9 @@ def test_load_session_reads_the_old_image_library_key_as_a_fallback():
          _canvas, _timeline, warnings) = session_io.load_session(session_path)
 
         assert warnings == []
-        assert len(media_library.entries) == 1
-        assert media_library.entries[0].name == "Old-Key Swatch"
+        entries = media_library.libraries[0].entries
+        assert len(entries) == 1
+        assert entries[0].name == "Old-Key Swatch"
     print("load_session: a pre-VERSION-12 file's old 'image_library' key "
           "still loads via the new key's fallback -- OK")
 
@@ -1140,63 +1141,83 @@ def test_timeline_to_session_dict_drops_a_broken_clip_with_a_warning():
 
 
 def test_save_and_load_session_round_trips_a_timeline():
+    """Timelines live in Media Libraries (VERSION 14); the loaded one is
+    remembered by position and comes back as load_session's
+    loaded_timeline, the same object that's in the pool."""
     timeline = tl.Timeline(name="Dailies", frame_rate=23.976)
     timeline.add_clip(tl.TimelineClip(
         "Shot 01", "/a.mov", "video", 0, 47,
         stack=st.Stack(stages=[st.make_cdl_stage(sat=0.8)])))
     timeline.add_clip(tl.TimelineClip("Shot 02", "/b.mov", "video", 100, 199))
+    pool = MediaPool()
+    pool.libraries[0].add_timeline(tl.Timeline(name="Other"))
+    second = pool.add_library("Selects")
+    second.add_timeline(timeline)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = os.path.join(tmp_dir, "test_session.ltr")
-        warnings = session_io.save_session(path, st.Stack(), None, timeline=timeline)
+        warnings = session_io.save_session(
+            path, st.Stack(), None, media_pool=pool, loaded_timeline=timeline)
         assert warnings == []
 
         result = session_io.load_session(path)
-        loaded_timeline = result[-2]
+        loaded_pool, loaded_timeline = result[7], result[-2]
+        assert [lib.name for lib in loaded_pool.libraries] == ["Media", "Selects"]
+        assert loaded_timeline is loaded_pool.libraries[1].timelines[0]
         assert loaded_timeline.name == "Dailies"
         assert loaded_timeline.frame_rate == 23.976
         assert [c.name for c in loaded_timeline.clips] == ["Shot 01", "Shot 02"]
         assert len(loaded_timeline.clips[0].stack.stages) == 1
-    print("save_session/load_session: a Timeline (every clip, its own "
-          "Stack, name, frame_rate) survives a real file round trip -- OK")
+    print("save_session/load_session: libraries with their timelines, and "
+          "which one was loaded, survive a real file round trip -- OK")
 
 
-def test_save_session_with_no_timeline_omits_it_and_load_returns_an_empty_one():
+def test_save_session_with_nothing_loaded_loads_nothing():
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = os.path.join(tmp_dir, "test_session.ltr")
-        session_io.save_session(path, st.Stack(), None)  # timeline=None (default)
+        session_io.save_session(path, st.Stack(), None)
         with open(path) as f:
             data = json.load(f)
-        assert data["timeline"] is None
+        assert "timeline" not in data and "media_library" not in data
+        assert data["media_pool"]["loaded_timeline"] is None
 
         result = session_io.load_session(path)
-        loaded_timeline = result[-2]
-        assert loaded_timeline.clips == []
-    print("save_session: timeline=None writes a null 'timeline', "
-          "load_session reports a brand-new empty Timeline -- OK")
+        assert result[-2] is None
+        assert len(result[7].libraries) == 1 and result[7].is_empty()
+    print("save_session: no loaded timeline round-trips as none loaded, "
+          "one empty library -- OK")
 
 
-def test_load_session_without_timeline_key_defaults_to_empty():
-    """A pre-VERSION-11 file has no 'timeline' key at all -- must still
-    load fine, per this module's own VERSION 11 note."""
+def test_load_session_maps_an_old_single_timeline_into_a_library():
+    """Pre-VERSION-14 files have one "media_library" list and one
+    "timeline": they become one "Media" library holding that timeline,
+    loaded -- or nothing loaded when the old timeline had no clips."""
+    old_timeline = tl.Timeline(name="Old Cut")
+    old_timeline.add_clip(tl.TimelineClip("Shot", "/a.mov", "video", 0, 23))
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = os.path.join(tmp_dir, "old_session.ltr")
         session_io.save_session(path, st.Stack(), None)
         with open(path) as f:
             data = json.load(f)
-        del data["timeline"]
-        data["version"] = 10
+        del data["media_pool"]
+        data["version"] = 13
+        data["media_library"] = []
+        data["timeline"], _ = session_io.timeline_to_session_dict(old_timeline)
         with open(path, "w") as f:
             json.dump(data, f)
-
         result = session_io.load_session(path)
-        loaded_timeline = result[-2]
-        warnings = result[-1]
-        assert loaded_timeline.clips == []
+        pool, loaded, warnings = result[7], result[-2], result[-1]
         assert warnings == []
-    print("load_session: a pre-version-11 file with no 'timeline' key "
-          "loads fine, reports a brand-new empty Timeline -- OK")
+        assert pool.libraries[0].name == "Media"
+        assert loaded is pool.libraries[0].timelines[0] and loaded.name == "Old Cut"
 
+        data["timeline"] = {"name": "Timeline", "frame_rate": 24.0, "clips": []}
+        with open(path, "w") as f:
+            json.dump(data, f)
+        result = session_io.load_session(path)
+        assert result[-2] is None and result[7].libraries[0].timelines == []
+    print("load_session: an old single timeline becomes a loaded item in a "
+          "'Media' library; an empty one is dropped -- OK")
 
 def test_gallery_stills_session_round_trip():
     thumb = {"mode": "embedded", "data_b64": "Zm9v"}
@@ -1295,7 +1316,7 @@ def test_load_session_without_lut_library_key_defaults_to_empty():
          warnings) = session_io.load_session(path)
         assert warnings == []
         assert lut_library.entries == []
-        assert media_library.entries == []
+        assert media_library.is_empty()
     print("load_session: a session file with no 'lut_library' key at "
           "all (pre-version-4) loads fine with an empty LUT Library -- OK")
 
@@ -1602,8 +1623,8 @@ if __name__ == "__main__":
     test_timeline_from_session_dict_defaults_to_an_empty_timeline_when_absent()
     test_timeline_to_session_dict_drops_a_broken_clip_with_a_warning()
     test_save_and_load_session_round_trips_a_timeline()
-    test_save_session_with_no_timeline_omits_it_and_load_returns_an_empty_one()
-    test_load_session_without_timeline_key_defaults_to_empty()
+    test_save_session_with_nothing_loaded_loads_nothing()
+    test_load_session_maps_an_old_single_timeline_into_a_library()
     test_gallery_stills_session_round_trip()
     test_gallery_stills_from_session_list_skips_entry_with_no_source_path()
     test_save_and_load_session_round_trips_memories_and_gallery_stills()

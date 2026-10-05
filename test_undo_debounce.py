@@ -27,6 +27,8 @@ import workspace_io
 import canvas as cv
 import numpy as np
 import stack as st
+from media_library import MediaEntry
+from test_media_probe import _write_prores_mov
 from main_window import MainWindow
 
 # Same redirect-for-the-duration-of-tests discipline test_gl_reparent_
@@ -263,6 +265,52 @@ def test_export_bakes_at_the_session_settings_and_they_follow_the_session():
           "reset on New Session, and reload -- OK")
 
 
+def test_timelines_load_from_and_unload_to_the_media_library():
+    """Tom, 2026-10-05: "the timeline should be a media library element
+    that can be loaded or unloaded"."""
+    _app()
+    path = str(Path(_workspace_tmp_dir.name) / "timelines.ltr")
+    clip_path = str(Path(_workspace_tmp_dir.name) / "shot.mov")
+    _write_prores_mov(clip_path)  # selecting a clip loads it, so it must be real
+    win = MainWindow()
+    try:
+        assert win.timeline_panel.get_timeline() is None
+        entry = win.media_panel.library.add_entry(MediaEntry(
+            "Shot", clip_path, media_kind="video", frame_count=3, frame_rate=24.0))
+        # Adding with nothing loaded makes a timeline in the current library.
+        win.media_panel.add_to_timeline_requested.emit(entry)
+        timeline = win.timeline_panel.get_timeline()
+        assert timeline is not None and timeline in win.media_panel.library.timelines
+        assert [c.name for c in timeline.clips] == ["Shot"]
+        assert win.media_panel._loaded_timeline is timeline
+
+        win.media_panel.timeline_unload_requested.emit()
+        assert win.timeline_panel.get_timeline() is None
+        assert timeline in win.media_panel.library.timelines  # still in the library
+
+        win.media_panel.timeline_load_requested.emit(timeline)
+        assert win.timeline_panel.get_timeline() is timeline
+        win._write_session(path)
+
+        win.media_panel.library.remove_timeline(timeline.id)
+        win.media_panel.timeline_deleted.emit(timeline)
+        assert win.timeline_panel.get_timeline() is None
+
+        original = main_window_module.QFileDialog.getOpenFileName
+        main_window_module.QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (path, ""))
+        try:
+            win._open_session()
+        finally:
+            main_window_module.QFileDialog.getOpenFileName = original
+        reopened = win.timeline_panel.get_timeline()
+        assert reopened is not None and [c.name for c in reopened.clips] == ["Shot"]
+        assert reopened in win.media_panel.get_pool().libraries[0].timelines
+    finally:
+        win.close()
+    print("MainWindow: timelines load from / unload to the Media Library, "
+          "and the open one survives save/open -- OK")
+
+
 if __name__ == "__main__":
     test_rapid_stack_changes_coalesce_into_one_debounced_push()
     test_undo_flushes_a_pending_debounced_push_first()
@@ -273,5 +321,6 @@ if __name__ == "__main__":
     test_graph_preview_bakes_only_while_visible_at_the_fixed_preview_grid()
     test_fork_structure_error_is_reported_without_a_bake()
     test_export_bakes_at_the_session_settings_and_they_follow_the_session()
+    test_timelines_load_from_and_unload_to_the_media_library()
     print()
     print("All undo-debounce tests passed.")

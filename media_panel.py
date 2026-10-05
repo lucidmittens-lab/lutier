@@ -94,11 +94,12 @@ from PySide6.QtGui import QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QAbstractItemView,
     QHeaderView, QMessageBox, QInputDialog, QFileDialog, QToolButton, QMenu,
-    QLineEdit,
+    QLineEdit, QListWidget, QListWidgetItem, QSplitter,
 )
 
 from app_logic import load_image_as_array, get_image_native_size
-from media_library import MediaLibrary, MediaEntry, MEDIA_ENTRY_DRAG_MIME_TYPE
+from media_library import MediaPool, MediaEntry, MEDIA_ENTRY_DRAG_MIME_TYPE
+import timeline as tl
 import hover_inspector
 import media_cache
 import media_probe
@@ -127,6 +128,10 @@ IMAGE_FILE_FILTER = (
 
 ENTRY_ID_ROLE = Qt.ItemDataRole.UserRole  # carried on every row's column-0 item, see module docstring
 SORT_KEY_ROLE = Qt.ItemDataRole.UserRole + 1  # numeric sort key, see _NumericItem
+# A timeline row carries its timeline id here instead of ENTRY_ID_ROLE (so
+# every entry-only action and the drag-out simply don't see it).
+TIMELINE_ID_ROLE = Qt.ItemDataRole.UserRole + 2
+LIBRARY_ID_ROLE = Qt.ItemDataRole.UserRole  # on the side panel's items
 
 
 def _format_duration(seconds):
@@ -244,6 +249,24 @@ def _probe_or_empty(path, is_video):
         return {}
 
 
+def _timeline_cells(timeline):
+    """{column key: (text, sort_key)} for a timeline's row -- the
+    columns that mean something for a timeline (record-side timecode
+    from 00:00:00:00); every other column stays blank."""
+    frames = timeline.total_frame_count()
+    rate = timeline.frame_rate
+    cells = {
+        "name": (timeline.name, None),
+        "kind": ("Timeline", None),
+        "frames": (str(frames), frames),
+        "fps": (f"{round(rate, 3):g}", rate),
+        "duration": (_format_duration(timeline.duration), timeline.duration),
+        "start_tc": (timecode.frames_to_timecode(0, rate), 0),
+        "end_tc": (timecode.frames_to_timecode(max(0, frames - 1), rate), max(0, frames - 1)),
+    }
+    return cells
+
+
 class _Column:
     """One Media Libraries table column. `cell(entry)` returns (text,
     sort_key): a non-None sort_key makes the cell a _NumericItem (so
@@ -351,15 +374,50 @@ class MediaPanel(QWidget):
     load_as_reference_requested = Signal(object)   # a media_library.MediaEntry
     add_to_timeline_requested = Signal(object)     # a media_library.MediaEntry
 
+    # A timeline row was opened (double-click / Load Timeline) -- a
+    # timeline.Timeline from this pool; MainWindow loads it into the
+    # Timeline panel.
+    timeline_load_requested = Signal(object)
+    timeline_unload_requested = Signal()
+    # A timeline was renamed or deleted here -- MainWindow refreshes or
+    # unloads the Timeline panel if it's the loaded one.
+    timeline_renamed = Signal(object)
+    timeline_deleted = Signal(object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.library = MediaLibrary()
+        self.pool = MediaPool()
+        # The library selected in the side panel: what the table shows and
+        # where imports, drops and New Timeline land.
+        self.library = self.pool.libraries[0]
+        self._loaded_timeline = None
+        self._frame_rate_getter = None
         self._build_layout()
+        self._refresh_library_list()
         self._refresh_table()
 
     def _build_layout(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        outer.addWidget(self.splitter)
+
+        # Side panel: the session's libraries (Tom, 2026-10-05: "a side
+        # panel to select the target library").
+        self.library_list = QListWidget()
+        self.library_list.setObjectName("mediaLibraryList")
+        self.library_list.currentItemChanged.connect(self._on_library_selected)
+        self.library_list.itemDoubleClicked.connect(lambda _item: self._on_rename_library_clicked())
+        self.library_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.library_list.customContextMenuRequested.connect(self._on_library_context_menu)
+        self.splitter.addWidget(self.library_list)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.splitter.addWidget(content)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([120, 600])
 
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText("Filter by name or path...")
@@ -410,7 +468,7 @@ class MediaPanel(QWidget):
         # already assumes a Source image), same "double-click is the fast
         # path for the common action" convention LUT Library (Apply to
         # Stack) and CDL Library (Apply to Stack) already use.
-        self.table.itemDoubleClicked.connect(self._on_load_as_sample_clicked)
+        self.table.itemDoubleClicked.connect(self._on_row_double_clicked)
         # Per-item actions (Load as Source/Load as Reference/Rename/
         # Delete) live on a right-click context menu, not the "..."
         # header menu (per Tom: "rename, load as source, delete and load
@@ -453,6 +511,9 @@ class MediaPanel(QWidget):
             "metadata are read in, not its pixel data (see this panel's "
             "own docstring: moving/deleting the source file afterward "
             "breaks this entry).")
+        menu.addAction("New Timeline", self.new_timeline)
+        menu.addSeparator()
+        menu.addAction("New Library...", self._on_new_library_clicked)
 
     def _on_context_menu_requested(self, pos):
         """Right-click menu for a specific row (per Tom, see populate_menu's
@@ -473,6 +534,17 @@ class MediaPanel(QWidget):
         if not self.table.selectionModel().isRowSelected(item.row(), self.table.rootIndex()):
             self.table.selectRow(item.row())
         menu = QMenu(self.table)
+        timeline = self._timeline_at_row(item.row())
+        if timeline is not None:
+            if timeline is self._loaded_timeline:
+                menu.addAction("Unload Timeline", self.timeline_unload_requested.emit)
+            else:
+                menu.addAction("Load Timeline", lambda: self.timeline_load_requested.emit(timeline))
+            menu.addSeparator()
+            menu.addAction("Rename...", self._on_rename_clicked)
+            menu.addAction("Delete", self._on_delete_clicked)
+            menu.exec(self.table.viewport().mapToGlobal(pos))
+            return
         menu.addAction("Load as Source", self._on_load_as_sample_clicked)
         menu.addAction("Load as Reference", self._on_load_as_reference_clicked)
         menu.addAction("Add to Timeline", self._on_add_to_timeline_clicked)
@@ -613,21 +685,25 @@ class MediaPanel(QWidget):
             lines.append(entry.metadata["camera"])
         return "\n".join(lines)
 
-    def _refresh_table(self, keep_selection_id=None):
+    def _refresh_table(self, keep_selection_id=None, keep_timeline_id=None):
         was_sorting = self.table.isSortingEnabled()
         self.table.setSortingEnabled(False)
         self.table.blockSignals(True)
         self.table.setRowCount(0)
+        for timeline in self.library.timelines:
+            self._append_timeline_row(timeline)
         for entry in self.library.entries:
             self._append_row(entry)
         self.table.blockSignals(False)
         self.table.setSortingEnabled(was_sorting)
-        if keep_selection_id is not None:
-            for row in range(self.table.rowCount()):
-                if self._entry_id_at_row(row) == keep_selection_id:
-                    self.table.selectRow(row)
-                    break
+        for row in range(self.table.rowCount()):
+            if ((keep_selection_id is not None and self._entry_id_at_row(row) == keep_selection_id)
+                    or (keep_timeline_id is not None
+                        and self._timeline_id_at_row(row) == keep_timeline_id)):
+                self.table.selectRow(row)
+                break
         self._apply_filter()
+        self._refresh_library_counts()
 
     def _apply_filter(self, text=None):
         """Hides every row whose own name/path doesn't contain `text`
@@ -648,7 +724,11 @@ class MediaPanel(QWidget):
                     entry = self.library.find(entry_id)
                 except KeyError:
                     pass
-            haystack = f"{entry.name} {entry.source_path or ''}".lower() if entry is not None else ""
+            if entry is not None:
+                haystack = f"{entry.name} {entry.source_path or ''}".lower()
+            else:
+                timeline = self._timeline_at_row(row)
+                haystack = timeline.name.lower() if timeline is not None else ""
             self.table.setRowHidden(row, text not in haystack)
 
     def _append_row(self, entry):
@@ -770,6 +850,15 @@ class MediaPanel(QWidget):
             self.add_to_timeline_requested.emit(entry)
 
     def _on_rename_clicked(self):
+        timeline = self._timeline_at_row(self.table.currentRow())
+        if timeline is not None:
+            name, ok = QInputDialog.getText(self, "Rename Timeline", "Name:", text=timeline.name)
+            name = name.strip()
+            if ok and name:
+                timeline.name = name
+                self._refresh_table(keep_timeline_id=timeline.id)
+                self.timeline_renamed.emit(timeline)
+            return
         entry = self._selected_entry()
         if entry is None:
             return
@@ -782,12 +871,14 @@ class MediaPanel(QWidget):
 
     def _on_delete_clicked(self):
         entries = self._selected_entries()
-        if not entries:
+        timelines = self._selected_timelines()
+        items = [e.name for e in entries] + [t.name for t in timelines]
+        if not items:
             return
-        if len(entries) == 1:
-            message = f'Delete "{entries[0].name}" from the library? This can\'t be undone.'
+        if len(items) == 1:
+            message = f'Delete "{items[0]}" from the library? This can\'t be undone.'
         else:
-            message = f"Delete {len(entries)} items from the library? This can't be undone."
+            message = f"Delete {len(items)} items from the library? This can't be undone."
         reply = QMessageBox.question(
             self, "Delete Media", message,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
@@ -797,16 +888,171 @@ class MediaPanel(QWidget):
             return
         for entry in entries:
             self.library.remove(entry.id)
+        for timeline in timelines:
+            self.library.remove_timeline(timeline.id)
+            self.timeline_deleted.emit(timeline)
         self._refresh_table()
+
+    # ---- timelines (media_library.py, LIBRARIES AND TIMELINES) -----------
+
+    def _append_timeline_row(self, timeline):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        cells = _timeline_cells(timeline)
+        bold = timeline is self._loaded_timeline
+        for index, column in enumerate(COLUMNS):
+            text, sort_key = cells.get(column.key, ("", None))
+            item = _NumericItem(text, sort_key) if column.numeric else QTableWidgetItem(text)
+            if index == COLUMN_THUMBNAIL:
+                item.setData(TIMELINE_ID_ROLE, timeline.id)
+                item.setText("▶" if bold else "")
+                item.setToolTip("Loaded in the Timeline panel" if bold else "")
+            if bold:
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+            self.table.setItem(row, index, item)
+
+    def _timeline_id_at_row(self, row):
+        item = self.table.item(row, COLUMN_THUMBNAIL) if row >= 0 else None
+        return item.data(TIMELINE_ID_ROLE) if item is not None else None
+
+    def _timeline_at_row(self, row):
+        timeline_id = self._timeline_id_at_row(row)
+        if timeline_id is None:
+            return None
+        return next((t for t in self.library.timelines if t.id == timeline_id), None)
+
+    def _selected_timelines(self):
+        rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
+        return [t for t in (self._timeline_at_row(r) for r in rows) if t is not None]
+
+    def _on_row_double_clicked(self, item):
+        timeline = self._timeline_at_row(item.row())
+        if timeline is not None:
+            self.timeline_load_requested.emit(timeline)
+        else:
+            self._on_load_as_sample_clicked()
+
+    def set_frame_rate_getter(self, getter):
+        """`getter()` -> the frame rate a New Timeline starts at (MainWindow:
+        the project's edit rate)."""
+        self._frame_rate_getter = getter
+
+    def new_timeline(self, name=None):
+        """Create an empty timeline in the current library, at the
+        project's edit rate (set_frame_rate_getter), and ask for it to be
+        loaded. Returns it."""
+        existing = [t.name for lib in self.pool.libraries for t in lib.timelines]
+        rate = self._frame_rate_getter() if self._frame_rate_getter else tl.DEFAULT_FRAME_RATE
+        timeline = tl.Timeline(name=name or MediaPool.unique_name("Timeline", existing),
+                               frame_rate=rate)
+        self.library.add_timeline(timeline)
+        self._refresh_table(keep_timeline_id=timeline.id)
+        self.timeline_load_requested.emit(timeline)
+        return timeline
+
+    def set_loaded_timeline(self, timeline):
+        """Mark which timeline (or None) the Timeline panel has open."""
+        self._loaded_timeline = timeline
+        self._refresh_table()
+
+    # ---- libraries (the side panel) ---------------------------------------
+
+    def _refresh_library_list(self):
+        self.library_list.blockSignals(True)
+        self.library_list.clear()
+        for library in self.pool.libraries:
+            item = QListWidgetItem()
+            item.setData(LIBRARY_ID_ROLE, library.id)
+            self.library_list.addItem(item)
+            if library is self.library:
+                self.library_list.setCurrentItem(item)
+        self.library_list.blockSignals(False)
+        self._refresh_library_counts()
+
+    def _refresh_library_counts(self):
+        for row in range(self.library_list.count()):
+            item = self.library_list.item(row)
+            try:
+                library = self.pool.find_library(item.data(LIBRARY_ID_ROLE))
+            except KeyError:
+                continue
+            count = len(library.entries) + len(library.timelines)
+            item.setText(f"{library.name} ({count})" if count else library.name)
+
+    def _on_library_selected(self, current, _previous):
+        if current is None:
+            return
+        try:
+            self.library = self.pool.find_library(current.data(LIBRARY_ID_ROLE))
+        except KeyError:
+            return
+        self._refresh_table()
+
+    def select_library(self, library):
+        self.library = library
+        self._refresh_library_list()
+        self._refresh_table()
+
+    def _on_library_context_menu(self, pos):
+        menu = QMenu(self.library_list)
+        menu.addAction("New Library...", self._on_new_library_clicked)
+        if self.library_list.itemAt(pos) is not None:
+            menu.addAction("Rename...", self._on_rename_library_clicked)
+            delete = menu.addAction("Delete", self._on_delete_library_clicked)
+            delete.setEnabled(len(self.pool.libraries) > 1)
+        menu.exec(self.library_list.viewport().mapToGlobal(pos))
+
+    def _on_new_library_clicked(self):
+        default = MediaPool.unique_name("Library", [lib.name for lib in self.pool.libraries])
+        name, ok = QInputDialog.getText(self, "New Library", "Name:", text=default)
+        name = name.strip()
+        if ok and name:
+            self.select_library(self.pool.add_library(name))
+
+    def _on_rename_library_clicked(self):
+        name, ok = QInputDialog.getText(self, "Rename Library", "Name:", text=self.library.name)
+        name = name.strip()
+        if ok and name:
+            self.library.name = name
+            self._refresh_library_counts()
+
+    def _on_delete_library_clicked(self):
+        if len(self.pool.libraries) <= 1:
+            return
+        library = self.library
+        if not library.is_empty():
+            reply = QMessageBox.question(
+                self, "Delete Library",
+                f'Delete the library "{library.name}" and everything in it '
+                "(the media files themselves aren't touched)? This can't be undone.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        for timeline in list(library.timelines):
+            self.timeline_deleted.emit(timeline)
+        self.pool.remove_library(library.id)
+        self.select_library(self.pool.libraries[0])
 
     # ---- session save/load (see session_io.py) ---------------------------
 
-    def get_library(self):
-        return self.library
+    def get_pool(self):
+        return self.pool
 
-    def load_library(self, library):
-        """Replace the whole library wholesale -- used by MainWindow for
-        session load, same "wholesale replace + rebuild the table" pattern
-        as LUTLibraryPanel.load_library/StackMemoriesPanel.load_library."""
-        self.library = library
+    def find_entry(self, entry_id):
+        """The MediaEntry with `entry_id` in any library (raises KeyError)
+        -- a drag from the table carries only the id."""
+        return self.pool.find_entry(entry_id)
+
+    def load_pool(self, pool):
+        """Replace every library wholesale -- session load/New Session,
+        same "wholesale replace + rebuild" pattern as LUTLibraryPanel.
+        load_library/StackMemoriesPanel.load_library. Selects the first
+        library."""
+        self.pool = pool
+        self.library = pool.libraries[0]
+        self._loaded_timeline = None
+        self._refresh_library_list()
         self._refresh_table()
