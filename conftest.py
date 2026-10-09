@@ -59,12 +59,20 @@ excluding them from the shared-process suite avoids polluting the rest of
 this project's GL-touching tests rather than trying to fully root-cause a
 third-party library's documented-fragile class-level GL state.
 """
+from pathlib import Path
+
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
 
-collect_ignore = [
+# Test files that need a real OpenGL context (see the docstring above).
+# Their tests carry the `gl` marker (registered in pytest.ini). They share
+# a process with each other fine, just not with the rest of the suite --
+# so a normal run skips them, and `pytest --gl` runs ONLY them (needs a
+# real display: QT_QPA_PLATFORM=xcb, or Xvfb in Claude Code web sessions).
+GL_TEST_FILES = [
     "test_gpu_cdl_shader.py", "test_gpu_shader_cache.py", "test_gpu_stack_renderer.py",
     "test_gpu_lanczos_compositor.py", "test_gpu_wipe_compositor.py", "test_gpu_ocio_dynamic.py",
     "test_gpu_lut_shader.py", "test_wipe_compare_widget_gpu_state.py",
@@ -78,3 +86,75 @@ collect_ignore = [
     # test_wipe_compare_widget_readback.py`.
     "test_wipe_compare_widget_readback.py",
 ]
+
+collect_ignore = list(GL_TEST_FILES)
+
+# Files whose tests must all run on one worker, in file order, under
+# pytest-xdist. pytest.ini's `--dist loadgroup` keeps each xdist_group
+# together; every other test is spread across workers individually.
+# Found by running the suite split across workers and in reverse order
+# (2026-10-09); all pass serially in file order.
+SAME_WORKER_FILES = [
+    # Every test rewrites the same /tmp/test_preview_image.png at its own size.
+    "test_image_preview.py",
+    # Tests share the module's scratch prefs file and rely on an earlier test
+    # having cleared the cache folder an earlier-still test set.
+    "test_media_cache.py",
+    # Float/redock geometry tests depend on dock state left by earlier tests.
+    "test_gl_reparent_safety.py",
+]
+
+
+# Parallel by default when pytest-xdist is installed (requirements-dev.txt),
+# serial when it isn't -- so pytest.ini can't break a bare environment by
+# naming xdist-only options. An explicit -n (e.g. -n 0 for pdb) wins.
+# tryfirst + registered after xdist = runs before xdist's own hook of this
+# name, which turns "auto" into a worker count.
+# NEVER let this run on a worker: xdist resets each worker to numprocesses=
+# None and then calls this hook there too, so an unguarded default makes
+# every worker spawn its own workers -- an exponential fork bomb that froze
+# the dev machine twice (2026-10-09).
+@pytest.hookimpl(tryfirst=True)
+def pytest_cmdline_main(config):
+    if (config.pluginmanager.hasplugin("xdist")
+            and not hasattr(config, "workerinput")
+            and config.option.numprocesses is None):
+        config.option.numprocesses = "auto"
+        if config.option.dist == "no":
+            config.option.dist = "loadgroup"
+
+
+# Workers derive their `loadgroup` flag (which tags collected ids with their
+# xdist_group) from the command line, which doesn't carry the default chosen
+# above -- so hand the controller's answer over explicitly. optionalhook:
+# this hook only exists when xdist is installed.
+@pytest.hookimpl(optionalhook=True)
+def pytest_configure_node(node):
+    node.workerinput["lutier_loadgroup"] = node.config.option.dist == "loadgroup"
+
+
+def pytest_addoption(parser):
+    parser.addoption("--gl", action="store_true",
+                     help="Run only the tests that need a real OpenGL context "
+                          "(conftest.GL_TEST_FILES). Needs a real display.")
+
+
+def pytest_configure(config):
+    workerinput = getattr(config, "workerinput", None)
+    if workerinput and workerinput.get("lutier_loadgroup"):
+        config.option.loadgroup = True
+    if config.getoption("--gl"):
+        here = Path(__file__).parent
+        collect_ignore[:] = [p.name for p in here.glob("test_*.py")
+                             if p.name not in GL_TEST_FILES]
+
+
+# tryfirst: xdist reads xdist_group markers in its own hook of this name.
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items):
+    for item in items:
+        name = item.path.name
+        if name in GL_TEST_FILES:
+            item.add_marker(pytest.mark.gl)
+        if name in SAME_WORKER_FILES:
+            item.add_marker(pytest.mark.xdist_group(name))

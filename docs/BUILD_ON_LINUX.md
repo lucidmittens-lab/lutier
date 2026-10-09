@@ -63,9 +63,10 @@ missing `.so`) will usually name the exact library to track down.
 
 ```
 python3 -m venv .venv          # .venv/ is gitignored
-.venv/bin/pip install -r requirements.txt pytest
+.venv/bin/pip install -r requirements.txt -r requirements-dev.txt
 ./run_linux.sh                 # the app
-./run_linux.sh test            # the pytest suite (offscreen)
+./run_linux.sh test            # the pytest suite (offscreen, parallel)
+./run_linux.sh test-gl         # the GL-context tests, on the real display
 ```
 
 `run_linux.sh` exists because of two real-GPU-desktop gotchas found on

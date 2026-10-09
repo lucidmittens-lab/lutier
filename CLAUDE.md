@@ -69,32 +69,50 @@ Use the repo's `.venv` (Python 3.12). On Linux, `run_linux.sh` wraps both:
 
 ```sh
 ./run_linux.sh                         # run the app on the real display
-./run_linux.sh test                    # full shared-process suite, offscreen (~1 min)
+./run_linux.sh test                    # full suite, offscreen, parallel (~13 s)
 ./run_linux.sh test test_stack.py      # one module
 ./run_linux.sh test test_stack.py -k fork
+./run_linux.sh test -n 0 -x test_stack.py   # one process: for --pdb, -x, print debugging
+./run_linux.sh test-gl                 # the GL-context tests, on the real display
 .venv/bin/python test_stack.py         # most test files also run directly
 ```
 
-`run_linux.sh test` is `QT_QPA_PLATFORM=offscreen pytest -q` with `DISPLAY` and
-`WAYLAND_DISPLAY` unset. Offscreen with a live `DISPLAY` makes Qt try GLX,
-which segfaults on NVIDIA. Under offscreen, `QOpenGLWidget.isValid()` is
-always False, so GL-backed widgets in the main suite (Viewer, Graph, scopes)
-test wiring only, never pixels.
+Test deps: `pip install -r requirements.txt -r requirements-dev.txt`.
 
-**Tests that need a real GL context** are listed in `conftest.py`'s
-`collect_ignore`: the `test_gpu_*` files, `test_wipe_compare_widget_gpu_state.py`
-and `test_wipe_compare_widget_readback.py`. They are excluded from the shared
-process because their GL contexts break pyqtgraph's class-level shader cache.
-Run each in its **own process** on a real display. Naming the file overrides
-`collect_ignore`:
+`run_linux.sh test` is `QT_QPA_PLATFORM=offscreen pytest` with `DISPLAY` and
+`WAYLAND_DISPLAY` unset; defaults live in `pytest.ini`. Offscreen with a live
+`DISPLAY` makes Qt try GLX, which segfaults on NVIDIA. Under offscreen,
+`QOpenGLWidget.isValid()` is always False, so GL-backed widgets in the main
+suite (Viewer, Graph, scopes) test wiring only, never pixels.
+
+**Parallel runs.** When pytest-xdist is installed, `conftest.py` defaults to
+`-n auto --dist loadgroup` (58 s serial → 13 s on 16 cores). An explicit `-n`
+wins. Files whose tests depend on each other's on-disk state or order are in
+`conftest.SAME_WORKER_FILES` and run on one worker, in file order. If a new
+test fails only in parallel, it shares state with another test; add its file
+there. Don't drop the `workerinput` guard in conftest's `pytest_cmdline_main`:
+without it every worker spawns its own workers, a fork bomb that froze this
+machine.
+
+**Tests that need a real GL context** are `conftest.GL_TEST_FILES`: the
+`test_gpu_*` files, `test_wipe_compare_widget_gpu_state.py` and
+`test_wipe_compare_widget_readback.py`. Their GL contexts break pyqtgraph's
+class-level shader cache, so they never share a process with the rest of the
+suite. A normal run skips them. `pytest --gl` (what `run_linux.sh test-gl`
+runs, with `QT_QPA_PLATFORM=xcb PYOPENGL_PLATFORM=glx`) runs only them, marked
+`gl`. Naming one file also works:
 
 ```sh
-QT_QPA_PLATFORM=xcb PYOPENGL_PLATFORM=glx .venv/bin/python -m pytest -q test_gpu_stack_renderer.py
+QT_QPA_PLATFORM=xcb PYOPENGL_PLATFORM=glx .venv/bin/python -m pytest test_gpu_stack_renderer.py
 ```
 
 In Claude Code web sessions, `.claude/hooks/session-start.sh` provides Xvfb
-plus Mesa (`DISPLAY=:99`, `LIBGL_ALWAYS_SOFTWARE=1`), so the same command
-works there. Keep that hook working.
+plus Mesa (`DISPLAY=:99`, `LIBGL_ALWAYS_SOFTWARE=1`), so the same commands
+work there. Keep that hook working.
+
+Slowest tests (about 1 to 1.6 s each) are LUT bakes and resamples in
+`test_lut_controls.py`, `test_printer_lights.py` and `test_stack.py`;
+check with `--durations=20`.
 
 Known failure: the 7 tests in `test_airplay_output_sink.py` need macOS and
 PyObjC, and fail on Linux.

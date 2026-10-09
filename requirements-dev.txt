@@ -1,0 +1,4 @@
+# Test tooling, on top of requirements.txt:
+#   .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+pytest
+pytest-xdist  # conftest.py runs the suite in parallel when this is installed
