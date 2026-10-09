@@ -12,15 +12,13 @@ class of bug entirely: once this module is imported, the text is just an
 in-memory Python object, whether running from source or from the frozen
 .app, no path resolution involved at all.
 
-TRADE-OFF: this is a second copy of docs/USER_MANUAL.md's content, not a live
-read of that file -- editing docs/USER_MANUAL.md alone will NOT update what
-Help > Manual shows in the app. Keep USER_MANUAL_MARKDOWN below in sync by
-hand whenever docs/USER_MANUAL.md changes. (An alternative would be a build-time
-step that generates this file FROM docs/USER_MANUAL.md rather than hand-copying
--- not done here since the manual doesn't change often enough to justify
-the extra moving part, but worth reconsidering if that stops being true.)
+THIS is the manual's single source (since 2026-10-09). docs/USER_MANUAL.md
+is generated from it: edit USER_MANUAL_MARKDOWN below, then run
+`python3 help_text.py` to rewrite docs/USER_MANUAL.md.
+tests/test_help_text.py fails if the two drift apart (they had: the docs
+copy lagged two months and still described modules that no longer exist).
 
-Rendered via QTextBrowser.setMarkdown() (see main_window.py's Help menu),
+Rendered via QTextBrowser.setMarkdown() (see main_window_parts/menus.py),
 which is why this is kept as real Markdown (headers, bold, a table) rather
 than plain text.
 
@@ -203,7 +201,7 @@ the cursor), middle-mouse-drag to pan around, middle-double-click to
 reset back to fit — independent of the left-click wipe divider drag, so
 both work at once without conflicting.
 
-**Source:** `sample_image_panel.py` (image loading/wipe-source logic)
+**Source:** `sample_image_panel/` (image loading/wipe-source logic)
 driving `wipe_compare_widget.py` (the actual compare/zoom/pan widget).
 The Stack's live result shown as "Source After" is graded on the GPU when
 the Stack is GPU-eligible (`gpu_stack_renderer.py`), falling back to the
@@ -216,7 +214,7 @@ The main work area: an ordered list of stages. Reorder by dragging,
 toggle any stage on/off, give it its own opacity, click a stage to edit
 its parameters in the **Parameters** panel.
 
-**Source:** `stack_panel.py` (the list UI) driving `stack.py` (the
+**Source:** `stack_panel/` (the list UI) driving `stack.py` (the
 `Stage`/`Stack` model and `_apply_stage_to_array` dispatch every operator
 below ultimately runs through).
 
@@ -477,7 +475,7 @@ wheel+spins field/range at once (CDL's Slope/Offset/Power, Grading
 Primary's fields, Grading Tone's ranges) when the label names the group
 rather than one spinbox.
 
-**Source:** `stack_panel.py`'s per-kind `_build_*_inspector`/`_apply_*_live`
+**Source:** `stack_panel/inspect_*.py`'s per-kind `_build_*_inspector`/`_apply_*_live`
 methods; the double-click-to-reset label is `_ParamLabel`.
 
 ## Scopes
@@ -496,7 +494,7 @@ too bright against a given image.
 **Source:** `scopes_panel.py` (the panel/UI) driving `scopes.py`
 (`compute_histogram`/`compute_waveform`/`compute_vectorscope`, plus the
 graticule stop calculations) — always computed on CPU, capped to a small
-fixed resolution for a GPU-eligible Stack (see `sample_image_panel.py`'s
+fixed resolution for a GPU-eligible Stack (see `sample_image_panel/`'s
 `SCOPES_MAX_DIMENSION`) so this recompute stays cheap regardless of how
 expensive the actual grade is.
 
@@ -610,7 +608,7 @@ filename:
 - **Grab Still** — also saves the current Stack as a new Gallery still,
   named after the exported file.
 
-**Source:** `main_window.py`'s Export dialog, writing via `colour-science`'s
+**Source:** `main_window_parts/export_lut.py`'s Export dialog, writing via `colour-science`'s
 own `colour.write_LUT` for most formats and `colour_clf_io`/`clf_adapter.py`
 specifically for CLF.
 
@@ -652,3 +650,12 @@ source image.
 | Scopes: Waveform | ⌘2 |
 | Scopes: Vectorscope | ⌘3 |
 """
+
+
+if __name__ == "__main__":
+    # Dev-only: regenerate docs/USER_MANUAL.md from USER_MANUAL_MARKDOWN.
+    # (__file__ is fine here -- this never runs inside the frozen app.)
+    from pathlib import Path
+    out = Path(__file__).parent / "docs" / "USER_MANUAL.md"
+    out.write_text(USER_MANUAL_MARKDOWN, encoding="utf-8")
+    print(f"wrote {out}")

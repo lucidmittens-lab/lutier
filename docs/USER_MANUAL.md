@@ -18,26 +18,54 @@ end for the full set of layout/window features shared across every panel.
 
 ## Browser
 
-Point it at a folder; it lists LUT files (`.cube`, `.clf`, `.spi1d`,
-`.spi3d`, `.spimtx`, `.csp`) and ASC CDL files (`.cc`, `.cdl`, `.ccc`)
-together, CDL ones tagged `[CDL]`. Double-click a LUT to add it to the
-Stack; double-click a CDL to import it into the Gallery. Drag either
-kind onto its matching Library/Gallery panel, or drag a LUT onto the
-Stack directly.
+A file-system browser: a folder tree on top (**Choose Root...** picks the
+top folder, **↑** goes up a level) and, below it, the recognized files in
+the selected folder — media (stills and video), LUTs (`.cube`, `.clf`,
+`.spi1d`, `.spi3d`, `.spimtx`, `.csp`) and ASC CDLs (`.cc`, `.cdl`,
+`.ccc`) — with Name, Type, Size and Modified columns. Tick
+**Subfolders** (next to the search box) to list everything under the selected folder (a Folder
+column then shows where each file lives; hidden folders are skipped and
+very large trees stop at 5,000 files). Narrow the list with the type menu
+(All / Media / LUTs & CDLs) or the search box (wildcards ok).
 
-**Source:** `browser_panel.py` (file listing/drag-drop); LUT file
-reading is `app_logic.load_lut_any_format` (dispatches to
-`colour-science`'s own per-format readers).
+Select several files and drag them onto the Media Libraries table (or
+onto a library in its side list) to import them. Double-click a media
+file to import it into the current library, a LUT to add it to the
+Stack, a CDL to import it into the Gallery. A single LUT or CDL can
+still be dragged onto the Stack or its Library/Gallery panel.
+
+**Source:** `browser_panel.py`; LUT file reading is
+`app_logic.load_lut_any_format`.
 
 ## Media Libraries
 
-A shelf of reference stills AND video imported into the session. Import
-a file, then double-click an entry (or use its "☰" menu) to load it as
-the Viewer's Source or Reference image (video only supports Source, not
-Reference).
+A session holds any number of named **libraries**, listed in the side
+panel on the left (right-click it for New / Rename / Delete; each shows
+how many items it holds). The selected library is what the table shows
+and where imports, drops and New Timeline land; drop files onto another
+library in the list to import straight into it.
 
-**Source:** `image_library_panel.py`; entries are `image_library.py`'s
-`ImageLibraryEntry`/`ImageLibrary`.
+The table lists the library's still and video files, catalogued by
+reference, and its **timelines**. Right-click the column header to
+choose columns (timecode, codec, bit depth, audio, camera, file size,
+...), drag headers to reorder, click one to sort. Double-click media to
+load it as the Viewer's Source (right-click for Load as Reference / Add
+to Timeline / Rename / Delete; video only supports Source). Entries are
+catalogued by path and header metadata only — moving or deleting the
+source file after import breaks that entry.
+
+Only the essential columns show by default (Name, Kind, Resolution,
+Duration, FPS, Codec); Path, timecode and the rest are a header
+right-click away, and Alt+hover shows them for any row.
+
+Double-click a timeline (or right-click → Load Timeline) to open it in
+the Timeline panel; the loaded one is marked ▶. Unload it from the same
+menu or the ⏏ button next to its name under the Timeline track — it stays in its library. **☰ →
+New Timeline** makes an empty one at the project's edit rate; adding a
+clip with no timeline loaded makes one automatically.
+
+**Source:** `media_panel.py`; `media_library.py`'s `MediaPool` /
+`MediaLibrary` / `MediaEntry`; header metadata from `media_probe.py`.
 
 ## LUT Library
 
@@ -71,6 +99,60 @@ way a session's Stack is (see `session_io.py`); a CDL entry's underlying
 SOP/SAT values are the same `cdl.py` structures a CDL stage in the Stack
 uses (see **ASC CDL** under **Stack → Operators** below).
 
+## Color Management
+
+Every image goes through one pipeline, shown above the Stack's stage
+list (**Input → Working → Display**):
+
+1. **Input color space** — each Media Library entry has one (the **Input
+   Space** column; right-click → **Input Color Space**). Camera footage
+   is suggested from its metadata (ARRI, Sony, RED, Blackmagic,
+   Panasonic); anything else starts as **Same as working space** (no
+   conversion). Timeline clips use their entry's input space.
+2. **Working space** — set in **File > Project Settings**; the Stack runs
+   in it. A stage whose own *Working Color Space* is different is
+   converted into that space, applied and converted back (its row shows
+   "in <space>"); a DRT stage converts in only, and nothing after a DRT
+   is converted.
+3. **Display transform** — also in Project Settings (off by default):
+   the ACES Output Transform for a display and view. Record views
+   through it; it steps aside automatically while the Stack contains a
+   DRT stage of its own.
+
+LUT export bakes the grade alone (working space in and out), or — with
+**Full chain** ticked in the Export dialog — input transform → grade →
+display as a single show LUT. Everything above runs on the GPU.
+
+**Source:** `colour_pipeline.py` (`build_effective_stack`).
+
+## Source and Record
+
+Two viewers, side by side like an edit suite. **Source** (left) shows the
+clip you double-clicked in Media Libraries, ungraded, with its own
+transport; **Record** (right, the panel described under Viewer below) is
+the grading monitor — wipes, Scopes, Highlight and the color picker all
+follow it.
+
+In Source, mark In (I) and Out (O), then **Insert** (F9), **Overwrite**
+(F10) or **Append** (Shift+F12) the marked range into the loaded
+timeline at Record's playhead (a timeline is created in the current
+library if none is loaded). **Match Frame** (F, Viewer menu) loads the
+clip under Record's playhead into Source on the same frame.
+
+Both viewers: **J/K/L** shuttle (L or J again for 2×/4×/8×, K stops, K
+held + J/L steps a frame), Space play/pause, ←/→ one frame. Click a
+timecode, type and press Enter to jump: a full timecode, a partial one
+(replaces the right-hand digits — `1000` is 10s 00f), or `+`/`-` an
+offset (`+200` is two seconds on). Record follows what you're doing:
+it shows the **timeline** whenever you work with one (select or seek a
+clip, play, load a timeline) and a **single clip** after "Grade in
+Record" on a Media Library item (grading without a timeline).
+
+**Source:** `source_viewer.py`, `transport_logic.py`,
+`transport_icons.py`; edits are `timeline.py`'s
+`insert_clip_at_record_frame` / `overwrite_clip_at_record_frame` /
+`append_clip`.
+
 ## Viewer
 
 The source image preview, before/after wipe compare. Two roles:
@@ -88,7 +170,7 @@ the cursor), middle-mouse-drag to pan around, middle-double-click to
 reset back to fit — independent of the left-click wipe divider drag, so
 both work at once without conflicting.
 
-**Source:** `sample_image_panel.py` (image loading/wipe-source logic)
+**Source:** `sample_image_panel/` (image loading/wipe-source logic)
 driving `wipe_compare_widget.py` (the actual compare/zoom/pan widget).
 The Stack's live result shown as "Source After" is graded on the GPU when
 the Stack is GPU-eligible (`gpu_stack_renderer.py`), falling back to the
@@ -101,7 +183,7 @@ The main work area: an ordered list of stages. Reorder by dragging,
 toggle any stage on/off, give it its own opacity, click a stage to edit
 its parameters in the **Parameters** panel.
 
-**Source:** `stack_panel.py` (the list UI) driving `stack.py` (the
+**Source:** `stack_panel/` (the list UI) driving `stack.py` (the
 `Stage`/`Stack` model and `_apply_stage_to_array` dispatch every operator
 below ultimately runs through).
 
@@ -325,23 +407,26 @@ silently showing a stale preview.
 
 **Source:** `stack.py`'s `_run_stages` (structural split/merge handling,
 not a color operation itself — the operators inside each branch are each
-still dispatched through `_apply_stage_to_array` as usual). Not yet
-GPU-accelerated — any Stack containing a fork falls back to CPU
-(`stack.apply_stack_to_image_array`) entirely.
+still dispatched through `_apply_stage_to_array` as usual). Forks render
+on the GPU (`gpu_stack_renderer.py`, fork merge via
+`gpu_fork_merge_shader.py`) as long as every stage in the Stack is
+GPU-eligible; nested forks aren't supported anywhere.
 
 ### Grid size and domain
 
-Set from the Stack's **"☰"** menu or **Stack** menu bar entry → **Edit
-Size/Domain...**. Grid size is the resolution of the final baked LUT (9
-through 97, or type your own — 33 is the common default). Domain is the
-input range each channel is sampled over, normally [0, 1]; uncheck "Link
-R/G/B" to set channels independently. "Use Input Bounds From First Stack
-Entry" pulls the domain straight from the first stage if it's a LUT that
-declares its own (e.g. a non-stock IDT/LMT). Hit **Apply Grid Size /
-Domain** to commit.
+These are export settings, not part of the Stack: they only matter when
+a LUT is baked for export, and they're set in **File > Export...** under
+**LUT Grid / Input Domain** (saved with the session; recalling a Stack
+Memory doesn't change them). Grid size is the resolution of the exported
+LUT (9 through 97, or type your own — 33 is the common default). Domain
+is the input range each channel is sampled over, normally [0, 1];
+uncheck "Link R/G/B" to set channels independently. "Use Input Bounds
+From First Stack Entry" pulls the domain straight from the first stage
+if it's a LUT that declares its own (e.g. a non-stock IDT/LMT). Changes
+apply as you make them.
 
-**Source:** `stack.py`'s `Stack.size`/`domain_min`/`domain_max` and
-`bake_stack_to_lut3d`.
+**Source:** `stack.py`'s `BakeSettings` and `bake_stack_to_lut3d`;
+`bake_settings_form.py`.
 
 ## Parameters
 
@@ -359,7 +444,7 @@ wheel+spins field/range at once (CDL's Slope/Offset/Power, Grading
 Primary's fields, Grading Tone's ranges) when the label names the group
 rather than one spinbox.
 
-**Source:** `stack_panel.py`'s per-kind `_build_*_inspector`/`_apply_*_live`
+**Source:** `stack_panel/inspect_*.py`'s per-kind `_build_*_inspector`/`_apply_*_live`
 methods; the double-click-to-reset label is `_ParamLabel`.
 
 ## Scopes
@@ -378,7 +463,7 @@ too bright against a given image.
 **Source:** `scopes_panel.py` (the panel/UI) driving `scopes.py`
 (`compute_histogram`/`compute_waveform`/`compute_vectorscope`, plus the
 graticule stop calculations) — always computed on CPU, capped to a small
-fixed resolution for a GPU-eligible Stack (see `sample_image_panel.py`'s
+fixed resolution for a GPU-eligible Stack (see `sample_image_panel/`'s
 `SCOPES_MAX_DIMENSION`) so this recompute stays cheap regardless of how
 expensive the actual grade is.
 
@@ -394,10 +479,11 @@ Settings...** opens a small dialog with "Grid density" (how many points
 are sampled) and "Cage opacity" (fades the cage in/out, 0–100%, defaults
 to 30%). Each **1D** choice plots exactly one of the same LUT's Y/R/G/B
 response curves — output vs. input, the traditional "curves" view — swept
-across the Stack's own Domain Min/Max (**Stack → Grid size and domain**
-above) rather than a fixed 0–1 range, so it stays correct for HDR/scene-
-linear grades. All views update live and stay in sync with the Stack;
-switching between them never loses data or resizes the panel.
+across [0, 1] — the Graph previews the Stack at a fixed 33³ / [0, 1]
+grid, independent of the export grid size and domain (**Grid size and
+domain** above). Views update live while the Graph is on screen (a
+hidden or tabbed-away Graph catches up when shown) and stay in sync with
+the Stack; switching between them never loses data or resizes the panel.
 
 **Source:** `lut_viewer_3d.py`'s `LutViewer3D` (built on pyqtgraph's
 `GLViewWidget`/`GLScatterPlotItem`/`GLLinePlotItem`), fed the same
@@ -472,8 +558,9 @@ File > Export... bakes the current Stack and saves it in the format
 picked from the dropdown (Cube, CLF, Sony SPI3D, Cinespace, Autodesk 3D
 LUT in either Flame or Lustre dialect, or FilmLight Truelight/Baselight
 Cube) — pick the format, click Export..., choose where to save. The
-dialog also shows the grid size, domain, and stage list of what's about
-to be baked, plus three optional checkboxes, none of which prompt any
+dialog also holds the export grid size and domain (**Grid size and
+domain** above) and shows the stage list of what's about to be baked,
+plus three optional checkboxes, none of which prompt any
 further dialogs of their own — everything's derived from the LUT's own
 filename:
 
@@ -490,7 +577,7 @@ filename:
 - **Grab Still** — also saves the current Stack as a new Gallery still,
   named after the exported file.
 
-**Source:** `main_window.py`'s Export dialog, writing via `colour-science`'s
+**Source:** `main_window_parts/export_lut.py`'s Export dialog, writing via `colour-science`'s
 own `colour.write_LUT` for most formats and `colour_clf_io`/`clf_adapter.py`
 specifically for CLF.
 
