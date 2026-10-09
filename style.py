@@ -769,6 +769,63 @@ QTreeView::item:hover:!selected, QTableView::item:hover:!selected {{
     background-color: palette(midlight);
 }}
 
+/* IDENTITY PASS: a quiet menu bar on the gap colour -- the stock Fusion
+   bar's large bright labels were the loudest thing on screen. */
+QMenuBar {{
+    background-color: palette(window);
+    color: {_HINT_TEXT};
+    padding: 2px 6px;
+}}
+
+QMenuBar::item {{
+    background: transparent;
+    padding: 4px 10px;
+    border-radius: 6px;
+}}
+
+QMenuBar::item:selected, QMenuBar::item:pressed {{
+    background-color: {_DARK_LIGHT};
+    color: palette(text);
+}}
+
+/* Segmented control (e.g. the Stack's Sequence | Shot): an inset track,
+   the chosen segment lifted -- a mode, not an action, so grey, not the
+   accent. */
+QFrame#segmentedControl {{
+    background-color: {_FIELD_BG};
+    border-radius: {CONTROL_RADIUS}px;
+}}
+
+QPushButton#segmentButton {{
+    border: none;
+    border-radius: 6px;
+    padding: 4px 14px;
+    color: {_HINT_TEXT};
+    background: transparent;
+    font-weight: 400;
+}}
+
+QPushButton#segmentButton:hover {{
+    color: palette(text);
+}}
+
+QPushButton#segmentButton:checked {{
+    background-color: {_DARK_LIGHT};
+    color: palette(text);
+}}
+
+QPushButton#segmentButton:disabled {{
+    color: {_DARK_MID};
+}}
+
+/* The Viewer's "Fit 47%  ·  Wipe off" readout in the transport bar. */
+QLabel#viewerReadout {{
+    font-family: "{MONO_FONT_FAMILY}";
+    font-size: 11px;
+    color: {_HINT_TEXT};
+    padding: 0px 8px;
+}}
+
 /* Covers the new "..." header menus (Viewer/Stack, see panel_frame.py's
    corner_widget) as well as every QComboBox's own popup menu. */
 QMenu {{
@@ -1123,12 +1180,21 @@ QPushButton:checkable:checked {{
 
 /* -- Group boxes (used inside Controls) ------------------------------ */
 
+/* IDENTITY PASS: the group box's own font IS the inspector page's title
+   (QSS can't size ::title separately), so it's set large here and its
+   children are put back to the body size just below. */
 QGroupBox {{
     border: none;
-    margin-top: 10px;
-    padding-top: 10px;
+    margin-top: 18px;
+    padding-top: 16px;
+    font-size: 16px;
     font-weight: 600;
     color: palette(text);
+}}
+
+QGroupBox QWidget {{
+    font-size: {UI_FONT_PX}px;
+    font-weight: 400;
 }}
 
 /* IDENTITY PASS: the page title reads as a title (primary text), not an

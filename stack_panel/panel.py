@@ -370,8 +370,17 @@ class StackPanel(LutInspectorMixin, DrtInspectorMixin, CdlInspectorMixin,
         self._mode_button_group.setExclusive(True)
         self._mode_button_group.addButton(self.sequence_mode_button)
         self._mode_button_group.addButton(self.shot_mode_button)
-        row.addWidget(self.sequence_mode_button)
-        row.addWidget(self.shot_mode_button)
+        # IDENTITY PASS: one segmented control (style.py's #segmentedControl
+        # / #segmentButton), not two separate ghost buttons.
+        segmented = QFrame()
+        segmented.setObjectName("segmentedControl")
+        segmented_layout = QHBoxLayout(segmented)
+        segmented_layout.setContentsMargins(2, 2, 2, 2)
+        segmented_layout.setSpacing(2)
+        for button in (self.sequence_mode_button, self.shot_mode_button):
+            button.setObjectName("segmentButton")
+            segmented_layout.addWidget(button)
+        row.addWidget(segmented)
         row.addStretch(1)
         layout.addLayout(row)
 

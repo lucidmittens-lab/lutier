@@ -9,7 +9,7 @@ from PySide6.QtCore import QSize, QTimer, Qt
 from PySide6.QtGui import QFontDatabase, QFontMetrics, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QHBoxLayout, QLineEdit, QToolButton, QVBoxLayout,
-    QWidget,
+    QWidget, QSizePolicy, QLabel,
 )
 from video_scrub_slider import VideoScrubSlider
 import video_playback_controller
@@ -238,7 +238,16 @@ class TransportMixin:
         self._video_speed_combo.setCurrentIndex(
             video_playback_controller.SPEED_PRESETS.index(video_playback_controller.DEFAULT_SPEED))
         self._video_speed_combo.currentIndexChanged.connect(self._on_video_speed_changed)
+        self._video_speed_combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         transport_layout.addWidget(self._video_speed_combo)
+
+        # IDENTITY PASS: the free space goes to a quiet readout of how the
+        # picture is shown ("Fit 47% · Wipe off"), not to a stretched speed
+        # box -- see _update_viewer_readout.
+        transport_layout.addStretch(1)
+        self._viewer_readout = QLabel("")
+        self._viewer_readout.setObjectName("viewerReadout")
+        transport_layout.addWidget(self._viewer_readout)
 
         # Two timecode fields (per direct feedback: "there are 3
         # timecode fields ... you can make it 2 only" -- collapses the
@@ -678,3 +687,16 @@ class TransportMixin:
         self._video_transport_widget.setVisible(self._video_source is not None or has_timeline_clips)
         self._refresh_scrub_slider_for_mode()
         self._refresh_source_timecode_for_mode()
+
+    def _update_viewer_readout(self):
+        """"Fit 47% · Wipe off" -- how the picture is being shown right
+        now (zoom in physical pixels, so 100% means actual pixels)."""
+        if not hasattr(self, "_viewer_readout"):
+            return
+        scale = self.compare.display_scale()
+        parts = []
+        if scale is not None:
+            percent = f"{scale * 100:.0f}%"
+            parts.append(f"Fit {percent}" if self.compare.zoom() == 1.0 else percent)
+        parts.append("Wipe on" if self._wipe_enabled else "Wipe off")
+        self._viewer_readout.setText("  ·  ".join(parts))

@@ -413,6 +413,7 @@ class RenderMixin:
         corner "..." menu and the top-level Viewer menu-bar entry never
         show a stale/contradictory checkmark for each other."""
         self._wipe_enabled = checked
+        self._update_viewer_readout()
         for action in self._wipe_enabled_actions:
             action.blockSignals(True)
             action.setChecked(checked)

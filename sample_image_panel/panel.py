@@ -378,6 +378,7 @@ class SampleImagePanel(TransportMixin, VideoMixin, RenderMixin, QWidget):
         self._viewer_mode_badge.setVisible(False)
 
         self.compare = WipeCompareWidget()
+        self.compare.view_changed.connect(self._update_viewer_readout)
         viewer_mode_layout.addWidget(self.compare, stretch=1)
 
         layout.addWidget(self._viewer_mode_frame, stretch=1)

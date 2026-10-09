@@ -303,6 +303,10 @@ class WipeCompareWidget(QOpenGLWidget):
     # invariant this widget's own tests should keep verifying regardless
     # of who currently listens.
     zoom_changed = Signal()
+    # Anything that changes how big the picture is on screen: zoom, a
+    # resize, or a new image size -- drives the Viewer's "Fit 47%"
+    # readout (sample_image_panel), see display_scale().
+    view_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -403,8 +407,22 @@ class WipeCompareWidget(QOpenGLWidget):
         GPU inside this widget's own paintGL, or None to show `array`
         exactly as given (already fully processed on the CPU, or nothing
         to process at all)."""
+        old_size = self._reference_array_size()
         self._after_state.set(array, gpu_stack)
         self.update()
+        if self._reference_array_size() != old_size:
+            self.view_changed.emit()
+
+    def display_scale(self):
+        """Screen pixels per image pixel right now, in PHYSICAL pixels
+        (1.0 = 100%, actual pixels), or None with no image."""
+        size = self._reference_array_size()
+        if size is None:
+            return None
+        dpr = self.devicePixelRatioF()
+        _canvas, image_rect = self._zoomed_canvas_and_image_rects(
+            target_size=hidpi.physical_size(self.width(), self.height(), dpr), scale=dpr)
+        return image_rect.width() / size[0] if image_rect is not None else None
 
     def set_after_placeholder(self, text):
         """Message shown in the "after" area when set_after(None) --
@@ -605,6 +623,7 @@ class WipeCompareWidget(QOpenGLWidget):
             self._zoom = new_zoom
             self.update()
             self.zoom_changed.emit()
+            self.view_changed.emit()
 
     def reset_view(self):
         """Resets zoom/pan back to "fit" -- the middle-mouse-button
@@ -621,6 +640,7 @@ class WipeCompareWidget(QOpenGLWidget):
         self.update()
         if zoom_changed:
             self.zoom_changed.emit()
+            self.view_changed.emit()
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -670,11 +690,13 @@ class WipeCompareWidget(QOpenGLWidget):
         self._pan += QPointF(cursor.x() - now_x, cursor.y() - now_y)
         self.update()
         self.zoom_changed.emit()
+        self.view_changed.emit()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if event.size() != event.oldSize():
             self.resized.emit()
+            self.view_changed.emit()
 
     # ---- geometry -----------------------------------------------------
 
