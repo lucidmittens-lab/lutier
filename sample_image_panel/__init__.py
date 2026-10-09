@@ -19,5 +19,8 @@ from .constants import (  # noqa: F401
     _PLAY_GLYPH, _compose_highlight_overlay,
 )
 from .panel import (  # noqa: F401
-    SampleImagePanel, _TimecodeField,
+    SampleImagePanel,
+)
+from .transport import (  # noqa: F401
+    _TimecodeField,
 )
