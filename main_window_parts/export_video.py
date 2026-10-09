@@ -3,14 +3,14 @@ render paths: the CPU worker thread (_VideoExportWorker) and the GPU runner
 (_GpuVideoExportRunner). A mixin: MainWindow inherits it, so these methods
 share the window's own `self`.
 """
+from PySide6.QtWidgets import (
+    QVBoxLayout, QHBoxLayout, QComboBox, QFileDialog, QMessageBox, QLabel,
+    QDialog, QDialogButtonBox, QPushButton, QProgressDialog,
+)
 from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal
+import canvas as cv
 import image_io
 import video_export
-from PySide6.QtWidgets import (
-    QVBoxLayout, QHBoxLayout,
-    QComboBox, QFileDialog, QMessageBox, QLabel, QDialog, QDialogButtonBox, QPushButton, QProgressDialog,
-)
-import canvas as cv
 import video_source
 import gpu_stack_renderer
 from floating_dialog import make_floating_tool_window, show_floating

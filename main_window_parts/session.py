@@ -7,19 +7,19 @@ from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QMessageBox, QSpinBox, QVBoxLayout, QWidget,
 )
-import colour_pipeline
-import canvas as cv
-import aces_drt
-from spinbox_scrub import enable_drag_to_scrub
 from PySide6.QtCore import QTimer
+import colour_pipeline
 import session_io
 import stack as st
+import canvas as cv
+import aces_drt
 from stack_memory import StackMemoryLibrary, GalleryStillLibrary
 from cdl_library import CDLLibrary
 from lut_library import LUTLibrary
 from media_library import MediaPool
 from undo_history import UndoHistory
 from floating_dialog import make_floating_tool_window, show_floating
+from spinbox_scrub import enable_drag_to_scrub
 
 
 class _ProjectSettingsForm(QWidget):

@@ -1,13 +1,16 @@
-"""main_window_parts/menus.py -- the menu bar (File, Edit, Workspace, Help...)
-and the small dialogs its actions open: the manual, accent colour and media
-cache folder. A mixin: MainWindow inherits it, so these methods share the
-window's own `self`.
+"""main_window_parts/menus.py -- the menu bar (File, Edit, Workspace, one menu
+per panel, Help) and the small dialogs its actions open: the manual, accent
+colour and media cache folder. A mixin: MainWindow inherits it, so these
+methods share the window's own `self`.
 """
 from PySide6.QtWidgets import (
-    QApplication, QVBoxLayout, QFileDialog, QMessageBox, QDialog, QTextBrowser, QDialogButtonBox, QColorDialog,
+    QApplication, QVBoxLayout, QFileDialog, QMessageBox, QDialog,
+    QTextBrowser, QDialogButtonBox, QColorDialog,
 )
 from PySide6.QtGui import QKeySequence, QColor
-from style import STYLESHEET, build_dark_palette, get_accent_color, set_accent_color
+from style import (
+    STYLESHEET, build_dark_palette, get_accent_color, set_accent_color,
+)
 import media_cache
 from help_text import USER_MANUAL_MARKDOWN
 from floating_dialog import make_floating_tool_window, show_floating

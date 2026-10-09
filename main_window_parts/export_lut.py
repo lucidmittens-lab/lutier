@@ -5,9 +5,8 @@ inherits it, so these methods share the window's own `self`.
 """
 from pathlib import Path
 from PySide6.QtWidgets import (
-    QVBoxLayout, QHBoxLayout,
-    QComboBox, QFileDialog, QMessageBox, QLabel, QCheckBox,
-    QDialog, QDialogButtonBox, QGroupBox,
+    QVBoxLayout, QHBoxLayout, QComboBox, QFileDialog, QMessageBox, QLabel,
+    QCheckBox, QDialog, QDialogButtonBox, QGroupBox,
 )
 from PySide6.QtCore import Qt
 from bake_settings_form import BakeSettingsForm, describe_bake_settings

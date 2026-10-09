@@ -4,13 +4,10 @@ preset export/import. A mixin: MainWindow inherits it, so these methods
 share the window's own `self`.
 """
 import base64
-from PySide6.QtWidgets import (
-    QFileDialog, QMessageBox,
-)
+from PySide6.QtWidgets import QFileDialog, QMessageBox
 from PySide6.QtCore import QTimer, QByteArray
 import workspace_io
-from .constants import DEFAULT_WORKSPACE_STATE
-from .constants import PANEL_TOGGLES
+from .constants import DEFAULT_WORKSPACE_STATE, PANEL_TOGGLES
 
 
 class WorkspaceMixin:

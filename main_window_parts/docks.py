@@ -4,13 +4,13 @@ sizing, floating/redocking panels, and reparenting GL panels safely. A
 mixin: MainWindow inherits it, so these methods share the window's own
 `self`.
 """
+from functools import partial
 from PySide6.QtWidgets import (
     QApplication, QDockWidget, QHBoxLayout, QLabel, QToolButton, QWidget,
 )
-from PySide6.QtCore import QByteArray, QTimer, Qt
-from functools import partial
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import QByteArray, QTimer, Qt
 from panel_frame import PanelFrame
 
 
