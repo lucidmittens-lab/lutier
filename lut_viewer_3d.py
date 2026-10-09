@@ -180,6 +180,7 @@ import pyqtgraph.opengl as gl
 
 from floating_dialog import make_floating_tool_window, show_floating
 from safe_gl_view_widget import _SafeGLViewWidget
+import style
 
 from app_logic import (
     extract_3d_points_for_visualization,
@@ -441,7 +442,11 @@ class LutViewer3D(QWidget):
         individual items is controlled by _on_view_changed (exactly one
         visible at a time, per Tom -- see VIEW_CHOICES above)."""
         plot = pg.PlotWidget()
-        plot.setBackground(None)
+        # Opaque, in the panel colour -- NOT None (transparent): at a
+        # fractional device pixel ratio (Interface Scale) the areas a
+        # transparent plot leaves unpainted showed uninitialised memory
+        # (seen on the real display at QT_SCALE_FACTOR=0.75, 2026-10-09).
+        plot.setBackground(style._DARK_BASE)
         plot.setLabel("bottom", "Input")
         plot.setLabel("left", "Output")
         plot.showGrid(x=True, y=True, alpha=0.2)

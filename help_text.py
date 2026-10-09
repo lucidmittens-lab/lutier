@@ -199,7 +199,10 @@ compare. The Viewer previews images exactly as decoded, with no implicit
 color-space reinterpretation step. Scroll to zoom in/out (anchored on
 the cursor), middle-mouse-drag to pan around, middle-double-click to
 reset back to fit — independent of the left-click wipe divider drag, so
-both work at once without conflicting.
+both work at once without conflicting. The Viewer's **"☰"** menu also has
+**Zoom to Fit** and **Zoom 100% (Actual Pixels)**: at 100%, one image
+pixel is exactly one physical screen pixel, whatever your Interface
+Scale.
 
 **Source:** `sample_image_panel/` (image loading/wipe-source logic)
 driving `wipe_compare_widget.py` (the actual compare/zoom/pan widget).
@@ -560,13 +563,21 @@ floating state, as its own file — independent of whatever's currently
 open, and separate from a saved session — see **Sessions** below).
 
 The Workspace menu's **Accent Color...** lets you pick your own accent
-color (used for selection, focus, panel headers, and highlights
-throughout the app) in place of LUTier's default muted blue. It applies
-immediately and is remembered between launches, independent of your
-panel arrangement.
+color (used for selection, focus, and the controls you act on) in place
+of LUTier's default amber. It applies immediately and is remembered
+between launches, independent of your panel arrangement.
+
+**Workspace → Interface Scale** makes the whole interface smaller or
+larger on top of your display's own scaling: 70%, 75%, 80%, 90%, 100%
+(default), 110% or 125%. LUTier draws at the new size itself, so text and
+controls stay sharp at in-between sizes. It takes effect the next time
+you launch LUTier. If the `QT_SCALE_FACTOR` environment variable is set,
+that value is used instead. The picture in the Viewer is unaffected: at
+100% zoom it is still shown one image pixel per screen pixel.
 
 **Source:** `workspace_io.py` (layout persistence/presets), `hover_inspector.py`
-(the Alt-hover info card), `theme_prefs.py`/`style.py` (accent color).
+(the Alt-hover info card), `theme_prefs.py`/`style.py` (accent color,
+interface scale).
 
 ## Sessions
 

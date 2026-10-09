@@ -85,6 +85,8 @@ GL_TEST_FILES = [
     # standalone, WITHOUT that env var set: `python3
     # test_wipe_compare_widget_readback.py`.
     "test_wipe_compare_widget_readback.py",
+    # Runs the viewer at fractional QT_SCALE_FACTORs in subprocesses.
+    "test_wipe_compare_widget_hidpi.py",
 ]
 
 collect_ignore = list(GL_TEST_FILES)
@@ -140,6 +142,13 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
+    # Never read or write the user's real theme_prefs.json (saved accent,
+    # Interface Scale) -- point it at a per-process temp file. Tests that
+    # exercise theme_prefs redirect it again themselves.
+    import tempfile
+    import theme_prefs
+    theme_prefs.THEME_PREFS_PATH = (
+        Path(tempfile.mkdtemp(prefix="lutier-test-theme-")) / "theme_prefs.json")
     workerinput = getattr(config, "workerinput", None)
     if workerinput and workerinput.get("lutier_loadgroup"):
         config.option.loadgroup = True

@@ -193,6 +193,17 @@ failed to reproduce it. If it recurs, rerun it alone before suspecting a change.
 - **GL state:** never "reset" by binding framebuffer 0. Inside `paintGL`, Qt
   renders to its own FBO. Save `GL_FRAMEBUFFER_BINDING` and restore it, or the
   Viewer goes black.
+- **Fractional device pixel ratio (Interface Scale):** the ratio can be
+  0.75, 1.25, 1.5... Size every GL target as `hidpi.physical_size()` (Qt's
+  qRound of logical x dpr, the ratio used unrounded), never `int()` or
+  Python's `round()` of a product, and never the ratio rounded. Don't read
+  the size back from `GL_VIEWPORT`: Qt sets it truncated (300x225 for a
+  301x226 framebuffer at 0.75). Snap image rects with `hidpi.snap_rect`
+  (position and size, not the two edges). pyqtgraph truncates too:
+  `_SafeGLViewWidget` overrides `deviceWidth`/`deviceHeight`. Plots must
+  have an opaque background; transparent areas showed garbage at 0.75.
+  On this box XWayland exposes 1920x1080 at ratio 1 (GNOME upscales X
+  clients) unless mutter's `xwayland-native-scaling` is enabled.
 - **GL context:** never make a GL call without a current context. That
   includes eligibility checks: `is_*_gpu_eligible` must stay GL-free, or you
   get a SIGSEGV. Readback outside paint must use `makeCurrent`/`doneCurrent`,

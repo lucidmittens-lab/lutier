@@ -76,6 +76,7 @@ from floating_dialog import make_floating_tool_window, show_floating
 # pass for arbitrary widgets on this Qt build, so hint-text color is now
 # a literal hex interpolated from style.py's single source of truth
 # instead, here and everywhere else this app colors hint/muted text.
+import style
 from style import HINT_TEXT_HEX
 
 SCOPE_HISTOGRAM = "Histogram"
@@ -285,7 +286,11 @@ class ScopesPanel(QWidget):
 
     def _build_histogram_view(self):
         self.histogram_plot = pg.PlotWidget()
-        self.histogram_plot.setBackground(None)
+        # Opaque, in the panel colour -- NOT None (transparent): at a
+        # fractional device pixel ratio (Interface Scale) the areas a
+        # transparent plot leaves unpainted showed uninitialised memory
+        # (seen on the real display at QT_SCALE_FACTOR=0.75, 2026-10-09).
+        self.histogram_plot.setBackground(style._DARK_BASE)
         self.histogram_plot.setLabel("bottom", "Value")
         self.histogram_plot.setLabel("left", "Pixel count")
         self.histogram_plot.setXRange(0.0, 1.0, padding=0)

@@ -21,8 +21,17 @@ load_remembered_workspace: a first-ever launch, a hand-edited-into-
 garbage file, or a read error are all just "nothing saved yet" to the
 caller, never a crash -- style.get_accent_color() falls back to
 style.DEFAULT_ACCENT_HEX either way.
+
+Interface scale (2026-10-09): the second theme value -- a UI scale
+multiplier Qt applies on top of the OS display scale, via the
+QT_SCALE_FACTOR environment variable, which must be set before any
+QApplication exists. That's why it lives here, in a Qt-free module both
+entry points (main_window.main(), splash_launcher.py) can import first.
+Both values share theme_prefs.json, so every save merges into what's
+already there instead of overwriting it.
 """
 import json
+import os
 
 from atomic_write import atomic_open
 from workspace_io import DEFAULT_WORKSPACE_DIR
@@ -30,6 +39,37 @@ from workspace_io import DEFAULT_WORKSPACE_DIR
 THEME_PREFS_FORMAT = "lutier-theme-prefs"
 THEME_PREFS_VERSION = 1
 THEME_PREFS_PATH = DEFAULT_WORKSPACE_DIR / "theme_prefs.json"
+
+# Interface scale choices (multipliers on the OS display scale), as offered
+# in Workspace > Interface Scale. 1.0 is the default (no extra scaling).
+UI_SCALE_CHOICES = (0.70, 0.75, 0.80, 0.90, 1.00, 1.10, 1.25)
+DEFAULT_UI_SCALE = 1.00
+UI_SCALE_ENV_VAR = "QT_SCALE_FACTOR"
+
+
+def _load_payload():
+    """theme_prefs.json as a dict, or {} if it's missing, unreadable or
+    not a JSON object."""
+    try:
+        payload = json.loads(THEME_PREFS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _save_values(**values):
+    """Merge `values` into theme_prefs.json (keeping every other saved
+    value) and write it atomically. Best-effort: an OSError is swallowed,
+    same as before -- callers act on a choice already shown on screen."""
+    try:
+        THEME_PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = _load_payload()
+        payload.update({"format": THEME_PREFS_FORMAT, "version": THEME_PREFS_VERSION})
+        payload.update(values)
+        with atomic_open(THEME_PREFS_PATH, "w") as f:
+            f.write(json.dumps(payload, indent=2))
+    except OSError:
+        pass
 
 
 def save_accent_color(hex_color):
@@ -49,15 +89,7 @@ def save_accent_color(hex_color):
     saved accent color silently reverts to default on the next launch,
     the exact class of bug atomic_write.py exists to prevent everywhere
     else a user's own choice gets persisted."""
-    try:
-        THEME_PREFS_DIR = THEME_PREFS_PATH.parent
-        THEME_PREFS_DIR.mkdir(parents=True, exist_ok=True)
-        payload = {"format": THEME_PREFS_FORMAT, "version": THEME_PREFS_VERSION,
-                   "accent_color": hex_color}
-        with atomic_open(THEME_PREFS_PATH, "w") as f:
-            f.write(json.dumps(payload, indent=2))
-    except OSError:
-        pass
+    _save_values(accent_color=hex_color)
 
 
 def load_accent_color():
@@ -66,11 +98,50 @@ def load_accent_color():
     shape -- style.get_accent_color() treats None as "use the built-in
     default," same no-op convention load_remembered_workspace's None
     already has for workspace state."""
-    try:
-        payload = json.loads(THEME_PREFS_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    color = payload.get("accent_color")
+    color = _load_payload().get("accent_color")
     return color if isinstance(color, str) and color else None
+
+
+def save_ui_scale(scale):
+    """Persist the Interface Scale choice (one of UI_SCALE_CHOICES)."""
+    _save_values(ui_scale=float(scale))
+
+
+def load_ui_scale():
+    """The saved Interface Scale, or DEFAULT_UI_SCALE when nothing valid
+    is saved -- a missing/corrupt file or an out-of-list value (e.g. a
+    hand edit) all mean "default", never a crash or an odd size."""
+    raw = _load_payload().get("ui_scale")
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        for choice in UI_SCALE_CHOICES:
+            if abs(float(raw) - choice) < 1e-6:
+                return choice
+    return DEFAULT_UI_SCALE
+
+
+def apply_saved_ui_scale(environ=None):
+    """Set QT_SCALE_FACTOR from the saved Interface Scale. Call before any
+    QApplication exists (both entry points do). A QT_SCALE_FACTOR already
+    in the environment wins -- the user set it on purpose. Leaves the
+    variable unset at the default 1.0. Returns the factor now in effect
+    as a string, or None if none is set."""
+    global _ui_scale_from_environment
+    environ = os.environ if environ is None else environ
+    if environ.get(UI_SCALE_ENV_VAR):
+        _ui_scale_from_environment = True
+        return environ[UI_SCALE_ENV_VAR]
+    _ui_scale_from_environment = False
+    scale = load_ui_scale()
+    if scale == DEFAULT_UI_SCALE:
+        return None
+    environ[UI_SCALE_ENV_VAR] = f"{scale:g}"
+    return environ[UI_SCALE_ENV_VAR]
+
+
+# Set by apply_saved_ui_scale: True when QT_SCALE_FACTOR was already in the
+# environment at launch (the user's own), so the menu can say so.
+_ui_scale_from_environment = False
+
+
+def ui_scale_from_environment():
+    return _ui_scale_from_environment

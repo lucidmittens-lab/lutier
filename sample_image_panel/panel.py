@@ -494,6 +494,14 @@ class SampleImagePanel(TransportMixin, VideoMixin, RenderMixin, QWidget):
             self._on_wipe_right_selected)
 
         menu.addSeparator()
+        # Fit = the default view (also middle-double-click); 100% = one
+        # image pixel per PHYSICAL screen pixel, whatever the Interface
+        # Scale / device pixel ratio (wipe_compare_widget.zoom_to_actual_pixels).
+        # (Lambdas: this menu is built before self.compare exists.)
+        menu.addAction("Zoom to Fit", lambda: self.compare.reset_view())
+        menu.addAction("Zoom 100% (Actual Pixels)", lambda: self.compare.zoom_to_actual_pixels())
+
+        menu.addSeparator()
         # Opens a plain, independent native window showing the Stack's
         # current, full-resolution graded output -- NOT an "AirPlay Cast"
         # feature with any in-app device picker (no documented API exists

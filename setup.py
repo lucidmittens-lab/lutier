@@ -170,6 +170,7 @@ OPTIONS = {
         'grading_rgb_curve',
         'grading_tone',
         'help_text',
+        'hidpi',
         'hover_inspector',
         'image_io',
         'media_library',

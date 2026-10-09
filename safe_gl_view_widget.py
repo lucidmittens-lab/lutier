@@ -13,6 +13,8 @@ risk, just another instance of an already-proven-safe pattern.
 """
 import pyqtgraph.opengl as gl
 
+import hidpi
+
 
 class _SafeGLViewWidget(gl.GLViewWidget):
     """Identical to pyqtgraph's GLViewWidget, except paintGL() bails out
@@ -43,3 +45,13 @@ class _SafeGLViewWidget(gl.GLViewWidget):
         if not self.isValid():
             return
         super().paintGL()
+
+    # pyqtgraph sizes its glViewport/projection from these, as
+    # int(logical * dpr) -- TRUNCATED, while Qt allocates the framebuffer
+    # as qRound(logical * dpr). At a fractional ratio (Interface Scale)
+    # that drew one pixel short of the framebuffer. Match Qt exactly.
+    def deviceWidth(self):
+        return hidpi.physical_size(self.width(), self.height(), self.devicePixelRatioF())[0]
+
+    def deviceHeight(self):
+        return hidpi.physical_size(self.width(), self.height(), self.devicePixelRatioF())[1]

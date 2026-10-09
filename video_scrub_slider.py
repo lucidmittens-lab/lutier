@@ -20,9 +20,11 @@ groove, invisible handle) -- this class draws its OWN thin white
 playhead line at the current value instead, replacing the knob rather
 than just recoloring it. objectName is set here (not by callers) so the
 QSS selector always matches regardless of who constructs this widget."""
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QSlider, QStyle, QStyleOptionSlider
+
+import hidpi
 
 # Thin marker lines at in_point/out_point -- no fill between them (an
 # earlier version filled the whole active range, which read as a "yellow
@@ -114,19 +116,28 @@ class VideoScrubSlider(QSlider):
             return
 
         painter = QPainter(self)
+        dpr = self.devicePixelRatioF()
+
+        def snapped(left, top, width, height):
+            # Whole PHYSICAL pixels (hidpi.snap_rect), back in logical units:
+            # at a fractional ratio (Interface Scale) integer logical edges
+            # fall between physical pixels and the 2px marks went soft.
+            l, t, w, h = hidpi.snap_rect(left * dpr, top * dpr, width * dpr, height * dpr)
+            return QRectF(l / dpr, t / dpr, max(w, 1) / dpr, max(h, 1) / dpr)
 
         if self._in_point is not None or self._out_point is not None:
             in_point = self._in_point if self._in_point is not None else self.minimum()
             out_point = self._out_point if self._out_point is not None else self.maximum()
             for value in (in_point, out_point):
                 x = self._groove_x_for_value(value, groove_rect, opt)
-                painter.fillRect(int(x - _MARK_WIDTH / 2), groove_rect.top(),
-                                  _MARK_WIDTH, groove_rect.height(), _MARK_COLOR)
+                painter.fillRect(snapped(x - _MARK_WIDTH / 2, groove_rect.top(),
+                                         _MARK_WIDTH, groove_rect.height()), _MARK_COLOR)
 
         # Playhead drawn LAST so it always sits on top of the in/out marks.
         playhead_x = self._groove_x_for_value(self.value(), groove_rect, opt)
         painter.fillRect(
-            int(playhead_x - _PLAYHEAD_WIDTH / 2), groove_rect.top() - _PLAYHEAD_OVERHANG,
-            _PLAYHEAD_WIDTH, groove_rect.height() + 2 * _PLAYHEAD_OVERHANG, _PLAYHEAD_COLOR)
+            snapped(playhead_x - _PLAYHEAD_WIDTH / 2, groove_rect.top() - _PLAYHEAD_OVERHANG,
+                    _PLAYHEAD_WIDTH, groove_rect.height() + 2 * _PLAYHEAD_OVERHANG),
+            _PLAYHEAD_COLOR)
 
         painter.end()

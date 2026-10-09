@@ -94,6 +94,7 @@ from PySide6.QtWidgets import QSizePolicy
 import gpu_lanczos_compositor
 import gpu_stack_renderer
 import gpu_shader_prototype as gsp
+import hidpi
 from stack import _stage_fingerprint
 
 EMPTY_TEXT_COLOR = QColor(150, 150, 150)
@@ -345,6 +346,10 @@ class WipeCompareWidget(QOpenGLWidget):
         # grading gets thrown away on the very next slider tick -- see
         # reset_view for the actual, explicit way to get back to "fit".
         self._zoom = 1.0
+        # What the last paintGL actually drew into (physical px) -- see
+        # _paint_gl_impl; read by the fractional-DPR GL tests.
+        self._last_physical_target = None
+        self._last_physical_image_rect = None
         self._pan = QPointF(0.0, 0.0)
         self._panning = False
         self._pan_start_mouse = None
@@ -575,6 +580,32 @@ class WipeCompareWidget(QOpenGLWidget):
     def reset_wipe(self):
         self.set_wipe_fraction(0.5)
 
+    def _physical_target_size(self, dpr):
+        """The framebuffer paintGL draws into, in physical pixels -- Qt
+        allocates it as qRound(logical * dpr) (hidpi.physical_size).
+        Deliberately NOT read back from GL_VIEWPORT: at a fractional ratio
+        Qt sets the viewport TRUNCATED (300x225 for a 301x226 framebuffer
+        at 0.75, measured 2026-10-09), one pixel short of what it
+        allocated; the compositor sets its own viewport from this."""
+        return hidpi.physical_size(self.width(), self.height(), dpr)
+
+    def zoom_to_actual_pixels(self):
+        """Zoom so one image pixel is exactly one PHYSICAL screen pixel
+        ("100%"), whatever the device pixel ratio -- e.g. at 1.5 that's
+        2/3 of a logical pixel per image pixel. Pan is kept."""
+        size = self._reference_array_size()
+        if size is None:
+            return
+        dpr = self.devicePixelRatioF()
+        target_w, target_h = hidpi.physical_size(self.width(), self.height(), dpr)
+        canvas_base = self._canvas_box(QRectF(0.0, 0.0, float(target_w), float(target_h)))
+        fit_scale = min(canvas_base.width() / size[0], canvas_base.height() / size[1])
+        new_zoom = max(MIN_ZOOM, min(MAX_ZOOM, 1.0 / fit_scale))
+        if new_zoom != self._zoom:
+            self._zoom = new_zoom
+            self.update()
+            self.zoom_changed.emit()
+
     def reset_view(self):
         """Resets zoom/pan back to "fit" -- the middle-mouse-button
         double-click gesture (per Tom). Deliberately a SEPARATE gesture
@@ -693,7 +724,7 @@ class WipeCompareWidget(QOpenGLWidget):
         base_y = (widget_rect.height() - base_h) / 2
         return QRectF(base_x, base_y, base_w, base_h)
 
-    def _zoomed_canvas_and_image_rects(self):
+    def _zoomed_canvas_and_image_rects(self, target_size=None, scale=1.0):
         """The real computation behind BOTH _canvas_rect and _image_rect
         -- returns (canvas_rect_or_None, image_rect_or_None). Kept as one
         method because the two rects are NOT independent: self._zoom/
@@ -727,7 +758,16 @@ class WipeCompareWidget(QOpenGLWidget):
         if size is None:
             return None, None
         img_w, img_h = size
-        widget_rect = QRectF(self.rect())
+        # target_size/scale: compute the same rects directly in PHYSICAL
+        # pixels (paintGL passes the real framebuffer size and the
+        # device pixel ratio) instead of scaling logical results -- at a
+        # fractional ratio, logical * dpr can be half a pixel off from the
+        # framebuffer Qt actually allocated (see hidpi.py).
+        if target_size is not None:
+            widget_rect = QRectF(0.0, 0.0, float(target_size[0]), float(target_size[1]))
+        else:
+            widget_rect = QRectF(self.rect())
+        pan = self._pan * scale
         canvas_base = self._canvas_box(widget_rect)
 
         # Image's fixed position/size AS A FRACTION of canvas_base, at
@@ -744,8 +784,8 @@ class WipeCompareWidget(QOpenGLWidget):
         # instead of the image's.
         draw_canvas_w = canvas_base.width() * self._zoom
         draw_canvas_h = canvas_base.height() * self._zoom
-        canvas_x = (widget_rect.width() - draw_canvas_w) / 2 + self._pan.x()
-        canvas_y = (widget_rect.height() - draw_canvas_h) / 2 + self._pan.y()
+        canvas_x = (widget_rect.width() - draw_canvas_w) / 2 + pan.x()
+        canvas_y = (widget_rect.height() - draw_canvas_h) / 2 + pan.y()
         canvas_rect = QRectF(canvas_x, canvas_y, draw_canvas_w, draw_canvas_h)
 
         image_rect = QRectF(
@@ -857,21 +897,29 @@ class WipeCompareWidget(QOpenGLWidget):
         # logical sizes on a scaled (HiDPI) display drew the image into
         # only the bottom-left 1/dpr of the viewer -- reproduced on a 4K
         # Linux/GNOME desktop at 200% scaling (2026-10-05).
+        # Fractional ratios (Interface Scale, 2026-10-09): the target size
+        # is the framebuffer's real size (qRound(logical * dpr) -- not the
+        # truncated viewport Qt sets), the rects are computed directly in
+        # physical pixels, and
+        # their edges snap to whole pixels -- see hidpi.py.
         dpr = self.devicePixelRatioF()
-        canvas_rect = self._canvas_rect()
+        widget_w, widget_h = self._physical_target_size(dpr)
+        self._last_physical_target = (widget_w, widget_h)
+        canvas_rect, image_rect = self._zoomed_canvas_and_image_rects(
+            target_size=(widget_w, widget_h), scale=dpr)
         canvas_rect_qt = (
-            (canvas_rect.left() * dpr, canvas_rect.top() * dpr,
-             canvas_rect.width() * dpr, canvas_rect.height() * dpr)
+            hidpi.snap_rect(canvas_rect.left(), canvas_rect.top(),
+                            canvas_rect.width(), canvas_rect.height())
             if canvas_rect is not None else None)
+        image_rect_qt = hidpi.snap_rect(
+            image_rect.left(), image_rect.top(), image_rect.width(), image_rect.height())
+        self._last_physical_image_rect = image_rect_qt
 
-        widget_w = max(1, round(self.width() * dpr))
-        widget_h = max(1, round(self.height() * dpr))
         self._wipe_compositor.render(
             before_texture=before_texture, before_size=before_size,
             after_texture=after_texture, after_size=after_size,
             widget_w=widget_w, widget_h=widget_h,
-            image_rect_qt=(image_rect.left() * dpr, image_rect.top() * dpr,
-                           image_rect.width() * dpr, image_rect.height() * dpr),
+            image_rect_qt=image_rect_qt,
             wipe_enabled=self._wipe_enabled, divider_fraction=self._wipe_fraction,
             background_color=background_color, placeholder_color=placeholder_color,
             canvas_rect_qt=canvas_rect_qt)
