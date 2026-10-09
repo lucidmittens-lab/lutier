@@ -16,6 +16,8 @@ from .labels import (  # noqa: F401
     GRADING_TONE_RANGE_LABELS, _stage_info_text, _stage_kind_badge_text,
 )
 from .panel import (  # noqa: F401
-    StackPanel, _ElidingLabel, _ForkBranchGridRowWidget, _ParamLabel,
-    _StackListWidget, _StageRowWidget,
+    StackPanel, _ParamLabel, _StackListWidget,
+)
+from .rows import (  # noqa: F401
+    _ElidingLabel, _ForkBranchGridRowWidget, _StageRowWidget,
 )
