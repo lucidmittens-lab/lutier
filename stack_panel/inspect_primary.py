@@ -3,9 +3,10 @@
 Exposure/Contrast. A mixin: StackPanel inherits it, so these methods share
 the panel's own `self`.
 """
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QDoubleSpinBox,
-    QGroupBox,
+    QGroupBox, QSizePolicy,
 )
 import exposure_contrast as ec
 import grading_primary as gpr
@@ -67,24 +68,31 @@ class PrimaryInspectorMixin:
         self._gpr_field_spins = {}   # {field_key: {"R":.., "G":.., "B":.., "M":..}}
         self._gpr_wheels = {}        # {field_key: ColorBalanceWheel}
 
+        # IDENTITY PASS layout: one column per field (title, wheel, M, then
+        # R/G/B stacked), side by side like the CDL page -- the old
+        # wheel-beside-four-spins rows clipped every value to "0.0(" at
+        # the Parameters panel's default width. Each column is still its
+        # own widget in _gpr_field_rows, so the style's show/hide works
+        # unchanged and the visible columns share the width.
+        wheels_row = QHBoxLayout()
+        wheels_row.setSpacing(10)
         for field_key, field_label, is_additive in GRADING_PRIMARY_FIELD_SPECS:
             default = 0.0 if is_additive else 1.0
             lo, hi, step = GRADING_PRIMARY_ADDITIVE_RANGE if is_additive else GRADING_PRIMARY_MULT_RANGE
-
-            row_widget = QWidget()
-            field_row = QHBoxLayout(row_widget)
-            field_row.setContentsMargins(0, 0, 0, 0)
+            column_widget = QWidget()
+            column = QVBoxLayout(column_widget)
+            column.setContentsMargins(0, 0, 0, 0)
+            column.setSpacing(4)
+            title = _ParamLabel(field_label, lambda fk=field_key: self._reset_one_gpr_field(fk))
+            title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            column.addWidget(title)
 
             wheel = ColorBalanceWheel(diameter=GRADING_PRIMARY_WHEEL_DIAMETER)
             wheel.balance_changed.connect(
                 lambda x, y, fk=field_key: self._on_gpr_wheel_changed(fk, x, y))
-            field_row.addWidget(wheel)
+            column.addWidget(wheel, alignment=Qt.AlignmentFlag.AlignHCenter)
             self._gpr_wheels[field_key] = wheel
 
-            fields_col = QVBoxLayout()
-            fields_col.addWidget(_ParamLabel(
-                f"{field_label}:", lambda fk=field_key: self._reset_one_gpr_field(fk)))
-            spins_row = QHBoxLayout()
             channel_spins = {}
             for channel in ("R", "G", "B", "M"):
                 spin = QDoubleSpinBox()
@@ -92,6 +100,8 @@ class PrimaryInspectorMixin:
                 spin.setDecimals(4)
                 spin.setSingleStep(step)
                 spin.setValue(default)
+                spin.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+                spin.setMinimumWidth(48)
                 enable_drag_to_scrub(spin)
                 if channel == "M":
                     spin.valueChanged.connect(
@@ -99,16 +109,19 @@ class PrimaryInspectorMixin:
                 else:
                     spin.valueChanged.connect(
                         lambda _v, fk=field_key: self._on_gpr_channel_spin_changed(fk))
-                spins_row.addWidget(_ParamLabel(channel, lambda s=spin, d=default: s.setValue(d)))
-                spins_row.addWidget(spin)
                 channel_spins[channel] = spin
+            # Master first, right under the wheel, then the channels.
+            for channel in ("M", "R", "G", "B"):
+                spin = channel_spins[channel]
+                channel_row = QHBoxLayout()
+                channel_row.setSpacing(4)
+                channel_row.addWidget(_ParamLabel(channel, lambda s=spin, d=default: s.setValue(d)))
+                channel_row.addWidget(spin, stretch=1)
+                column.addLayout(channel_row)
             self._gpr_field_spins[field_key] = channel_spins
-            fields_col.addLayout(spins_row)
-
-            field_row.addLayout(fields_col, stretch=1)
-            self._gpr_field_rows[field_key] = row_widget
-            outer.addWidget(row_widget)
-
+            self._gpr_field_rows[field_key] = column_widget
+            wheels_row.addWidget(column_widget, stretch=1)
+        outer.addLayout(wheels_row)
         pivot_row = QHBoxLayout()
         self.gpr_pivot_spin = QDoubleSpinBox()
         self.gpr_pivot_spin.setRange(-2.0, 2.0)
@@ -137,7 +150,7 @@ class PrimaryInspectorMixin:
 
         reset_button = QPushButton("Reset to Identity")
         reset_button.clicked.connect(self._on_gpr_reset_clicked)
-        outer.addWidget(reset_button)
+        outer.addWidget(reset_button, alignment=Qt.AlignmentFlag.AlignLeft)
 
         # See _build_printer_lights_inspector's own comment on why every
         # inspector page needs a trailing vertical stretch. Only 3 of the

@@ -2,9 +2,10 @@
 tonal-range wheels) and Grading RGB Curves (the curve editor). A mixin:
 StackPanel inherits it, so these methods share the panel's own `self`.
 """
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QDoubleSpinBox,
-    QGroupBox, QToolButton, QButtonGroup,
+    QGroupBox, QToolButton, QButtonGroup, QGridLayout, QSizePolicy,
 )
 import grading_rgb_curve as grc
 import grading_tone as gtn
@@ -26,8 +27,9 @@ class ToneInspectorMixin:
     def _build_grading_tone_inspector(self):
         """Largest of the four Tier 1 inspectors (5 ranges x 6 fields each,
         see docs/archive/OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md's own note on
-        this) -- one compact QGroupBox row per range (R/G/B/M gain +
-        Start/Width, all on one line) built from a shared loop rather than
+        this) -- one compact row per range: its wheel, then R/G/B/M gain and
+        Start/Width in two columns beside it (IDENTITY PASS -- all six on
+        one line needed ~835px), built from a shared loop rather than
         5 hand-laid-out sections, same "don't repeat the widget-building
         code 5 times" reasoning as GRADING_PRIMARY_FIELD_SPECS' loop."""
         group = QGroupBox("Grading Tone")
@@ -100,18 +102,22 @@ class ToneInspectorMixin:
                 lambda rk=range_key: self._reset_one_gtn_range(rk))
             range_label.setStyleSheet("font-weight: 600;")
             range_col.addWidget(range_label)
-            row = QHBoxLayout()
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(4)
+            grid.setVerticalSpacing(4)
             channel_spins = {}
-            for channel, lo, hi in (
+            for index, (channel, lo, hi) in enumerate((
                 ("R", gain_lo, gain_hi), ("G", gain_lo, gain_hi),
                 ("B", gain_lo, gain_hi), ("M", gain_lo, gain_hi),
                 ("Start", -2.0, 2.0), ("Width", 0.0, 2.0),
-            ):
+            )):
                 spin = QDoubleSpinBox()
                 spin.setRange(lo, hi)
                 spin.setDecimals(4)
                 spin.setSingleStep(0.01)
                 spin.setValue(defaults[channel])
+                spin.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+                spin.setMinimumWidth(44)
                 enable_drag_to_scrub(spin)
                 if channel == "M":
                     spin.valueChanged.connect(
@@ -128,11 +134,14 @@ class ToneInspectorMixin:
                 # already-wired valueChanged handler (master-changed/
                 # channel-spin-changed/field-changed above) does exactly
                 # what a normal single-value edit would.
-                row.addWidget(_ParamLabel(channel, lambda s=spin, d=defaults[channel]: s.setValue(d)))
-                row.addWidget(spin)
+                grid_col, grid_row = divmod(index, 3)
+                grid.addWidget(_ParamLabel(channel, lambda s=spin, d=defaults[channel]: s.setValue(d)),
+                               grid_row, grid_col * 2)
+                grid.addWidget(spin, grid_row, grid_col * 2 + 1)
+                grid.setColumnStretch(grid_col * 2 + 1, 1)
                 channel_spins[channel] = spin
             self._gtn_range_spins[range_key] = channel_spins
-            range_col.addLayout(row)
+            range_col.addLayout(grid)
 
             range_row.addLayout(range_col, stretch=1)
             outer.addLayout(range_row)
@@ -152,7 +161,7 @@ class ToneInspectorMixin:
 
         reset_button = QPushButton("Reset to Identity")
         reset_button.clicked.connect(self._on_gtn_reset_clicked)
-        outer.addWidget(reset_button)
+        outer.addWidget(reset_button, alignment=Qt.AlignmentFlag.AlignLeft)
 
         # See _build_printer_lights_inspector's own comment -- this is
         # usually the tallest page (so this stretch rarely has anything

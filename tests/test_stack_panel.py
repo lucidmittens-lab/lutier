@@ -1302,7 +1302,7 @@ def test_grading_primary_field_label_double_click_resets_whole_field_to_identity
     for channel in ("R", "G", "B", "M"):
         spins[channel].setValue(0.5)
     inspector = panel.inspector_stack.widget(panel._grading_primary_inspector_index)
-    label = _find_param_label(inspector, "Brightness:")
+    label = _find_param_label(inspector, "Brightness")
     label.show()
     QTest.mouseDClick(label, Qt.MouseButton.LeftButton)
     for channel in ("R", "G", "B", "M"):
@@ -1310,7 +1310,7 @@ def test_grading_primary_field_label_double_click_resets_whole_field_to_identity
     wheel_x, wheel_y = panel._gpr_wheels["brightness"].balance()
     assert wheel_x == 0.0 and wheel_y == 0.0
     print("StackPanel Grading Primary inspector: double-clicking "
-          "'Brightness:' resets that field's R/G/B/M and wheel to "
+          "'Brightness' resets that field's R/G/B/M and wheel to "
           "identity -- OK")
 
 
