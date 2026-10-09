@@ -1250,8 +1250,9 @@ QFrame#stackForkEmptyCell {{
 /* Previously fully native/unstyled. sub-page (the filled portion left of
    the handle) uses the accent so the slider reads as "this much is
    active," matching the same highlight language as everything else --
-   handle stays a plain accent-filled circle, no separate hover state
-   (kept intentionally simple for this "easy pass"). :disabled explicitly
+   handle is a low-profile accent-filled rectangle (Tom's "low-profile
+   rectangular slider handles," open since RUNNING.md #69; was a 14px
+   circle), no separate hover state. :disabled explicitly
    falls back to palette(mid) rather than relying on Qt to auto-dim a
    QSS-overridden color, same reasoning as QPushButton:disabled above. */
 
@@ -1269,10 +1270,10 @@ QSlider::sub-page:horizontal {{
 QSlider::handle:horizontal {{
     background: palette(highlight);
     border: 1px solid palette(highlight);
-    width: 14px;
+    width: 6px;
     height: 14px;
     margin: -6px 0px;
-    border-radius: 7px;
+    border-radius: 1px;
 }}
 
 QSlider::sub-page:horizontal:disabled, QSlider::handle:horizontal:disabled {{
