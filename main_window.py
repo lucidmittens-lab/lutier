@@ -264,6 +264,12 @@ from spinbox_scrub import enable_drag_to_scrub
 import colour
 import colour_clf_io as clf
 
+# Names tests reach for on this module (main_window.QFileDialog etc.) --
+# kept importable here even where the code using them moved into
+# main_window_parts/.
+from PySide6.QtWidgets import QFileDialog, QMessageBox  # noqa: F401,F811
+import workspace_io  # noqa: F401,F811
+
 # (label, file extension, writer key) -- a plain list rather than a dict
 # keyed by extension, since the two .3dl dialects share an extension and
 # need distinct writer keys to disambiguate.
