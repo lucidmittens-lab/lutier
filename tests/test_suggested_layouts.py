@@ -33,7 +33,15 @@ def _shown(win):
 
 def test_suggested_layouts_show_exactly_their_panels_and_can_be_reapplied():
     _app()
-    win = MainWindow()
+    # No remembered workspace: other test modules in the same process point
+    # workspace_io at their own temp dirs, where a closed window may have
+    # saved one, so "launch = Grade" would depend on test order.
+    original_load = workspace_io.load_remembered_workspace
+    workspace_io.load_remembered_workspace = lambda: None
+    try:
+        win = MainWindow()
+    finally:
+        workspace_io.load_remembered_workspace = original_load
     win.show()
     QApplication.processEvents()
     try:

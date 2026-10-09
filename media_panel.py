@@ -89,12 +89,13 @@ matching rows live as you type.
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QMimeData, Signal, Qt
-from PySide6.QtGui import QKeySequence, QPixmap
+from PySide6.QtCore import QItemSelection, QItemSelectionModel, QMimeData, QTimer, Signal, Qt
+from PySide6.QtGui import QDrag, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QAbstractItemView,
     QHeaderView, QMessageBox, QInputDialog, QFileDialog, QToolButton, QMenu,
-    QLineEdit, QListWidget, QListWidgetItem, QSplitter,
+    QLineEdit, QListWidget, QListWidgetItem, QSplitter, QStackedWidget, QScrollArea,
+    QFrame, QHBoxLayout, QPushButton, QButtonGroup, QSizePolicy,
 )
 
 from app_logic import load_image_as_array, get_image_native_size
@@ -102,6 +103,7 @@ from media_library import MediaPool, MediaEntry, MEDIA_ENTRY_DRAG_MIME_TYPE
 import timeline as tl
 import hover_inspector
 import media_cache
+from media_grid import GridItem, MediaGrid
 import media_probe
 import colour_pipeline
 import thumbnail
@@ -126,6 +128,8 @@ IMAGE_FILE_FILTER = (
 )
 
 ENTRY_ID_ROLE = Qt.ItemDataRole.UserRole  # carried on every row's column-0 item, see module docstring
+LIST_VIEW = "list"
+GRID_VIEW = "grid"
 SORT_KEY_ROLE = Qt.ItemDataRole.UserRole + 1  # numeric sort key, see _NumericItem
 # A timeline row carries its timeline id here instead of ENTRY_ID_ROLE (so
 # every entry-only action and the drag-out simply don't see it).
@@ -510,7 +514,29 @@ class MediaPanel(QWidget):
         self.filter_edit.setPlaceholderText("Filter by name or path...")
         self.filter_edit.setClearButtonEnabled(True)
         self.filter_edit.textChanged.connect(self._apply_filter)
-        layout.addWidget(self.filter_edit)
+        # Filter box, then List | Grid (style.py's segmented control).
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(8)
+        filter_row.addWidget(self.filter_edit, stretch=1)
+        segmented = QFrame()
+        segmented.setObjectName("segmentedControl")
+        segmented.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        segmented_layout = QHBoxLayout(segmented)
+        segmented_layout.setContentsMargins(2, 2, 2, 2)
+        segmented_layout.setSpacing(2)
+        self._view_mode_buttons = {}
+        view_group = QButtonGroup(segmented)
+        view_group.setExclusive(True)
+        for mode, label in ((LIST_VIEW, "List"), (GRID_VIEW, "Grid")):
+            button = QPushButton(label)
+            button.setObjectName("segmentButton")
+            button.setCheckable(True)
+            button.clicked.connect(lambda _checked=False, m=mode: self.set_view_mode(m))
+            view_group.addButton(button)
+            segmented_layout.addWidget(button)
+            self._view_mode_buttons[mode] = button
+        filter_row.addWidget(segmented)
+        layout.addLayout(filter_row)
 
         self.table = _MediaTable(0, len(COLUMN_HEADERS))
         self.table.setHorizontalHeaderLabels(COLUMN_HEADERS)
@@ -568,8 +594,33 @@ class MediaPanel(QWidget):
         # not tied to a selection) stays in populate_menu below.
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._on_context_menu_requested)
-        layout.addWidget(self.table, stretch=1)
         hover_inspector.register(self.table, self._hover_info_for_item)
+
+        # Grid view (media_grid.py): cards for the table's VISIBLE rows, in
+        # the table's order; its selection drives the table's, so every
+        # action below runs the same from either view.
+        self.grid = MediaGrid()
+        self.grid.selection_changed.connect(self._select_table_rows)
+        self.grid.activated.connect(lambda row: self._on_row_double_clicked(self.table.item(row, COLUMN_THUMBNAIL)))
+        self.grid.context_menu_requested.connect(
+            lambda row, global_pos: self._exec_context_menu_for_row(row, global_pos, self.grid))
+        self.grid.drag_requested.connect(self._start_grid_drag)
+        self.grid_scroll = QScrollArea()
+        self.grid_scroll.setObjectName("mediaGridScroll")
+        self.grid_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.grid_scroll.setWidgetResizable(True)
+        self.grid_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.grid_scroll.setWidget(self.grid)
+        self.table.itemSelectionChanged.connect(
+            lambda: self.grid.set_selected_rows(self._table_selected_row_set()))
+        self.table.horizontalHeader().sortIndicatorChanged.connect(
+            lambda *_args: QTimer.singleShot(0, self._rebuild_grid))
+
+        self.view_stack = QStackedWidget()
+        self.view_stack.addWidget(self.grid_scroll)  # GRID_VIEW
+        self.view_stack.addWidget(self.table)        # LIST_VIEW
+        layout.addWidget(self.view_stack, stretch=1)
+        self.set_view_mode(GRID_VIEW)
 
         self._build_menu_button()
 
@@ -624,8 +675,13 @@ class MediaPanel(QWidget):
             return
         if not self.table.selectionModel().isRowSelected(item.row(), self.table.rootIndex()):
             self.table.selectRow(item.row())
-        menu = QMenu(self.table)
-        timeline = self._timeline_at_row(item.row())
+        self._exec_context_menu_for_row(item.row(), self.table.viewport().mapToGlobal(pos), self.table)
+
+    def _exec_context_menu_for_row(self, row, global_pos, parent):
+        """The per-row menu, for the List (above) and the Grid alike --
+        acts on the table's current selection."""
+        menu = QMenu(parent)
+        timeline = self._timeline_at_row(row)
         if timeline is not None:
             if timeline is self._loaded_timeline:
                 menu.addAction("Unload Timeline", self.timeline_unload_requested.emit)
@@ -634,7 +690,7 @@ class MediaPanel(QWidget):
             menu.addSeparator()
             menu.addAction("Rename...", self._on_rename_clicked)
             menu.addAction("Delete", self._on_delete_clicked)
-            menu.exec(self.table.viewport().mapToGlobal(pos))
+            menu.exec(global_pos)
             return
         menu.addAction("Open in Source Viewer", self._on_open_in_source_clicked)
         menu.addAction("Grade in Record (no timeline)", self._on_load_as_sample_clicked)
@@ -644,7 +700,7 @@ class MediaPanel(QWidget):
         menu.addSeparator()
         menu.addAction("Rename...", self._on_rename_clicked)
         menu.addAction("Delete", self._on_delete_clicked)
-        menu.exec(self.table.viewport().mapToGlobal(pos))
+        menu.exec(global_pos)
 
     def _on_header_context_menu(self, pos):
         """Right-click on the column header: a checkable entry per column,
@@ -823,6 +879,7 @@ class MediaPanel(QWidget):
                 timeline = self._timeline_at_row(row)
                 haystack = timeline.name.lower() if timeline is not None else ""
             self.table.setRowHidden(row, text not in haystack)
+        self._rebuild_grid()
 
     def _append_row(self, entry):
         row = self.table.rowCount()
@@ -1224,3 +1281,76 @@ class MediaPanel(QWidget):
         self._loaded_timeline = None
         self._refresh_library_list()
         self._refresh_table()
+
+    # ---- Grid view (media_grid.py) ------------------------------------------
+
+    def view_mode(self):
+        return GRID_VIEW if self.view_stack.currentWidget() is self.grid_scroll else LIST_VIEW
+
+    def set_view_mode(self, mode):
+        self.view_stack.setCurrentWidget(self.grid_scroll if mode == GRID_VIEW else self.table)
+        self._view_mode_buttons[mode].setChecked(True)
+
+    def _cell_text(self, row, key):
+        item = self.table.item(row, COLUMN_KEYS.index(key))
+        return item.text().strip() if item is not None else ""
+
+    def _rebuild_grid(self):
+        """One card per VISIBLE table row, in the table's order."""
+        items = []
+        for row in range(self.table.rowCount()):
+            if self.table.isRowHidden(row):
+                continue
+            timeline = self._timeline_at_row(row)
+            if timeline is not None:
+                items.append(GridItem(
+                    row=row, name=timeline.name, is_timeline=True,
+                    is_loaded=timeline is self._loaded_timeline,
+                    details=f"Timeline · {len(timeline.clips)} clip{'s' if len(timeline.clips) != 1 else ''}",
+                    corner_text=self._cell_text(row, "duration")))
+                continue
+            entry_id = self._entry_id_at_row(row)
+            try:
+                entry = self.library.find(entry_id) if entry_id is not None else None
+            except KeyError:
+                entry = None
+            if entry is None:
+                continue
+            details = " · ".join(t for t in (self._cell_text(row, "resolution"),
+                                             self._cell_text(row, "fps"),
+                                             self._cell_text(row, "codec")) if t)
+            items.append(GridItem(row=row, name=entry.name, details=details,
+                                  corner_text=self._cell_text(row, "duration"),
+                                  thumbnail=entry.thumbnail))
+        self.grid.set_items(items)
+        self.grid.set_selected_rows(self._table_selected_row_set())
+
+    def _table_selected_row_set(self):
+        """Rows with any selected cell -- selectedRows() needs EVERY column
+        selected, and selectRow() leaves the hidden columns out."""
+        return {index.row() for index in self.table.selectionModel().selectedIndexes()}
+
+    def _select_table_rows(self, rows):
+        """Mirror the Grid's selection into the table (current row = the
+        first), so the table-based actions see it."""
+        model = self.table.selectionModel()
+        selection = QItemSelection()
+        for row in rows:
+            selection.select(self.table.model().index(row, 0),
+                             self.table.model().index(row, self.table.columnCount() - 1))
+        self.table.blockSignals(True)
+        model.select(selection, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        if rows:
+            model.setCurrentIndex(self.table.model().index(rows[0], 0),
+                                  QItemSelectionModel.SelectionFlag.NoUpdate)
+        self.table.blockSignals(False)
+
+    def _start_grid_drag(self, rows):
+        """Drag from the Grid -- the same payload as dragging table rows."""
+        items = [self.table.item(row, COLUMN_THUMBNAIL) for row in rows]
+        mime = self.table.mimeData([i for i in items if i is not None])
+        if mime is None:
+            return
+        drag = QDrag(self.grid)
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.CopyAction)

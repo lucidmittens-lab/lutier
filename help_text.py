@@ -76,6 +76,14 @@ how many items it holds). The selected library is what the table shows
 and where imports, drops and New Timeline land; drop files onto another
 library in the list to import straight into it.
 
+**Grid | List** (next to the filter box) switches between two views of
+the same items. **Grid** (the default) shows each one as a card: its
+thumbnail with the duration in the corner, its name, and its format
+(resolution, frame rate, codec); click, Ctrl-click and Shift-click
+select, double-click and right-click work as in the list, and cards can
+be dragged out like rows. **List** is the table below; sorting it or
+filtering also orders and filters the grid.
+
 The table lists the library's still and video files, catalogued by
 reference, and its **timelines**. Right-click the column header to
 choose columns (timecode, codec, bit depth, audio, camera, file size,
@@ -550,6 +558,14 @@ is no fixed layout to fight against. LUTier starts with the grading
 screen: Record, the Timeline (as thumbnails), the Stack, Parameters and
 Scopes. Every other panel is in the **Workspace** menu (or Shift+its
 number) and opens in its own default spot.
+
+**Suggested layouts** rearrange the panels for a kind of work in one
+click, from the **Media** and **Grade** buttons at the right end of the
+menu bar or **Workspace → Suggested Layouts** (Alt+1, Alt+2). **Media**
+shows the Browser, the Source viewer and Media Libraries across the
+bottom; **Grade** is the grading screen above. They aren't modes:
+afterwards the workspace is yours to change, and it is remembered as
+usual.
 
 Every panel can also be shown/hidden from the **Workspace** menu (or its
 own Shift+1 through Shift+9 shortcut), and every panel's "☰" button in

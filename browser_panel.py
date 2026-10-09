@@ -31,8 +31,10 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal, QDir, QMimeData, QUrl
+from PySide6.QtCore import Qt, QTimer, Signal, QDir, QMimeData, QRectF, QUrl
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
+    QFileIconProvider,
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QToolButton, QLabel,
     QFileDialog, QTreeView, QFileSystemModel, QTreeWidget, QTreeWidgetItem,
     QCheckBox, QComboBox, QSplitter, QAbstractItemView, QHeaderView,
@@ -179,6 +181,35 @@ class _FileList(QTreeWidget):
         return mime
 
 
+class _NeutralFolderIcons(QFileIconProvider):
+    """A plain folder glyph in the secondary-text grey for every folder
+    (files keep the default provider's icons -- the tree lists folders
+    only)."""
+
+    def __init__(self):
+        super().__init__()
+        import style
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(style._HINT_TEXT))
+        painter.drawRoundedRect(QRectF(3, 7, 12, 6), 2, 2)     # tab
+        painter.drawRoundedRect(QRectF(3, 10, 26, 16), 3, 3)   # body
+        painter.end()
+        self._folder_icon = QIcon(pixmap)
+
+    def icon(self, info_or_type):
+        if isinstance(info_or_type, QFileIconProvider.IconType):
+            if info_or_type == QFileIconProvider.IconType.Folder:
+                return self._folder_icon
+            return super().icon(info_or_type)
+        if info_or_type.isDir():
+            return self._folder_icon
+        return super().icon(info_or_type)
+
+
 class BrowserPanel(QWidget):
     file_selected = Signal(str)           # a LUT was double-clicked -> Stack
     cdl_file_selected = Signal(str)       # a CDL was double-clicked -> CDL Library
@@ -220,6 +251,10 @@ class BrowserPanel(QWidget):
         layout.addWidget(splitter, stretch=1)
 
         self.fs_model = QFileSystemModel(self)
+        # Neutral folder glyphs (style.py IDENTITY PASS): the OS's blue
+        # folder icons were the only saturated colour on the Media layout.
+        self._icon_provider = _NeutralFolderIcons()
+        self.fs_model.setIconProvider(self._icon_provider)
         self.fs_model.setFilter(QDir.Filter.AllDirs | QDir.Filter.NoDotAndDotDot)
         self.folder_tree = QTreeView()
         self.folder_tree.setModel(self.fs_model)
@@ -271,6 +306,12 @@ class BrowserPanel(QWidget):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(COLUMN_FOLDER, QHeaderView.ResizeMode.Interactive)
         self.file_list.setColumnWidth(COLUMN_FOLDER, 80)
+        # The kind is clear from the file and the type filter; hiding the
+        # column leaves the (stretching) Name room at sidebar widths.
+        # Right-click the header to show it again.
+        self.file_list.setColumnHidden(COLUMN_TYPE, True)
+        header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._on_header_context_menu)
         self.file_list.itemDoubleClicked.connect(self._on_item_double_clicked)
         files_layout.addWidget(self.file_list, stretch=1)
         hover_inspector.register(self.file_list, self._hover_info_for_item)
@@ -279,6 +320,7 @@ class BrowserPanel(QWidget):
         splitter.setSizes([140, 360])
 
         self.status_label = QLabel("")
+        self.status_label.setObjectName("panelStatusLabel")
         layout.addWidget(self.status_label)
 
     # ---- folder tree ------------------------------------------------------
@@ -414,3 +456,16 @@ class BrowserPanel(QWidget):
             self.file_selected.emit(path)
         else:
             self.media_files_activated.emit([path])
+
+    def _on_header_context_menu(self, pos):
+        """Show/hide the file list's columns (Name always stays)."""
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self.file_list)
+        header = self.file_list.header()
+        for column in range(1, self.file_list.columnCount()):
+            label = self.file_list.headerItem().text(column)
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(not self.file_list.isColumnHidden(column))
+            action.toggled.connect(lambda on, c=column: self.file_list.setColumnHidden(c, not on))
+        menu.exec(header.mapToGlobal(pos))

@@ -47,6 +47,7 @@ grep for the method name.
   in `main_window_parts/` mixins: `docks`, `layout` (`_build_layout`),
   `menus`, `workspace`, `session` (sessions and project settings), `undo`,
   `pipeline` (stack changes, effective stack, Sequence/Shot),
+  `suggested_layouts` (Media / Grade one-click layouts),
   `timeline_wiring`, `export_lut`, `export_video`, `constants`
   (`PANEL_TOGGLES`). Parts never import `main_window` (run as a script it is
   `__main__`). Also `splash_launcher` (packaged entry point), `style` (all QSS
@@ -59,7 +60,9 @@ grep for the method name.
   `constants`) and `source_viewer`, `wipe_compare_widget` (the GL Viewer
   surface), `browser_panel`, `media_panel`, `lut_library_panel`,
   `stack_memories_panel` (Stills Gallery), `lut_viewer_3d` (Graph panel),
-  `curve_editor_widget`, `color_wheel_widget`, `color_warper_wheel`,
+  `media_grid` (Media Libraries' Grid view), `timeline_thumbnail_strip`
+  (the Timeline's Thumbnails view), `curve_editor_widget`,
+  `color_wheel_widget`, `color_warper_wheel`,
   `color_warper_cloud_widget`, `safe_gl_view_widget`.
 - **`stack_panel/` package:** `panel.py` (the `StackPanel` class: list UI, ☰
   menu, selection, add/reorder/delete, public API, inspector dispatch),

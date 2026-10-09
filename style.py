@@ -821,6 +821,39 @@ QPushButton#segmentButton:disabled {{
     color: {_TEXT_DISABLED};
 }}
 
+/* Splitter handles inside panels (Media Libraries' bins | items, the
+   Browser's tree | files): an invisible gap that lights up on hover,
+   instead of Fusion's dotted grip. */
+QSplitter::handle {{
+    background-color: transparent;
+    image: none;
+}}
+
+QSplitter::handle:horizontal {{
+    width: 6px;
+}}
+
+QSplitter::handle:vertical {{
+    height: 6px;
+}}
+
+QSplitter::handle:hover {{
+    background-color: {_DARK_LIGHT};
+}}
+
+/* A panel's footer status line (e.g. the Browser's "2 Videos"). */
+QLabel#panelStatusLabel {{
+    color: {_HINT_TEXT};
+    font-size: 11px;
+    padding: 2px 4px;
+}}
+
+/* Media Libraries' grid (media_grid.py) in its scroll area. */
+QScrollArea#mediaGridScroll,
+QScrollArea#mediaGridScroll > QWidget#qt_scrollarea_viewport {{
+    background-color: palette(base);
+}}
+
 /* Suggested-layout buttons in the menu bar's corner (Media / Grade):
    quiet text buttons -- they apply an arrangement, they aren't a mode. */
 QPushButton#suggestedLayoutButton {{
