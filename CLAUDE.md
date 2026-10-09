@@ -229,9 +229,12 @@ failed to reproduce it. If it recurs, rerun it alone before suspecting a change.
 - **Styling:** `palette(placeholder-text)` is lost after polish, so use the
   literal `style.HINT_TEXT_HEX`. A plain `QWidget` or `QDockWidget` ignores
   QSS backgrounds and rounded corners unless `WA_StyledBackground` is set.
-  Custom-painted widgets fill their own
-  background. Check colours by pixel-sampling `grab()`, not by eye.
-  Panels darker than the gaps between them is intentional.
+  Custom-painted widgets fill their own background; take their colours
+  from `style.py`'s tokens, never hex copies. Check colours by
+  pixel-sampling `grab()`, not by eye. The look (IDENTITY PASS,
+  2026-10-09): neutral greys, panels lighter than the gaps, one amber
+  accent only for what you act on or have selected, IBM Plex (bundled,
+  `register_bundled_fonts()`), 12/8 px radii. See `style.py`'s docstring.
 - **Frozen app:** never find data files via `__file__`; use the
   `RESOURCEPATH` helpers (`app_logic.default_sample_image_path`,
   `style._texture_asset_path`). Never `__import__("main_window")`. Compiled

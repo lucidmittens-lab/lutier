@@ -314,7 +314,23 @@ no rule needs touching), and the bars between panels (`QMainWindow::
 separator`) `#0D0D0D` via a new dedicated `_SEPARATOR_DIVIDER` constant
 (not reusing `_DARK_MID`, which also colors ordinary structural borders
 that weren't asked to change). Verified the same pixel-sampled way as
-FOURTEENTH PASS caught its bug with -- not just re-reading the QSS."""
+FOURTEENTH PASS caught its bug with -- not just re-reading the QSS.
+
+IDENTITY PASS (2026-10-09) -- LUTier's own look, picked by the user from
+three mocked-up directions ("A's colours, B's density, C's corners"):
+- Colour: true-neutral greys (no blue cast anywhere near the picture) and
+  ONE accent, amber `#E8A33D`, used only for what you act on or have
+  selected. Panels (`_DARK_BASE`) are now lighter than the gaps between
+  them (`_DARK_WINDOW`) again, and the gaps are flat (no herringbone).
+  Fork Branch B moves from amber to cyan so it can't be mistaken for it.
+- Corners: `PANEL_BORDER_RADIUS` 12 for panels, `CONTROL_RADIUS` 8 for
+  fields, buttons and Stack rows.
+- Density: tight Stack rows and small gaps.
+- Type: bundled IBM Plex Sans/Mono (assets/fonts, OFL), registered by
+  `register_bundled_fonts()` at startup; all numeric readouts use Mono.
+- Panel headers are quiet labels (no accent underline any more).
+The user's saved accent (theme_prefs.json), if any, still wins over the
+new default."""
 
 import os
 import sys
@@ -328,7 +344,20 @@ from PySide6.QtGui import QColor, QPalette
 # imports style.py back.
 import theme_prefs
 
-PANEL_BORDER_RADIUS = 6
+PANEL_BORDER_RADIUS = 12   # panels (docks) -- IDENTITY PASS, was 6
+CONTROL_RADIUS = 8         # fields, buttons, Stack rows, menus
+
+# Bundled typefaces (assets/fonts, SIL OFL -- see OFL.txt there). Static
+# weights, not Google's variable Plex Sans: Qt 6.11 only applies the
+# variable font's Regular and a synthesized Bold, so 500/600 rendered
+# identically to 400 (checked by rendering, 2026-10-09).
+UI_FONT_FAMILY = "IBM Plex Sans"
+MONO_FONT_FAMILY = "IBM Plex Mono"
+UI_FONT_PX = 13
+_BUNDLED_FONT_FILES = (
+    "IBMPlexSans-Regular.ttf", "IBMPlexSans-Medium.ttf", "IBMPlexSans-SemiBold.ttf",
+    "IBMPlexMono-Regular.ttf", "IBMPlexMono-Medium.ttf",
+)
 
 # -- Fixed dark palette (NINTH PASS, see this file's module docstring) ----
 # The actual easy knobs for the overall look now -- everything below is
@@ -341,84 +370,32 @@ PANEL_BORDER_RADIUS = 6
 # below) for the existing "cards floating on a background" language
 # (borders + radius, SEVENTH PASS) to still make sense once it's a fixed
 # color instead of whatever the OS happened to hand over.
-_DARK_WINDOW = "#242427"       # QMainWindow's own background, between panels
-_DARK_BASE = "#141414"         # panel/card bodies, list/input backgrounds (per Tom,
-                               # FIFTEENTH PASS -- was #242424). NOTE: this now
-                               # INVERTS the "Two tiers of gray" relationship the
-                               # comment right above describes -- panels
-                               # (20,20,20) are now DARKER than the space between
-                               # them (36,36,39), not lighter. The border+radius
-                               # "cards" language still gives each panel a
-                               # visible edge either way, just reading as a
-                               # recessed/inset panel now rather than a raised
-                               # one. Applied exactly as asked, flagged for
-                               # visibility, not second-guessed -- see also
-                               # _SEPARATOR_DIVIDER below, which is deliberately
-                               # darker again than THIS, for a third, darkest
-                               # tier at the actual bars between panels.
-_DARK_ALT_BASE = "#343438"     # alternating rows, subtle raised surfaces
-_DARK_BUTTON = "#38383c"       # button fill at rest
-_DARK_LIGHT = "#4a4a4f"        # hover state -- bumped from the first pass so
-                               # it's still clearly LIGHTER than the new,
-                               # lighter _DARK_BASE above (hover has to read
-                               # as "lifted," not just barely different)
-_DARK_MIDLIGHT = "#47474c"     # list-row hover -- same reason as _DARK_LIGHT:
-                               # must stay lighter than _DARK_BASE for the
-                               # hover-lift direction to still make sense
-_DARK_MID = "#4d4d53"          # borders, dividers, disabled-glyph color
-_DARK_DARK = "#1a1a1c"         # pressed-button state, deepest shadow tone
-_SEPARATOR_DIVIDER = "#0D0D0D" # FIFTEENTH PASS -- the actual bars BETWEEN
-                               # docked panels (QMainWindow::separator, the
-                               # draggable splitter handles), per Tom. A new,
-                               # dedicated constant rather than repointing
-                               # _DARK_MID (which also colors ordinary
-                               # structural borders all over the app --
-                               # panelFrame's outline, QLineEdit/QListWidget/
-                               # QMenu borders, etc. -- changing THOSE wasn't
-                               # asked for and shouldn't move just because the
-                               # separator bars did). Not routed through
-                               # QPalette at all -- literal hex in the QSS
-                               # rule below, same reasoning as `_HINT_TEXT`'s
-                               # FOURTEENTH PASS fix: this app already has one
-                               # proven case (`PlaceholderText`) of a QPalette
-                               # role not reliably surviving Qt's style-polish
-                               # pass on this Qt build, so a color with no
-                               # other consumer doesn't need that risk at all.
-_TEXT_PRIMARY = "#e6e6e9"      # primary text -- off-white, not pure white
-_ACCENT_BLUE = "#2C4066"       # DEFAULT/fallback accent (first launch, or
-                               # theme_prefs.json missing/unreadable) --
-                               # darker + more muted per Tom's second
-                               # pass. SIXTEENTH PASS (2026-07-25): no
-                               # longer THE accent unconditionally -- see
-                               # DEFAULT_ACCENT_HEX/get_accent_color/
-                               # set_accent_color below, "USER-CHOSABLE
-                               # ACCENT COLOR."
-_ACCENT_BLUE_TEXT = "#ffffff"  # DEFAULT contrast text for the default
-                               # accent above -- see _contrast_text_color
-                               # below for why this isn't unconditionally
-                               # right anymore once the accent itself is
-                               # user-chosen.
-_ACCENT_AMBER = "#e0a542"      # Stack Forking Branch B -- must differ from
-                               # the blue accent (Branch A) or the two
-                               # branches stop being visually distinguishable
-_HINT_TEXT = "#BDBDBD"         # muted/secondary INFORMATIONAL text (hint
-                               # labels, disabled stage/button/menu TEXT) --
-                               # FIFTEENTH PASS -- was #617191, now a plain
-                               # light gray instead of a blue-tinted one (per
-                               # Tom: "Hint text should also be #BDBDBD").
-                               # Also the panel title/header text color,
-                               # unchanged from THIRTEENTH PASS's choice to
-                               # route `QLabel#panelTitle` through this same
-                               # constant -- Tom's separate "make the panel
-                               # name #BDBDBD" ask this pass lands on that
-                               # rule for free, no code change needed there.
-                               # Split out from _DARK_MID, which stays
-                               # reserved for structural borders and
-                               # icon-glyph colors (see PlaceholderText's
-                               # mapping below, and every color-only, non-
-                               # border TEXT rule that reads from HINT_TEXT_HEX
-                               # -- see FOURTEENTH PASS for why this is a
-                               # literal hex, not `palette(placeholder-text)`)
+_DARK_WINDOW = "#111111"       # the gaps between panels (QMainWindow's own
+                               # background) -- IDENTITY PASS: darkest tier,
+                               # flat, so panels read as cards sitting on it
+_DARK_BASE = "#1a1a1a"         # panel/card bodies, list backgrounds
+_DARK_ALT_BASE = "#262626"     # raised surfaces: Stack rows, chips, badges
+_DARK_BUTTON = "#262626"       # button fill
+_DARK_LIGHT = "#303030"        # hover lift
+_DARK_MIDLIGHT = "#2a2a2a"     # list-row hover
+_DARK_MID = "#333333"          # hairlines: borders, dividers, slider grooves
+_DARK_DARK = "#0c0c0c"         # pressed state, deepest shadow tone
+_FIELD_BG = "#111111"          # inputs sit INSET (darker than their panel)
+_SEPARATOR_DIVIDER = _DARK_WINDOW  # the draggable bars between docks: same
+                               # as the gaps, so they read as space, not lines
+_TEXT_PRIMARY = "#e8e8e8"      # primary text -- off-white, not pure white
+_ACCENT_DEFAULT = "#E8A33D"    # DEFAULT accent (first launch, or no saved
+                               # theme_prefs.json) -- IDENTITY PASS amber,
+                               # was navy #2C4066. Far from most picture
+                               # content, so it rarely competes with the image.
+_BRANCH_B_COLOR = "#3CC4D2"    # Stack Forking Branch B (palette(link)) --
+                               # must differ from the accent (Branch A);
+                               # cyan now the accent is amber
+_HINT_TEXT = "#9e9e9e"         # secondary text: hints, labels, panel titles,
+                               # disabled text -- 6.6:1 on _DARK_BASE.
+                               # (Literal hex in QSS, not
+                               # palette(placeholder-text) -- see FOURTEENTH
+                               # PASS: that role doesn't survive polish.)
 
 # FOURTEENTH PASS -- public (no leading underscore) alias for _HINT_TEXT,
 # so panel modules that set hint-text color via their own setStyleSheet()
@@ -431,9 +408,9 @@ HINT_TEXT_HEX = _HINT_TEXT
 
 # SIXTEENTH PASS -- USER-CHOSABLE ACCENT COLOR (2026-07-25, per Tom: "give
 # users control over the accent color"). `DEFAULT_ACCENT_HEX` is the
-# fallback (first launch, or theme_prefs.json missing/unreadable) -- same
-# value `_ACCENT_BLUE` always was.
-DEFAULT_ACCENT_HEX = _ACCENT_BLUE
+# fallback (first launch, or theme_prefs.json missing/unreadable) --
+# `_ACCENT_DEFAULT` (amber since the IDENTITY PASS; navy `#2C4066` before).
+DEFAULT_ACCENT_HEX = _ACCENT_DEFAULT
 
 # `get_accent_color()`/`set_accent_color()`
 # below are the ONLY things that read/write the actual current accent
@@ -581,8 +558,8 @@ def build_dark_palette():
         QPalette.ColorRole.Shadow: _DARK_DARK,
         QPalette.ColorRole.Highlight: accent,
         QPalette.ColorRole.HighlightedText: accent_text,
-        QPalette.ColorRole.Link: _ACCENT_AMBER,
-        QPalette.ColorRole.LinkVisited: _ACCENT_AMBER,
+        QPalette.ColorRole.Link: _BRANCH_B_COLOR,
+        QPalette.ColorRole.LinkVisited: _BRANCH_B_COLOR,
         # Every other classic QPalette role is already spoken for above
         # (see get_tertiary_color()'s own docstring) -- Accent is a
         # dedicated, Qt 6.6+ role this codebase had never used before,
@@ -625,6 +602,29 @@ def _texture_asset_path(filename):
     return base / "assets" / filename
 
 
+def register_bundled_fonts():
+    """Register the bundled IBM Plex files with Qt (needs a QApplication).
+    Returns the font families Qt reports, so a caller can check the UI
+    font actually arrived; a missing file is skipped, and Qt then falls
+    back to its default sans, so a broken bundle degrades, never crashes."""
+    from PySide6.QtGui import QFontDatabase
+    families = set()
+    for name in _BUNDLED_FONT_FILES:
+        font_id = QFontDatabase.addApplicationFont(str(_texture_asset_path(f"fonts/{name}")))
+        if font_id >= 0:
+            families.update(QFontDatabase.applicationFontFamilies(font_id))
+    return families
+
+
+def ui_font():
+    """The app-wide UI font: UI_FONT_FAMILY at UI_FONT_PX (call after
+    register_bundled_fonts)."""
+    from PySide6.QtGui import QFont
+    font = QFont(UI_FONT_FAMILY)
+    font.setPixelSize(UI_FONT_PX)
+    return font
+
+
 _HERRINGBONE_TEXTURE = _texture_asset_path("bg_herringbone.png").as_posix()
 _GRAIN_TEXTURE = _texture_asset_path("border_grain.png").as_posix()
 
@@ -651,11 +651,26 @@ QWidget {{
 }}
 
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
-    background-color: palette(base);
+    background-color: {_FIELD_BG};
     color: palette(text);
     border: 1px solid palette(mid);
-    border-radius: 4px;
-    padding: 2px 4px;
+    border-radius: {CONTROL_RADIUS}px;
+    padding: 3px 6px;
+}}
+
+/* Numbers in fields read in the mono face (IDENTITY PASS) so digits line
+   up and don't jitter while scrubbing. */
+QSpinBox, QDoubleSpinBox {{
+    font-family: "{MONO_FONT_FAMILY}";
+}}
+
+/* Drag-to-scrub spin boxes (spinbox_scrub.enable_drag_to_scrub marks them
+   scrubbable="true"): no up/down arrows -- dragging, the wheel and the
+   keyboard all still step them. Unmarked spin boxes keep their arrows. */
+QAbstractSpinBox[scrubbable="true"]::up-button,
+QAbstractSpinBox[scrubbable="true"]::down-button {{
+    width: 0px;
+    border: none;
 }}
 
 /* Previously these four had no :hover/:focus state at all -- looked
@@ -664,12 +679,11 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
    plus a 2px width so the currently-editing field is unambiguous even
    at a glance across a busy panel. */
 QLineEdit:hover, QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover {{
-    border: 1px solid palette(highlight);
+    border: 1px solid {_HINT_TEXT};
 }}
 
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
-    border: 2px solid palette(highlight);
-    padding: 1px 3px;
+    border: 1px solid palette(highlight);
 }}
 
 QComboBox QAbstractItemView {{
@@ -679,14 +693,14 @@ QComboBox QAbstractItemView {{
     selection-color: palette(highlighted-text);
     outline: none;
     border: 1px solid palette(mid);
-    border-radius: 4px;
+    border-radius: {CONTROL_RADIUS}px;
 }}
 
 QListWidget {{
     background-color: palette(base);
     color: palette(text);
     border: 1px solid palette(mid);
-    border-radius: 4px;
+    border-radius: {CONTROL_RADIUS}px;
 }}
 
 QListWidget::item {{
@@ -701,9 +715,12 @@ QListWidget::item:hover:!selected {{
     background-color: palette(midlight);
 }}
 
+/* IDENTITY PASS: a lifted grey with accent text, not a solid accent
+   block -- a full amber bar on every list selection was the loudest
+   thing on screen. */
 QListWidget::item:selected {{
-    background-color: palette(highlight);
-    color: palette(highlighted-text);
+    background-color: {_DARK_LIGHT};
+    color: palette(highlight);
 }}
 
 /* Stack panel's list ONLY (_StackListWidget#stackListWidget, stack_panel.py)
@@ -729,13 +746,42 @@ QListWidget#stackListWidget::item:hover:!selected {{
     background-color: transparent;
 }}
 
+/* IDENTITY PASS: column headers (Browser tree, Media table) and the tree's
+   own rows -- Fusion's default light-grey header blocks were the
+   brightest thing in the side panels. */
+QHeaderView::section {{
+    background-color: palette(base);
+    color: {_HINT_TEXT};
+    border: none;
+    border-bottom: 1px solid palette(mid);
+    padding: 3px 6px;
+    font-size: 11px;
+}}
+
+QTreeView, QTableView {{
+    background-color: palette(base);
+    border: none;
+    selection-background-color: {_DARK_LIGHT};
+    selection-color: palette(highlight);
+}}
+
+QTreeView::item:hover:!selected, QTableView::item:hover:!selected {{
+    background-color: palette(midlight);
+}}
+
 /* Covers the new "..." header menus (Viewer/Stack, see panel_frame.py's
    corner_widget) as well as every QComboBox's own popup menu. */
 QMenu {{
     background-color: palette(base);
     color: palette(text);
     border: 1px solid palette(mid);
-    border-radius: 4px;
+    border-radius: {CONTROL_RADIUS}px;
+    padding: 4px;
+}}
+
+QMenu::item {{
+    padding: 5px 16px;
+    border-radius: 6px;
 }}
 
 QMenu::item:selected {{
@@ -748,11 +794,11 @@ QMenu::item:disabled {{
 }}
 
 QToolTip {{
-    background-color: palette(base);
+    background-color: {_DARK_ALT_BASE};
     color: palette(text);
     border: 1px solid palette(mid);
-    border-radius: 4px;
-    padding: 2px 4px;
+    border-radius: 6px;
+    padding: 4px 8px;
 }}
 
 /* QDockWidget itself (see main_window.py's _make_dock --
@@ -780,7 +826,7 @@ QToolTip {{
    arc that touched this bleed-through-prone area. */
 QDockWidget {{
     background-color: palette(base);
-    border: 1px solid palette(mid);
+    border: none;
     border-radius: {PANEL_BORDER_RADIUS}px;
 }}
 
@@ -848,10 +894,12 @@ QFrame#panelFrame QListWidget {{
    removed -- per Tom, panel headers specifically should carry it.
    margin-bottom is GONE too (used to be the 4px gap between this row and
    panelFrame, which is exactly the seam TENTH PASS closes). */
+/* IDENTITY PASS: no accent underline -- headers are quiet labels now; the
+   accent is reserved for what you act on or have selected. */
 QWidget#panelTitleRow {{
     background-color: palette(base);
-    padding: 4px 8px;
-    border-bottom: 2px solid palette(highlight);
+    padding: 6px 12px 4px 12px;
+    border-bottom: none;
     border-top-left-radius: {PANEL_BORDER_RADIUS}px;
     border-top-right-radius: {PANEL_BORDER_RADIUS}px;
     border-bottom-left-radius: 0px;
@@ -871,7 +919,7 @@ QWidget#panelTitleRow {{
    moved on.) */
 QLabel#panelTitle {{
     font-weight: 600;
-    font-size: 12px;
+    font-size: 11px;
     color: {_HINT_TEXT};
 }}
 
@@ -907,9 +955,14 @@ QToolButton#dockCloseButton, QToolButton#panelMenuButton {{
     min-height: 18px;
 }}
 
+QToolButton#dockCloseButton, QToolButton#panelMenuButton {{
+    color: {_HINT_TEXT};
+}}
+
 QToolButton#dockCloseButton:hover, QToolButton#panelMenuButton:hover {{
-    background-color: palette(highlight);
-    border-radius: 3px;
+    background-color: {_DARK_LIGHT};
+    color: palette(text);
+    border-radius: 6px;
 }}
 
 /* Suppresses the extra dropdown-arrow subcontrol Fusion draws for any
@@ -946,13 +999,14 @@ QToolButton#videoTransportButton {{
 }}
 
 QToolButton#videoTransportButton:hover {{
-    background-color: palette(highlight);
-    border-radius: 3px;
+    background-color: {_DARK_LIGHT};
+    border-radius: 6px;
 }}
 
 QToolButton#videoTransportButton:checked {{
     background-color: palette(highlight);
-    border-radius: 3px;
+    color: palette(highlighted-text);
+    border-radius: 6px;
 }}
 
 /* Browser panel's "Choose Folder..." button (per Tom: "a cleaner more
@@ -971,8 +1025,8 @@ QToolButton#chooseFolderButton {{
 }}
 
 QToolButton#chooseFolderButton:hover {{
-    background-color: palette(highlight);
-    border-radius: 4px;
+    background-color: {_DARK_LIGHT};
+    border-radius: {CONTROL_RADIUS}px;
 }}
 
 /* Real SMPTE timecode readout (Phase 4, timecode.py) -- monospace so
@@ -980,7 +1034,7 @@ QToolButton#chooseFolderButton:hover {{
    during playback, same reason any numeric readout that updates in
    place wants a fixed-width face. */
 QLabel#videoTimecodeLabel, QLineEdit#videoTimecodeLabel, QLineEdit#viewerTimecode {{
-    font-family: Menlo, Consolas, monospace;
+    font-family: "{MONO_FONT_FAMILY}", Menlo, Consolas, monospace;
 }}
 
 /* Timecode readouts you can type into (sample_image_panel._TimecodeField,
@@ -1000,7 +1054,7 @@ QLineEdit#videoTimecodeLabel:focus, QLineEdit#viewerTimecode:focus {{
    of the timeline in as a sub panel") -- monospace so the fixed-width
    CMX3600 event columns actually line up. */
 QPlainTextEdit#edlTextView {{
-    font-family: Menlo, Consolas, monospace;
+    font-family: "{MONO_FONT_FAMILY}", Menlo, Consolas, monospace;
     font-size: 11px;
     background-color: {_DARK_BASE};
     color: {_TEXT_PRIMARY};
@@ -1019,29 +1073,36 @@ QPlainTextEdit#edlTextView {{
    Reset to 0/Identity, etc.) picks this rule up automatically via the
    bare `QPushButton` selector, no per-call-site changes needed. */
 
+/* IDENTITY PASS: ghost buttons with a hairline at rest; hover lifts to a
+   lighter grey rather than flooding with the accent (an amber fill on
+   every hover was too loud). Checkable buttons that are ON use the
+   accent -- that IS a selected state. */
 QPushButton {{
-    padding: 4px 10px;
-    border-radius: 4px;
-    border: none;
+    padding: 5px 12px;
+    border-radius: {CONTROL_RADIUS}px;
+    border: 1px solid palette(mid);
     background: transparent;
     color: palette(button-text);
 }}
 
 QPushButton:hover {{
-    background-color: palette(highlight);
+    background-color: {_DARK_LIGHT};
+    border-color: {_HINT_TEXT};
 }}
 
 QPushButton:pressed {{
-    background-color: palette(highlight);
+    background-color: {_DARK_DARK};
 }}
 
 QPushButton:disabled {{
     color: {_HINT_TEXT};
     background: transparent;
+    border-color: {_DARK_MIDLIGHT};
 }}
 
 QPushButton:checkable:checked {{
     background-color: palette(highlight);
+    border-color: palette(highlight);
     color: palette(highlighted-text);
     font-weight: 600;
 }}
@@ -1056,11 +1117,13 @@ QGroupBox {{
     color: palette(text);
 }}
 
+/* IDENTITY PASS: the page title reads as a title (primary text), not an
+   accent -- an amber "ASC CDL" would look clickable. */
 QGroupBox::title {{
     subcontrol-origin: margin;
     left: 8px;
     padding: 0 4px;
-    color: palette(highlight);
+    color: palette(text);
 }}
 
 /* -- Stack stage rows (StackPanel's _StageRowWidget, stack_panel.py) --- */
@@ -1104,11 +1167,13 @@ QGroupBox::title {{
    fully self-contained instead of depending on shorthand/longhand
    cascade behavior. */
 
+/* IDENTITY PASS: rows are raised cards (alternate-base on the panel's
+   base) with an invisible border at rest, 1px apart. */
 QFrame#stackStageRow {{
-    border: 1px solid palette(mid);
-    border-radius: {PANEL_BORDER_RADIUS}px;
-    background-color: palette(base);
-    margin: 2px 0px;
+    border: 1px solid transparent;
+    border-radius: {CONTROL_RADIUS}px;
+    background-color: palette(alternate-base);
+    margin: 1px 0px;
 }}
 
 QFrame#stackStageRow:hover {{
@@ -1127,7 +1192,7 @@ QFrame#stackStageRow[stageSelected="true"]:hover {{
 }}
 
 QFrame#stackStageRow[stageEnabled="false"] {{
-    background-color: palette(window);
+    background-color: palette(base);
 }}
 
 QToolButton#stageEnabledToggle {{
@@ -1141,7 +1206,7 @@ QToolButton#stageEnabledToggle[stageEnabled="true"] {{
 }}
 
 QToolButton#stageEnabledToggle[stageEnabled="false"] {{
-    color: palette(mid);
+    color: {_HINT_TEXT};
 }}
 
 QLabel#stageLabel[stageEnabled="false"] {{
@@ -1157,7 +1222,7 @@ QToolButton#stageDeleteButton {{
     font-weight: 700;
     font-size: 13px;
     min-width: 18px;
-    color: palette(mid);
+    color: {_HINT_TEXT};
 }}
 
 QToolButton#stageDeleteButton:hover {{
@@ -1169,14 +1234,17 @@ QToolButton#stageDeleteButton:hover {{
    "snappier and more interactive" pass. A muted pill rather than an
    accent color -- it's a label, not a status indicator, so it shouldn't
    compete with the selection/branch accents above. */
+/* IDENTITY PASS: was palette(mid) on alternate-base -- grey on grey,
+   unreadable. Now secondary text in the mono face on the darkest tier. */
 QLabel#stageKindBadge {{
-    font-size: 9px;
-    font-weight: 700;
-    color: palette(mid);
-    background-color: palette(alternate-base);
-    border-radius: 3px;
-    padding: 1px 4px;
-    min-width: 22px;
+    font-family: "{MONO_FONT_FAMILY}";
+    font-size: 10px;
+    font-weight: 500;
+    color: {_HINT_TEXT};
+    background-color: {_FIELD_BG};
+    border-radius: 4px;
+    padding: 1px 5px;
+    min-width: 24px;
 }}
 
 /* Matte-channel letter badge (_StageRowWidget.matte_letter_badge, per
@@ -1204,8 +1272,8 @@ QLabel#stageMatteLetterBadge {{
    rule above) -- this one lives inside an already-busy row, not a
    dedicated form field. */
 QSpinBox#stageOpacitySpin {{
-    font-size: 10px;
-    padding: 1px 2px;
+    font-size: 11px;
+    padding: 1px 4px;
 }}
 
 /* -- Stack Forking (fork_split/fork_merge rows, the branch table) ----- */
@@ -1240,7 +1308,7 @@ QFrame#stackStageRow[stageBranch="b"] {{
    layout glitch, without competing with real stage cards next to it. */
 QFrame#stackForkEmptyCell {{
     border: 1px dashed palette(mid);
-    border-radius: {PANEL_BORDER_RADIUS}px;
+    border-radius: {CONTROL_RADIUS}px;
     background-color: transparent;
 }}
 
@@ -1389,9 +1457,11 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
    sides so the whole image is the tiled "middle" region rather than
    being sliced into corners/edges the way border-image is normally used
    for 9-patch button chrome. */
+/* IDENTITY PASS: flat -- the herringbone texture is retired (the
+   asset stays on disk). Neutral, untextured surround is what you want
+   next to a picture you're judging. */
 QMainWindow {{
     background-color: palette(window);
-    border-image: url("{_HERRINGBONE_TEXTURE}") 0 0 0 0 repeat repeat;
 }}
 
 /* QMainWindow::separator -- the real, documented Qt subcontrol for the
@@ -1413,9 +1483,8 @@ QMainWindow {{
    anymore, see that constant's own comment above for why. */
 QMainWindow::separator {{
     background-color: {_SEPARATOR_DIVIDER};
-    width: 6px;
-    height: 6px;
-    border-radius: 3px;
+    width: 8px;
+    height: 8px;
 }}
 
 /* Viewer SOURCE/RECORD mode TOGGLE (sample_image_panel.py's
@@ -1438,10 +1507,10 @@ QFrame#viewerModeFrame {{
 QToolButton#viewerModeBadge {{
     font-size: 10px;
     font-weight: 700;
-    border-radius: 3px;
-    padding: 1px 6px;
-    max-width: 60px;
-    color: palette(mid);
+    border-radius: 6px;
+    padding: 2px 8px;
+    max-width: 70px;
+    color: {_HINT_TEXT};
     background-color: palette(alternate-base);
 }}
 QToolButton#viewerModeBadge:checked {{

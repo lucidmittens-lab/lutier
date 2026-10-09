@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QApplication, QDockWidget, QHBoxLayout, QLabel, QToolButton, QWidget,
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QFont, QKeySequence
 from PySide6.QtCore import QByteArray, QTimer, Qt
 from panel_frame import PanelFrame
 
@@ -169,6 +169,13 @@ def _build_dock_title_bar(dock, title, corner_widget=None):
     row.setContentsMargins(8, 4, 8, 4)
     label = QLabel(title)
     label.setObjectName("panelTitle")
+    # Small caps label look (style.py IDENTITY PASS): QSS has no
+    # text-transform/letter-spacing, so it's set on the font -- the label's
+    # text() stays "Record", not "RECORD".
+    title_font = label.font()
+    title_font.setCapitalization(QFont.Capitalization.AllUppercase)
+    title_font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 109)
+    label.setFont(title_font)
     row.addWidget(label, stretch=1)
 
     close_button = QToolButton()

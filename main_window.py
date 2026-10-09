@@ -213,7 +213,7 @@ import sys
 from PySide6.QtWidgets import QApplication, QMainWindow
 from PySide6.QtCore import Qt, QTimer, QEvent
 
-from style import STYLESHEET, build_dark_palette
+from style import STYLESHEET, build_dark_palette, register_bundled_fonts, ui_font
 import workspace_io
 import stack as st
 from undo_history import UndoHistory
@@ -577,6 +577,8 @@ def build_window(app):
     # evaluated -- setting our fixed palette first means every one of
     # those references (and any native/unstyled widget this app doesn't
     # explicitly QSS-style) draws from OUR colors, not the OS's.
+    register_bundled_fonts()
+    app.setFont(ui_font())
     app.setPalette(build_dark_palette())
     app.setStyleSheet(STYLESHEET)
     window = MainWindow()

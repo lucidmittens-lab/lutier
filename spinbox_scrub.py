@@ -87,3 +87,6 @@ def enable_drag_to_scrub(spin_box):
     # Hints that the field is horizontally scrubbable, the same way a
     # splitter handle's own cursor hints that IT can be dragged.
     spin_box.lineEdit().setCursor(Qt.CursorShape.SizeHorCursor)
+    # style.py hides the up/down arrows on spin boxes carrying this
+    # property: dragging (plus the wheel and keyboard) replaces them.
+    spin_box.setProperty("scrubbable", True)

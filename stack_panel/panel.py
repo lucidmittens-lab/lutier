@@ -299,7 +299,7 @@ class StackPanel(LutInspectorMixin, DrtInspectorMixin, CdlInspectorMixin,
         self.pipeline_label = QLabel()
         self.pipeline_label.setObjectName("stackPipelineLabel")
         self.pipeline_label.setWordWrap(True)
-        self.pipeline_label.setStyleSheet(f"color: {HINT_TEXT_HEX}; font-size: 10px;")
+        self.pipeline_label.setStyleSheet(f"color: {HINT_TEXT_HEX}; font-size: 11px;")
         layout.addWidget(self.pipeline_label)
 
         # _StackListWidget (not plain QListWidget) -- adds card-style rows
@@ -341,7 +341,7 @@ class StackPanel(LutInspectorMixin, DrtInspectorMixin, CdlInspectorMixin,
         # reliably map to "error" the way highlight/mid/link do.
         self.bake_error_label = QLabel()
         self.bake_error_label.setWordWrap(True)
-        self.bake_error_label.setStyleSheet("color: #d9534f; font-size: 10px;")
+        self.bake_error_label.setStyleSheet("color: #e5655f; font-size: 11px;")
         self.bake_error_label.hide()
         layout.addWidget(self.bake_error_label)
 
@@ -800,7 +800,7 @@ class StackPanel(LutInspectorMixin, DrtInspectorMixin, CdlInspectorMixin,
         for text in ("Branch A", "Branch B"):
             label = QLabel(text)
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setStyleSheet(f"color: {HINT_TEXT_HEX}; font-size: 10px; font-weight: 600;")
+            label.setStyleSheet(f"color: {HINT_TEXT_HEX}; font-size: 11px; font-weight: 600;")
             layout.addWidget(label, stretch=1)
         item.setSizeHint(header.sizeHint())
         self.list_widget.addItem(item)

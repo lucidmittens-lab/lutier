@@ -84,6 +84,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 import media_cache
 import timecode as tc_module
 from media_library import MEDIA_ENTRY_DRAG_MIME_TYPE
+import style
 
 MIN_PIXELS_PER_FRAME = 0.02  # a multi-hour Timeline still gets SOME width per frame, never truly zero
 MAX_PIXELS_PER_FRAME = 200.0  # zooming in further than individual frames being huge blocks isn't useful
@@ -662,7 +663,7 @@ class TimelineTrackWidget(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        painter.fillRect(self.rect(), QColor("#141414"))  # _DARK_BASE, see style.py
+        painter.fillRect(self.rect(), QColor(style._DARK_BASE))
 
         clips = self._clips()
         track = self._track_rect()
@@ -700,10 +701,10 @@ class TimelineTrackWidget(QWidget):
     def _paint_ruler(self, painter, track):
         total = self.timeline.total_frame_count() if self.timeline else 0
         frame_rate = self.timeline.frame_rate if self.timeline else 0
-        painter.fillRect(QRect(0, 0, self.width(), RULER_HEIGHT), QColor("#1a1a1c"))  # _DARK_DARK
-        painter.setPen(QColor("#4d4d53"))  # _DARK_MID
-        font = QFont()
-        font.setPixelSize(9)
+        painter.fillRect(QRect(0, 0, self.width(), RULER_HEIGHT), QColor(style._DARK_WINDOW))
+        painter.setPen(QColor(style._DARK_MID))
+        font = QFont(style.MONO_FONT_FAMILY)
+        font.setPixelSize(10)
         painter.setFont(font)
         origin_x = self._origin_x()
         for frame in ruler_tick_frames(total, frame_rate, self._pixels_per_frame):
@@ -713,7 +714,7 @@ class TimelineTrackWidget(QWidget):
             painter.drawText(int(x) + 2, RULER_HEIGHT - 6, label)
 
     def _paint_empty_hint(self, painter, track):
-        painter.setPen(QColor("#BDBDBD"))  # _HINT_TEXT
+        painter.setPen(QColor(style._HINT_TEXT))
         painter.drawText(track, Qt.AlignmentFlag.AlignCenter, "No clips -- Add to Timeline / Add to Sequence")
 
     def _paint_clip(self, painter, clip, start_frame, end_frame):
@@ -721,7 +722,7 @@ class TimelineTrackWidget(QWidget):
         selected = clip.id == self.selected_clip_id
         being_dragged = clip.id == self._drag_clip_id
 
-        painter.fillRect(rect, QColor("#38383c"))  # _DARK_BUTTON
+        painter.fillRect(rect, QColor(style._DARK_BUTTON))
         png_bytes = media_cache.load_thumbnail(clip.thumbnail) if clip.thumbnail else None
         if png_bytes and rect.width() >= THUMBNAIL_MIN_WIDTH:
             pixmap = QPixmap()
@@ -744,7 +745,7 @@ class TimelineTrackWidget(QWidget):
                     scaled)
                 painter.restore()
 
-        border_color = self.palette().highlight().color() if selected else QColor("#4d4d53")  # _DARK_MID
+        border_color = self.palette().highlight().color() if selected else QColor(style._DARK_MID)
         pen = painter.pen()
         pen.setColor(border_color)
         pen.setWidth(2 if selected else 1)
@@ -758,10 +759,10 @@ class TimelineTrackWidget(QWidget):
         if rect.width() >= THUMBNAIL_LABEL_MIN_WIDTH:
             label_rect = QRectF(rect.left(), rect.bottom() - 16, rect.width(), 16)
             painter.fillRect(label_rect, QColor(0, 0, 0, 170))
-            painter.setPen(QColor("#e6e6e9"))  # _TEXT_PRIMARY
+            painter.setPen(QColor(style._TEXT_PRIMARY))
             font = QFont()
-            font.setPixelSize(9)
-            font.setBold(True)
+            font.setPixelSize(10)
+            font.setWeight(QFont.Weight.DemiBold)
             painter.setFont(font)
             kind_glyph = "🎬" if clip.media_kind == "video" else "🖼"
             text = f"{kind_glyph} {clip.name}"

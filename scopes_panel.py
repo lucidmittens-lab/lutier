@@ -299,7 +299,7 @@ class ScopesPanel(QWidget):
 
     def _build_waveform_view(self):
         self.waveform_plot = pg.PlotWidget()
-        self.waveform_plot.setBackground((15, 15, 18))
+        self.waveform_plot.setBackground((17, 17, 17))  # style._DARK_WINDOW, neutral
         self.waveform_plot.setLabel("bottom", "X position")
         self.waveform_plot.setLabel("left", "Level")
         self.waveform_plot.setMouseEnabled(x=False, y=False)
@@ -356,7 +356,7 @@ class ScopesPanel(QWidget):
 
     def _build_vectorscope_view(self):
         self.vectorscope_plot = pg.PlotWidget()
-        self.vectorscope_plot.setBackground((15, 15, 18))
+        self.vectorscope_plot.setBackground((17, 17, 17))  # style._DARK_WINDOW, neutral
         self.vectorscope_plot.setAspectLocked(True)
         self.vectorscope_plot.setMouseEnabled(x=False, y=False)
         self.vectorscope_plot.hideAxis("bottom")

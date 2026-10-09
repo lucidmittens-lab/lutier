@@ -37,6 +37,19 @@ DATA_FILES = [
         ],
     ),
     (
+        # IBM Plex (SIL OFL), registered at startup by
+        # style.register_bundled_fonts().
+        'assets/fonts',
+        [
+            'assets/fonts/IBMPlexSans-Regular.ttf',
+            'assets/fonts/IBMPlexSans-Medium.ttf',
+            'assets/fonts/IBMPlexSans-SemiBold.ttf',
+            'assets/fonts/IBMPlexMono-Regular.ttf',
+            'assets/fonts/IBMPlexMono-Medium.ttf',
+            'assets/fonts/OFL.txt',
+        ],
+    ),
+    (
         # Bundle root ('' -> Contents/Resources directly), matching where
         # this file already sits relative to setup.py in source -- not
         # under 'assets' above, since it isn't one of this app's runtime
