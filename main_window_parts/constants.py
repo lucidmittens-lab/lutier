@@ -29,7 +29,8 @@ visibility) and the default workspace state.
 # Shift+0 exception past position 9) -- unchanged by the docking
 # migration, still matches docs/USER_MANUAL.md/help_text.py's shortcut table.
 # IDENTITY PASS (2026-10-09): the default workspace is the grading screen
-# from the chosen mockup -- Record, Stack, Parameters, Scopes. Every other
+# from the chosen mockup -- Record, the Timeline's thumbnail strip, Stack,
+# Parameters, Scopes. Every other
 # panel starts hidden (one click away in the Workspace menu / Shift+N) and
 # keeps its default slot for when it's shown.
 PANEL_TOGGLES_LEFT = [
@@ -52,7 +53,9 @@ PANEL_TOGGLES_RIGHT = [
 # it lands on the already-documented Shift+0 fallback (position 10) above
 # instead of bumping every existing Shift+1..9 assignment down by one.
 PANEL_TOGGLES_TIMELINE = [
-    ("timeline_toggle", "Timeline", "timeline_frame", False),
+    # Shown by default since the Thumbnails view (2026-10-09): the
+    # grading screen's clip navigator, a slim band under the viewer.
+    ("timeline_toggle", "Timeline", "timeline_frame", True),
     # Source viewer (Tom, 2026-10-05: "we must have both source and record
     # windows") -- appended last so every existing Shift+N panel toggle
     # keeps its number.

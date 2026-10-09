@@ -153,6 +153,21 @@ Record" on a Media Library item (grading without a timeline).
 `insert_clip_at_record_frame` / `overwrite_clip_at_record_frame` /
 `append_clip`.
 
+## Timeline
+
+The Timeline panel has two views, switched by **Timeline | Thumbnails**
+under it. **Thumbnails** (the default) shows each clip as a card: its
+thumbnail, number, record timecode and name. The clip under the playhead
+has its number in the accent colour, the selected clip is outlined, and
+a dot marks clips that carry their own grade. Click a card to select that
+clip and jump to its first frame. **Timeline** shows the same clips as
+time-proportional blocks for editing: drag to reorder, drag a clip's
+edge to trim, split at the playhead (S), zoom and scroll.
+
+**Source:** `timeline_panel.py` (both views, the shared selection),
+`timeline_thumbnail_strip.py` (Thumbnails), `timeline_track_widget.py`
+(Timeline).
+
 ## Viewer
 
 The source image preview, before/after wipe compare. Two roles:
@@ -500,8 +515,10 @@ Every panel can be **dragged by its title bar** to rearrange the whole
 workspace freely — drop it against any edge of another panel to place it
 there, drop it onto another panel's title bar to tab the two together, or
 drag it out into open space to pop it into its own floating window. There
-is no fixed layout to fight against; the arrangement described panel-by-
-panel above is only where LUTier starts, not a constraint.
+is no fixed layout to fight against. LUTier starts with the grading
+screen: Record, the Timeline (as thumbnails), the Stack, Parameters and
+Scopes. Every other panel is in the **Workspace** menu (or Shift+its
+number) and opens in its own default spot.
 
 Every panel can also be shown/hidden from the **Workspace** menu (or its
 own Shift+1 through Shift+9 shortcut), and every panel's "☰" button in

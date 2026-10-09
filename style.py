@@ -818,6 +818,13 @@ QPushButton#segmentButton:disabled {{
     color: {_DARK_MID};
 }}
 
+/* The Timeline's Thumbnails view (timeline_thumbnail_strip.py): the
+   scroll area's viewport beyond the last card matches the strip. */
+QScrollArea#thumbnailStripScroll,
+QScrollArea#thumbnailStripScroll > QWidget#qt_scrollarea_viewport {{
+    background-color: palette(base);
+}}
+
 /* The Viewer's "Fit 47%  ·  Wipe off" readout in the transport bar. */
 QLabel#viewerReadout {{
     font-family: "{MONO_FONT_FAMILY}";

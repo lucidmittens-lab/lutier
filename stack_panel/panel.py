@@ -99,7 +99,7 @@ from PySide6.QtCore import Qt, QObject, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidgetItem,
     QPushButton, QLabel, QMessageBox, QFrame, QToolButton, QMenu,
-    QButtonGroup, QScrollArea,
+    QButtonGroup, QScrollArea, QSizePolicy,
 )
 
 import stack as st
@@ -374,6 +374,7 @@ class StackPanel(LutInspectorMixin, DrtInspectorMixin, CdlInspectorMixin,
         # / #segmentButton), not two separate ghost buttons.
         segmented = QFrame()
         segmented.setObjectName("segmentedControl")
+        segmented.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         segmented_layout = QHBoxLayout(segmented)
         segmented_layout.setContentsMargins(2, 2, 2, 2)
         segmented_layout.setSpacing(2)

@@ -24,7 +24,7 @@ from panel_frame import PanelFrame
 _DEFAULT_COLUMN_FRACTIONS = (0.16, 0.60, 0.24)
 # Same idea down each column, top to bottom.
 _DEFAULT_LEFT_FRACTIONS = (0.31, 0.23, 0.23, 0.23)      # Browser / Media Libraries / LUT Library / Galleries
-_DEFAULT_CENTER_FRACTIONS = (0.52, 0.24, 0.24)          # Viewer / Stack / Timeline
+_DEFAULT_CENTER_FRACTIONS = (0.52, 0.23, 0.25)          # Viewer / Timeline / Stack
 _DEFAULT_RIGHT_FRACTIONS = (0.30, 0.32, 0.38)           # Parameters / Scopes / Graph
 
 
@@ -299,17 +299,14 @@ class DockMixin:
         self.splitDockWidget(self.image_library_frame, self.lut_library_frame, Qt.Orientation.Vertical)
         self.splitDockWidget(self.lut_library_frame, self.stack_memories_frame, Qt.Orientation.Vertical)
 
-        # center column: Viewer / Stack / Timeline, top to bottom -- per
-        # Tom, "put timeline bottom center so it has more real estate":
-        # the center column is the widest of the three (700px vs. 260px
-        # for the side columns in the proportions below), and previously
-        # unused space at the bottom of it, so the Timeline moved here
-        # from the bottom of the left column gets both a much wider track
-        # view (more clips/more zoom visible without scrolling) and its
-        # own dedicated vertical space instead of competing for height
-        # with three other left-column panels.
-        self.splitDockWidget(self.sample_image_frame, self.stack_frame, Qt.Orientation.Vertical)
-        self.splitDockWidget(self.stack_frame, self.timeline_frame, Qt.Orientation.Vertical)
+        # center column: Viewer / Timeline / Stack, top to bottom. The
+        # Timeline lives in the widest column (per Tom, "put timeline
+        # bottom center so it has more real estate"); since the Thumbnails
+        # view (2026-10-09) it sits right under the viewer as the grading
+        # screen's clip navigator, Resolve Color-page style, with the Stack
+        # below it.
+        self.splitDockWidget(self.sample_image_frame, self.timeline_frame, Qt.Orientation.Vertical)
+        self.splitDockWidget(self.timeline_frame, self.stack_frame, Qt.Orientation.Vertical)
 
         # right column: Parameters / Scopes / Graph, top to bottom.
         self.splitDockWidget(self.stack_params_frame, self.scopes_frame, Qt.Orientation.Vertical)
@@ -365,7 +362,7 @@ class DockMixin:
             _DEFAULT_COLUMN_FRACTIONS, width, Qt.Orientation.Horizontal)
         fit([self.browser_frame, self.image_library_frame, self.lut_library_frame,
              self.stack_memories_frame], _DEFAULT_LEFT_FRACTIONS, height, Qt.Orientation.Vertical)
-        fit([self.sample_image_frame, self.stack_frame, self.timeline_frame],
+        fit([self.sample_image_frame, self.timeline_frame, self.stack_frame],
             _DEFAULT_CENTER_FRACTIONS, height, Qt.Orientation.Vertical)
         fit([self.stack_params_frame, self.scopes_frame, self.viewer_3d_frame],
             _DEFAULT_RIGHT_FRACTIONS, height, Qt.Orientation.Vertical)

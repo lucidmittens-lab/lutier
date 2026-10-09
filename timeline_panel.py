@@ -79,12 +79,17 @@ with a clip selected removes it.
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QMessageBox, QInputDialog, QToolButton,
-    QMenu, QPlainTextEdit, QScrollBar, QLabel,
+    QMenu, QPlainTextEdit, QScrollBar, QLabel, QStackedWidget, QScrollArea,
+    QFrame, QPushButton, QButtonGroup, QSizePolicy,
 )
 
 import edl as edl_module
 import timeline as tl
 from timeline_track_widget import TimelineTrackWidget
+from timeline_thumbnail_strip import STRIP_HEIGHT, TimelineThumbnailStrip
+
+TIMELINE_VIEW = "timeline"
+THUMBNAILS_VIEW = "thumbnails"
 
 # The EDL sub-panel's own collapsed/expanded max height -- a sub panel,
 # not the main view, so it never grows to dominate the Timeline dock even
@@ -146,6 +151,9 @@ class TimelinePanel(QWidget):
         self._record_frame_getter = None
         self._build_layout()
         self._refresh_list()
+        # The grading screen's navigator by default; the NLE-style track
+        # is one click away (IDENTITY PASS, 2026-10-09).
+        self.set_view_mode(THUMBNAILS_VIEW)
 
     def _build_layout(self):
         layout = QVBoxLayout(self)
@@ -163,7 +171,28 @@ class TimelinePanel(QWidget):
         self.track_widget.context_menu_requested_for_clip.connect(
             self._on_context_menu_requested_for_clip)
         self.track_widget.view_changed.connect(self._refresh_scrollbar)
-        layout.addWidget(self.track_widget, stretch=1)
+
+        # Thumbnails view (timeline_thumbnail_strip.py): the same Timeline
+        # as clip cards, in a horizontal scroll area. The two views are
+        # QStackedWidget pages (CLAUDE.md: switch views with pages, not
+        # setVisible) and share one selection -- see set_view_mode.
+        self.thumbnail_strip = TimelineThumbnailStrip(self.timeline)
+        self.thumbnail_strip.clip_selected.connect(self._on_strip_clip_selected)
+        self.thumbnail_strip.seek_requested.connect(self.seek_requested.emit)
+        self.thumbnail_scroll = QScrollArea()
+        self.thumbnail_scroll.setObjectName("thumbnailStripScroll")
+        self.thumbnail_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.thumbnail_scroll.setWidget(self.thumbnail_strip)
+        self.thumbnail_scroll.setWidgetResizable(False)
+        self.thumbnail_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Room for the whole card (thumbnail + caption) plus the
+        # horizontal scrollbar (style.py: 10px).
+        self.thumbnail_scroll.setMinimumHeight(STRIP_HEIGHT + 12)
+
+        self.view_stack = QStackedWidget()
+        self.view_stack.addWidget(self.track_widget)       # TIMELINE_VIEW
+        self.view_stack.addWidget(self.thumbnail_scroll)   # THUMBNAILS_VIEW
+        layout.addWidget(self.view_stack, stretch=1)
 
         self._build_toolbar_row(layout)
         self._build_edl_subpanel(layout)
@@ -178,6 +207,27 @@ class TimelinePanel(QWidget):
         row = QHBoxLayout()
         row.setContentsMargins(4, 0, 4, 0)
 
+        # Timeline | Thumbnails (style.py's segmented control).
+        segmented = QFrame()
+        segmented.setObjectName("segmentedControl")
+        segmented.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        segmented_layout = QHBoxLayout(segmented)
+        segmented_layout.setContentsMargins(2, 2, 2, 2)
+        segmented_layout.setSpacing(2)
+        self._view_mode_buttons = {}
+        self._view_mode_group = QButtonGroup(self)
+        self._view_mode_group.setExclusive(True)
+        for mode, label in ((TIMELINE_VIEW, "Timeline"), (THUMBNAILS_VIEW, "Thumbnails")):
+            button = QPushButton(label)
+            button.setObjectName("segmentButton")
+            button.setCheckable(True)
+            button.clicked.connect(lambda _checked=False, m=mode: self.set_view_mode(m))
+            self._view_mode_group.addButton(button)
+            segmented_layout.addWidget(button)
+            self._view_mode_buttons[mode] = button
+        row.addWidget(segmented)
+        row.addSpacing(8)
+
         self.timeline_name_label = QLabel()
         self.timeline_name_label.setMaximumWidth(220)
         row.addWidget(self.timeline_name_label)
@@ -188,6 +238,11 @@ class TimelinePanel(QWidget):
         self.unload_button.setToolTip("Unload this timeline (it stays in its Media Library)")
         self.unload_button.clicked.connect(self.unload_timeline)
         row.addWidget(self.unload_button)
+        # Takes the hidden scrollbar's stretch in Thumbnails mode, so the
+        # row's items stay left/right instead of spreading out.
+        self._thumbnails_row_spacer = QWidget()
+        self._thumbnails_row_spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        row.addWidget(self._thumbnails_row_spacer, stretch=1)
         row.addSpacing(8)
 
         self.split_button = QToolButton()
@@ -229,6 +284,10 @@ class TimelinePanel(QWidget):
 
         layout.addLayout(row)
         self._refresh_scrollbar()
+        # Controls that only mean something in the time-proportional view.
+        self._timeline_only_controls = (
+            self.split_button, self.timeline_scrollbar, self.zoom_out_button,
+            self.zoom_fit_button, self.zoom_in_button)
 
     def _refresh_scrollbar(self):
         """Called on every TimelineTrackWidget.view_changed (zoom/scroll/
@@ -350,7 +409,26 @@ class TimelinePanel(QWidget):
 
     def _on_widget_clip_selected(self, clip):
         self._last_selected_clip = clip
+        self.thumbnail_strip.set_selected_clip_id(clip.id if clip is not None else None)
         self.clip_selected.emit(clip)
+
+    def _on_strip_clip_selected(self, clip):
+        """A card clicked in the Thumbnails view: select the same clip in
+        the track view (without it re-emitting) and report it once."""
+        self.track_widget.set_selected_clip_id(clip.id)
+        self._on_widget_clip_selected(clip)
+
+    def view_mode(self):
+        return TIMELINE_VIEW if self.view_stack.currentIndex() == 0 else THUMBNAILS_VIEW
+
+    def set_view_mode(self, mode):
+        """TIMELINE_VIEW (time-proportional track, trims, zoom) or
+        THUMBNAILS_VIEW (clip cards -- the grading screen's navigator)."""
+        self.view_stack.setCurrentIndex(0 if mode == TIMELINE_VIEW else 1)
+        self._view_mode_buttons[mode].setChecked(True)
+        for control in self._timeline_only_controls:
+            control.setVisible(mode == TIMELINE_VIEW)
+        self._thumbnails_row_spacer.setVisible(mode == THUMBNAILS_VIEW)
 
     def set_record_frame_getter(self, getter):
         """Pull-based playhead position source (see refresh_playhead) --
@@ -364,7 +442,14 @@ class TimelinePanel(QWidget):
         Timeline's current record-space position."""
         if self._record_frame_getter is None:
             return
-        self.track_widget.set_playhead_frame(self._record_frame_getter())
+        frame = self._record_frame_getter()
+        self.track_widget.set_playhead_frame(frame)
+        self.thumbnail_strip.set_playhead_frame(frame)
+        current = self.thumbnail_strip.current_clip_index()
+        if current is not None and self.view_mode() == THUMBNAILS_VIEW:
+            rect = self.thumbnail_strip.ensure_visible_rect(current)
+            self.thumbnail_scroll.ensureVisible(
+                int(rect.center().x()), int(rect.center().y()), int(rect.width() / 2) + 8, 0)
 
     def split_at_playhead(self):
         """Splits whichever clip the Timeline's own current RECORD
@@ -539,6 +624,7 @@ class TimelinePanel(QWidget):
         selection if the previously-selected clip no longer exists, and
         fires clip_selected/timeline_changed as needed."""
         self.track_widget.set_timeline(self.timeline)
+        self.thumbnail_strip.set_timeline(self.timeline)
         self._refresh_loaded_state()
         clips = self.timeline.clips if self.timeline is not None else []
         if keep_selection is not None and 0 <= keep_selection < len(clips):
@@ -553,6 +639,7 @@ class TimelinePanel(QWidget):
         # snapshot, since every caller here already mutated self.timeline
         # .clips BEFORE calling this method.
         self._sync_selected_clip()
+        self.thumbnail_strip.set_selected_clip_id(self.track_widget.selected_clip_id)
         self._refresh_edl_text()
         self.timeline_changed.emit()
 
