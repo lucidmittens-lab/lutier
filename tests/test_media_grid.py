@@ -97,8 +97,25 @@ def test_panel_defaults_to_grid_and_grid_selection_drives_the_table():
     print("media panel: Grid by default, selection shared with the table, filter applies -- OK")
 
 
+def test_grid_accepts_dropped_media_files_like_the_table():
+    _app()
+    from PySide6.QtCore import QMimeData, QPointF, QUrl
+    from PySide6.QtGui import QDropEvent
+    panel = MediaPanel()
+    imported = []
+    panel.import_paths = lambda paths, library=None: imported.append(paths)
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile("/fast/media/F003C002_190925_MN99.mxf")])
+    event = QDropEvent(QPointF(20, 20), Qt.DropAction.CopyAction, mime,
+                       Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    panel.grid.dropEvent(event)
+    assert imported == [["/fast/media/F003C002_190925_MN99.mxf"]]
+    print("media grid: dropping a media file imports it, as on the table -- OK")
+
+
 if __name__ == "__main__":
     test_cards_wrap_to_the_width_and_the_height_follows()
     test_click_ctrl_click_and_shift_click_selection()
     test_panel_defaults_to_grid_and_grid_selection_drives_the_table()
+    test_grid_accepts_dropped_media_files_like_the_table()
     print("\nAll media grid tests passed.")

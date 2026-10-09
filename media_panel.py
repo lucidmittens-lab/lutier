@@ -451,6 +451,37 @@ class _MediaTable(QTableWidget):
         return mime
 
 
+class _DropMediaGrid(MediaGrid):
+    """The Grid view, also a drop target for media files (from the
+    Browser or the desktop) -- the same rule and import path as the
+    table's own dropEvent (_dropped_media_paths)."""
+    files_dropped = Signal(list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        if _dropped_media_paths(event, self):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if _dropped_media_paths(event, self):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        paths = _dropped_media_paths(event, self)
+        if paths:
+            event.acceptProposedAction()
+            self.files_dropped.emit(paths)
+        else:
+            event.ignore()
+
+
 class MediaPanel(QWidget):
     load_as_sample_requested = Signal(object)      # a media_library.MediaEntry -- grade it in Record
     open_in_source_requested = Signal(object)      # a media_library.MediaEntry -- view it in Source
@@ -599,7 +630,8 @@ class MediaPanel(QWidget):
         # Grid view (media_grid.py): cards for the table's VISIBLE rows, in
         # the table's order; its selection drives the table's, so every
         # action below runs the same from either view.
-        self.grid = MediaGrid()
+        self.grid = _DropMediaGrid()
+        self.grid.files_dropped.connect(lambda paths: self.import_paths(paths))
         self.grid.selection_changed.connect(self._select_table_rows)
         self.grid.activated.connect(lambda row: self._on_row_double_clicked(self.table.item(row, COLUMN_THUMBNAIL)))
         self.grid.context_menu_requested.connect(
