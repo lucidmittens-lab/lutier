@@ -11,6 +11,7 @@ provenance for the reasoning.
 import json
 import os
 import tempfile
+from pathlib import Path
 
 import av
 import numpy as np
@@ -901,30 +902,38 @@ def test_media_library_video_entry_session_round_trip():
         path = os.path.join(tmp_dir, "clip.mp4")
         _make_test_clip(path, width=16, height=12)
 
-        media_cache.set_cache_dir(None)  # embed-in-session mode for this test
-        thumb = media_cache.store_thumbnail(
-            "test-clip", thumbnail.make_thumbnail_png_bytes(
-                np.zeros((12, 16, 3), dtype=np.float32)))
+        # Keep the real ~/.config/LUTier/media_cache_prefs.json out of it:
+        # set_cache_dir writes that file (it used to reset a user's chosen
+        # cache folder whenever the suite ran).
+        real_prefs_path = media_cache.MEDIA_CACHE_PREFS_PATH
+        media_cache.MEDIA_CACHE_PREFS_PATH = Path(tmp_dir) / "media_cache_prefs.json"
+        try:
+            media_cache.set_cache_dir(None)  # embed-in-session mode for this test
+            thumb = media_cache.store_thumbnail(
+                "test-clip", thumbnail.make_thumbnail_png_bytes(
+                    np.zeros((12, 16, 3), dtype=np.float32)))
 
-        library = MediaLibrary()
-        library.add_entry(MediaEntry(
-            "Clip", path, source_filename="clip.mp4",
-            media_kind="video", frame_count=6, frame_rate=24.0,
-            duration=0.25, thumbnail=thumb))  # no width/height saved -- must be re-probed
+            library = MediaLibrary()
+            library.add_entry(MediaEntry(
+                "Clip", path, source_filename="clip.mp4",
+                media_kind="video", frame_count=6, frame_rate=24.0,
+                duration=0.25, thumbnail=thumb))  # no width/height saved -- must be re-probed
 
-        serialized = json.loads(json.dumps(session_io.media_library_to_session_list(library)))
-        rebuilt_library, warnings = session_io.media_library_from_session_list(serialized)
+            serialized = json.loads(json.dumps(session_io.media_library_to_session_list(library)))
+            rebuilt_library, warnings = session_io.media_library_from_session_list(serialized)
 
-        assert warnings == []
-        assert len(rebuilt_library.entries) == 1
-        rebuilt_entry = rebuilt_library.entries[0]
-        assert rebuilt_entry.is_video is True
-        assert rebuilt_entry.frame_count == 6
-        assert rebuilt_entry.frame_rate == 24.0
-        assert rebuilt_entry.duration == 0.25
-        assert rebuilt_entry.thumbnail == thumb
-        assert (rebuilt_entry.width, rebuilt_entry.height) == (16, 12)
-        assert not hasattr(rebuilt_entry, "array")
+            assert warnings == []
+            assert len(rebuilt_library.entries) == 1
+            rebuilt_entry = rebuilt_library.entries[0]
+            assert rebuilt_entry.is_video is True
+            assert rebuilt_entry.frame_count == 6
+            assert rebuilt_entry.frame_rate == 24.0
+            assert rebuilt_entry.duration == 0.25
+            assert rebuilt_entry.thumbnail == thumb
+            assert (rebuilt_entry.width, rebuilt_entry.height) == (16, 12)
+            assert not hasattr(rebuilt_entry, "array")
+        finally:
+            media_cache.MEDIA_CACHE_PREFS_PATH = real_prefs_path
     print("media_library_to_session_list/media_library_from_session_list: "
           "a video entry round-trips its media_kind/metadata/thumbnail, "
           "re-probing width/height from stream metadata with no frame "
