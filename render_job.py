@@ -18,17 +18,24 @@ snapshotted when the job is queued. Editing the grade afterwards doesn't
 change a queued job, like Resolve's render queue. "Working space" output
 skips the display transform (for VFX pulls).
 
-The CPU path only (stack.apply_stack_to_image_array): the CPU is the
-truth, and it runs off the UI thread. Frames are resized to the item's
-size the way Export Video always has (image_io.resize_array, a stretch;
-the project canvas is normally the source's aspect). The stack clips to
+GPU OR CPU. run_job grades on the GPU when handed a
+gpu_frame_renderer.GpuFrameRenderer and the segment's stack is
+GPU-eligible, and on the CPU (stack.apply_stack_to_image_array, the
+truth the GPU is tested against) otherwise. Either way decode runs a few
+frames ahead on its own thread and writing a few frames behind on
+another, so decode, grade and encode overlap. Frames are resized to the
+item's size before grading, the way Export Video always has
+(image_io.resize_array, a stretch; the project canvas is normally the
+source's aspect; the GPU's Lanczos matches it). Output is clipped to
 [0,1], so 32-bit float output is display-range too.
 
 Image sequences are written as <dir>/<name>/<name>.<frame>.<ext>, frames
 numbered from 0 (the record frame), seven digits.
 """
 import os
+import queue
 import re
+import threading
 from dataclasses import dataclass, field
 
 import id_counter
@@ -161,6 +168,8 @@ class RenderJob:
     status: str = QUEUED
     frames_done: int = 0
     error: str = ""
+    engine: str = ""   # "GPU", "CPU" or "GPU + CPU", once rendering
+    prefer_gpu: bool = True
 
     @property
     def frames_total(self):
@@ -288,50 +297,164 @@ def _fit(array, item):
     return array
 
 
-def _segment_frames(segment, item):
-    """Yields each of `segment`'s graded frames, sized for `item`."""
-    if segment.media_kind == "video":
-        source = video_source.VideoSource(segment.source_path)
+# Frames decoded ahead of grading, and graded frames waiting to be
+# written: enough to keep decode, grade and encode all busy at once
+# without holding much memory (a 4K float frame is ~100 MB).
+PIPELINE_DEPTH = 3
+_END = object()
+
+
+def _decoded_frames(segment, raw):
+    """Yields `segment`'s source frames, in order (a still: its one image,
+    once). `raw` = the decoder's uint16 samples, for the GPU."""
+    if segment.media_kind != "video":
+        yield image_io.read_image_as_array(segment.source_path)[0]
+        return
+    source = video_source.VideoSource(segment.source_path)
+    try:
+        for i in range(segment.frame_count):
+            array = (source.seek_to_frame(segment.in_frame, raw=raw) if i == 0
+                     else source.decode_next_frame(raw=raw))
+            if array is None:
+                raise RuntimeError(
+                    f"{segment.name}: the source ended at frame {segment.in_frame + i}")
+            yield array
+    finally:
+        source.close()
+
+
+def _prefetch(frames, depth=PIPELINE_DEPTH):
+    """Runs the `frames` generator on its own thread, `depth` frames
+    ahead; re-raises its errors here. Closing this generator stops it."""
+    out = queue.Queue(maxsize=depth)
+    stop = threading.Event()
+
+    def produce():
         try:
-            for i in range(segment.frame_count):
-                array = (source.seek_to_frame(segment.in_frame) if i == 0
-                         else source.decode_next_frame())
-                if array is None:
-                    raise RuntimeError(
-                        f"{segment.name}: the source ended at frame {segment.in_frame + i}")
-                yield st.apply_stack_to_image_array(segment.stack, _fit(array, item))
+            for frame in frames:
+                while not stop.is_set():
+                    try:
+                        out.put(frame, timeout=0.1)
+                        break
+                    except queue.Full:
+                        continue
+                if stop.is_set():
+                    break
+            item = _END
+        except BaseException as e:  # noqa: BLE001 -- handed to the consumer
+            item = e
         finally:
-            source.close()
-    else:
-        array, _depth = image_io.read_image_as_array(segment.source_path)
-        graded = st.apply_stack_to_image_array(segment.stack, _fit(array, item))
-        for _ in range(segment.frame_count):
-            yield graded
+            frames.close()
+        while not stop.is_set():
+            try:
+                out.put(item, timeout=0.1)
+                return
+            except queue.Full:
+                continue
+
+    thread = threading.Thread(target=produce, name="render-decode", daemon=True)
+    thread.start()
+    try:
+        while True:
+            item = out.get()
+            if item is _END:
+                return
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+    finally:
+        stop.set()
+        thread.join()
 
 
-def run_job(job, progress=None, should_cancel=None):
+class _BackgroundWriter:
+    """Writes frames on its own thread, `depth` behind; write errors are
+    raised from the next put() or finish()."""
+
+    def __init__(self, writer, depth=PIPELINE_DEPTH):
+        self._writer = writer
+        self._queue = queue.Queue(maxsize=depth)
+        self._error = None
+        self._thread = threading.Thread(target=self._run, name="render-encode", daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        while True:
+            frame = self._queue.get()
+            if frame is _END:
+                return
+            if self._error is None:
+                try:
+                    self._writer.write_frame(frame)
+                except BaseException as e:  # noqa: BLE001 -- raised on the render thread
+                    self._error = e
+
+    def put(self, frame):
+        if self._error is not None:
+            raise self._error
+        self._queue.put(frame)
+
+    def finish(self):
+        """Waits for every queued frame, then closes the writer."""
+        self._queue.put(_END)
+        self._thread.join()
+        self._writer.close()
+        if self._error is not None:
+            raise self._error
+
+
+def run_job(job, progress=None, should_cancel=None, gpu=None):
     """Renders every item of `job`, in order, and sets job.status (DONE,
     CANCELLED or FAILED with job.error). `progress(frames_done,
     frames_total)` after each frame; `should_cancel()` is checked before
     each. A cancelled or failed movie is still closed, so what was
-    written so far plays. Safe to call from any thread."""
+    written so far plays.
+
+    `gpu` (a gpu_frame_renderer.GpuFrameRenderer, current on THIS thread)
+    grades every segment whose stack it can_render; the rest, or all of
+    it with no `gpu`, grade on the CPU. job.engine says which ran. Decode
+    and writing run on threads of their own either way, so the three
+    overlap. Call from any one thread (the GPU's, with `gpu`)."""
     job.status, job.frames_done, job.error = RENDERING, 0, ""
+    engines = []
     total = job.frames_total
     try:
         for item in job.items:
-            writer = _open_writer(item)
+            output = _BackgroundWriter(_open_writer(item))
             try:
                 for segment in item.segments:
-                    for graded in _segment_frames(segment, item):
-                        if should_cancel is not None and should_cancel():
-                            job.status = CANCELLED
-                            return job.status
-                        writer.write_frame(graded)
-                        job.frames_done += 1
-                        if progress is not None:
-                            progress(job.frames_done, total)
+                    on_gpu = gpu is not None and gpu.can_render(segment.stack)
+                    engine = "GPU" if on_gpu else "CPU"
+                    if engine not in engines:
+                        engines.append(engine)
+                        job.engine = " + ".join(engines)
+                    held = None   # a still is graded once and held
+                    frames = _prefetch(_decoded_frames(segment, raw=on_gpu))
+                    try:
+                        for index in range(segment.frame_count):
+                            if should_cancel is not None and should_cancel():
+                                job.status = CANCELLED
+                                return job.status
+                            if held is None:
+                                frame = next(frames, None)
+                                if frame is None:
+                                    raise RuntimeError(f"{segment.name}: no frame {index}")
+                                if on_gpu:
+                                    graded = gpu.render(segment.stack, frame, item.width, item.height)
+                                else:
+                                    graded = st.apply_stack_to_image_array(segment.stack, _fit(frame, item))
+                                if segment.media_kind != "video":
+                                    held = graded
+                            else:
+                                graded = held
+                            output.put(graded)
+                            job.frames_done += 1
+                            if progress is not None:
+                                progress(job.frames_done, total)
+                    finally:
+                        frames.close()
             finally:
-                writer.close()
+                output.finish()
     except Exception as e:  # noqa: BLE001 -- the queue shows any failure on the job
         job.status, job.error = FAILED, str(e) or type(e).__name__
         return job.status

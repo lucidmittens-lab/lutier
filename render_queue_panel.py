@@ -9,10 +9,14 @@ All renders every queued job in order; Stop cancels the one rendering
 (what it wrote so far is kept). Failed and cancelled jobs can be queued
 again; finished ones cleared. The queue lives for the session only.
 
-Rendering uses render_job.run_job on a QThread -- the CPU path, the same
-"own VideoSource, signals back to bound methods" shape as Export Video's
+Rendering uses render_job.run_job on a QThread, the same "own
+VideoSource, signals back to bound methods" shape as Export Video's
 _VideoExportWorker (see main_window_parts/export_video.py on why bound
-methods, not lambdas). Call shutdown() before the window closes.
+methods, not lambdas). On the GPU when the job prefers it and GL works:
+the worker makes its own gpu_frame_renderer context, current on the
+render thread (the offscreen surface is made here, on the GUI thread);
+a stack the GPU can't run, or no GL, renders on the CPU. Each card says
+which ran. Call shutdown() before the window closes.
 """
 import os
 
@@ -23,6 +27,7 @@ from PySide6.QtWidgets import (
     QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
+import gpu_frame_renderer as gfr
 import render_job as rj
 
 
@@ -30,18 +35,29 @@ class _RenderWorker(QObject):
     progress = Signal(int, int, int)   # job id, frames done, frames total
     finished = Signal(int)              # job id (status is on the job)
 
-    def __init__(self, job):
+    def __init__(self, job, surface):
         super().__init__()
         self._job = job
+        self._surface = surface
         self._cancel = False
 
     def request_cancel(self):
         self._cancel = True
 
     def run(self):
-        rj.run_job(self._job,
-                   progress=lambda done, total: self.progress.emit(self._job.id, done, total),
-                   should_cancel=lambda: self._cancel)
+        gpu = None
+        if self._job.prefer_gpu and self._surface is not None:
+            try:
+                gpu = gfr.GpuFrameRenderer(self._surface)  # current on this thread
+            except RuntimeError:
+                gpu = None  # no usable GL: the CPU renders it
+        try:
+            rj.run_job(self._job,
+                       progress=lambda done, total: self.progress.emit(self._job.id, done, total),
+                       should_cancel=lambda: self._cancel, gpu=gpu)
+        finally:
+            if gpu is not None:
+                gpu.close()
         self.finished.emit(self._job.id)
 
 
@@ -99,7 +115,7 @@ class _JobCard(QWidget):
 
     def update_from(self, job):
         self.name_label.setText(job.name)
-        self.status_label.setText(job.status)
+        self.status_label.setText(f"{job.status} · {job.engine}" if job.engine else job.status)
         self.status_label.setProperty("state", job.status.lower())
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
@@ -128,6 +144,7 @@ class RenderQueuePanel(QWidget):
         self._thread = None
         self._worker = None
         self._current = None
+        self._surface = None   # the GPU renderer's offscreen surface (GUI thread)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -249,8 +266,10 @@ class RenderQueuePanel(QWidget):
         self._current = job
         job.status = rj.RENDERING
         self._cards[job.id].update_from(job)
+        if job.prefer_gpu and self._surface is None and gfr.gpu_rendering_possible():
+            self._surface = gfr.make_offscreen_surface()
         self._thread = QThread(self)
-        self._worker = _RenderWorker(job)
+        self._worker = _RenderWorker(job, self._surface)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_progress)

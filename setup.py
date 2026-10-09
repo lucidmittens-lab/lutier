@@ -169,6 +169,7 @@ OPTIONS = {
         'grading_primary',
         'grading_rgb_curve',
         'grading_tone',
+        'gpu_frame_renderer',
         'help_text',
         'hidpi',
         'hover_inspector',

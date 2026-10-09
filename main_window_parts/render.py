@@ -138,4 +138,4 @@ class RenderMixin:
             if answer != QMessageBox.StandardButton.Yes:
                 return
         name = items[0].name if len(items) == 1 else f"{items[0].name} + {len(items) - 1}"
-        self.render_queue_panel.add_job(rj.RenderJob(name, items))
+        self.render_queue_panel.add_job(rj.RenderJob(name, items, prefer_gpu=request.prefer_gpu))

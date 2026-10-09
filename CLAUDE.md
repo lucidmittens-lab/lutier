@@ -41,7 +41,9 @@ grep for the method name.
   `gpu_ocio_dynamic` (OCIO dynamic-uniform kinds), one `gpu_*_shader.py` per
   special kind (`cdl`, `lut`, `aces_drt`, `custom_drt`, `printer_lights`,
   `color_warper`, `matte_shaders`, `fork_merge`), `gpu_lanczos_compositor`
-  (scaling and wipe compositing).
+  (scaling and wipe compositing), `gpu_frame_renderer` (the Render
+  Queue's GPU engine: its own offscreen context on the render thread,
+  never the Viewer's).
 - **UI shell:** `main_window` (the entry point, `python3 main_window.py`:
   `MainWindow.__init__`, its Qt event overrides, `main()`), whose methods live
   in `main_window_parts/` mixins: `docks`, `layout` (`_build_layout`),
@@ -145,8 +147,8 @@ A healthy Linux run has 0 failures: the 8 tests in
 `test_airplay_output_sink.py` need macOS and PyObjC, and skip elsewhere.
 Known intermittent:
 `test_video_playback_controller.py::test_tick_notifies_scopes_for_a_gpu_eligible_stack`
-failed once in about 25 parallel runs (2026-10-09: two Scopes results where it
-expects one, the second from a later frame). The cause isn't pinned down: a
+has failed twice in about 30 parallel runs (2026-10-09: two Scopes results
+where it expects one, the second from a later frame). The cause isn't pinned down: a
 1 ms playback timer, a slow Scopes worker and a long event-loop wait all
 failed to reproduce it. If it recurs, rerun it alone before suspecting a change.
 

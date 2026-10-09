@@ -5,6 +5,7 @@ suggested layout, beside Record and the Render Queue.
 
   Source       Timeline | Current Clip
   Output       Single File | Individual Clips   (a timeline only)
+  Engine       GPU | CPU
   Format       ProRes 4444, H.264, EXR/DPX/TIFF/PNG sequences
   Bit Depth    what the format can carry
   Size         Project | Source
@@ -43,6 +44,7 @@ class RenderRequest:
     as_viewed: bool = True
     directory: str = ""
     name_template: str = rj.DEFAULT_NAME_TEMPLATE
+    prefer_gpu: bool = True
 
 
 def _default_directory():
@@ -113,6 +115,11 @@ class RenderSettingsPanel(QWidget):
         self.bit_depth_combo.currentIndexChanged.connect(lambda _i: changed())
         self.size_control = _Segmented(((False, "Project"), (True, "Source")), changed)
         self.colour_control = _Segmented(((True, "As Viewed"), (False, "Working Space")), changed)
+        self.engine_control = _Segmented(((True, "GPU"), (False, "CPU")), changed)
+        self.engine_control.buttons[True].setToolTip(
+            "Grade on the graphics card. Grades the GPU can't run yet render on the CPU")
+        self.engine_control.buttons[False].setToolTip(
+            "Grade on the CPU: the reference path, slower")
         self.colour_control.buttons[True].setToolTip(
             "What Record shows: input transform, grade and the project's display transform")
         self.colour_control.buttons[False].setToolTip(
@@ -134,7 +141,8 @@ class RenderSettingsPanel(QWidget):
         tokens.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
         self._section(layout, "Render", [("Source", self.source_control),
-                                         ("Output", self.output_control)])
+                                         ("Output", self.output_control),
+                                         ("Engine", self.engine_control)])
         self._section(layout, "Image", [("Format", self.format_combo),
                                          ("Bit Depth", self.bit_depth_combo),
                                          ("Size", self.size_control),
@@ -197,7 +205,8 @@ class RenderSettingsPanel(QWidget):
             use_source_size=self.size_control.value(),
             as_viewed=self.colour_control.value(),
             directory=self.directory_edit.text().strip(),
-            name_template=self.name_edit.text())
+            name_template=self.name_edit.text(),
+            prefer_gpu=self.engine_control.value())
 
     def set_request(self, request):
         """Restores the controls from `request` (e.g. a saved session)."""
@@ -211,6 +220,7 @@ class RenderSettingsPanel(QWidget):
             self.bit_depth_combo.setCurrentIndex(index)
         self.size_control.set_value(bool(request.use_source_size))
         self.colour_control.set_value(bool(request.as_viewed))
+        self.engine_control.set_value(bool(request.prefer_gpu))
         if request.directory:
             self.directory_edit.setText(request.directory)
         self.name_edit.setText(request.name_template or rj.DEFAULT_NAME_TEMPLATE)

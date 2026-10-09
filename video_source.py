@@ -75,7 +75,7 @@ class VideoSource:
             return max(1, round(seconds * self.frame_rate))
         return 0
 
-    def decode_next_frame(self, max_dimension=None):
+    def decode_next_frame(self, max_dimension=None, raw=False):
         """Decodes and returns the NEXT frame in stream order as an
         (H,W,3) float32 [0,1] array, or None at end of stream. Advances
         this source's own internal decode position -- callers that need
@@ -95,9 +95,9 @@ class VideoSource:
         except StopIteration:
             return None
         frame = self._downscale_frame(frame, max_dimension)
-        return self._frame_to_array(frame)
+        return self._frame_to_array(frame, raw)
 
-    def seek_to_frame(self, index, max_dimension=None):
+    def seek_to_frame(self, index, max_dimension=None, raw=False):
         """Repositions decoding so THIS call returns frame `index`
         directly (unlike decode_next_frame, which only ever advances).
         Seeks to the nearest keyframe at or before `index` (PyAV/ffmpeg's
@@ -130,7 +130,7 @@ class VideoSource:
         for frame in self._decoder:
             if frame.pts is not None and frame.pts >= target_pts:
                 frame = self._downscale_frame(frame, max_dimension)
-                return self._frame_to_array(frame)
+                return self._frame_to_array(frame, raw)
         return None
 
     @staticmethod
@@ -145,8 +145,14 @@ class VideoSource:
             frame = frame.reformat(width=new_w, height=new_h)
         return frame
 
-    def _frame_to_array(self, frame):
+    def _frame_to_array(self, frame, raw=False):
+        """(H,W,3) float32 [0,1], or with `raw` the decoder's own uint16
+        rgb48 samples (0..65535) -- for the GPU render path
+        (gpu_frame_renderer.py), which uploads them as-is and lets the
+        texture unit normalise, a third of the float array's size."""
         rgb = frame.to_ndarray(format="rgb48le")
+        if raw:
+            return rgb
         return rgb.astype(np.float32) * np.float32(1.0 / 65535.0)
 
     def close(self):

@@ -649,6 +649,11 @@ Set up a job in **Render Settings**, press **Add to Render Queue**, then
   selected on the Timeline, or else whatever is loaded in Record). A
   timeline renders as a **Single File** or as **Individual Clips**, one
   file per clip.
+- **Engine:** **GPU** grades on the graphics card, in its own context,
+  so Record stays free while it renders. A clip whose grade uses
+  something the GPU can't run yet renders on the CPU instead; each job
+  says which ran (GPU, CPU, or GPU + CPU). **CPU** always uses the
+  reference path, which is slower.
 - **Format:** ProRes 4444 or H.264 movies, or EXR, DPX, TIFF or PNG
   sequences. **Bit Depth** lists what the format can carry.
 - **Size:** the **Project** canvas, or each clip's **Source** size.
@@ -667,16 +672,16 @@ frames, the size and the format. Files that already exist, or are already
 queued, are only replaced after you confirm.
 
 A job keeps the grades as they were when it was queued, so you can carry
-on grading while it renders. The queue renders one job at a time, on the
-CPU (the exact path, not the Viewer's GPU preview). **Stop** cancels the
+on grading while it renders. The queue renders one job at a time;
+decoding, grading and writing overlap. **Stop** cancels the
 job rendering and keeps what it wrote so far. Right-click a job to show
 it in the file manager, queue a stopped or failed one again, remove it,
 or clear finished jobs. The queue lasts for the session. Audio isn't
 rendered yet.
 
 **Source:** `render_settings_panel.py`, `render_queue_panel.py`,
-`render_job.py` (planning and the render loop) and
-`main_window_parts/render.py`.
+`render_job.py` (planning and the render loop), `gpu_frame_renderer.py`
+(the GPU engine) and `main_window_parts/render.py`.
 
 ## Export
 
