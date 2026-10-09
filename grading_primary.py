@@ -2,7 +2,7 @@
 grading_primary.py -- Qt-free backend for OCIO's GradingPrimaryTransform:
 pivot-based lift/gamma/gain-shaped primary grading, OCIO's own real-time-
 editing-oriented grading tool -- see
-OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md for why this was added:
+docs/archive/OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md for why this was added:
 cdl.py's role in this app is standard/interchange ASC CDL support
 specifically, not the primary grading tool.
 

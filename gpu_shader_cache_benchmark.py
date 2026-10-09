@@ -1,5 +1,5 @@
 """
-gpu_shader_cache_benchmark.py -- GPU_ACCELERATION_PLAN_2026-08-08.md,
+gpu_shader_cache_benchmark.py -- docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md,
 STAGE 3 deliverable: "a benchmark showing shader-generation cost is paid
 once per distinct stage configuration, not once per frame/edit."
 

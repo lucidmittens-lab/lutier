@@ -1,5 +1,5 @@
 """
-gpu_shader_cache.py -- GPU_ACCELERATION_PLAN_2026-08-08.md, STAGE 3.
+gpu_shader_cache.py -- docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md, STAGE 3.
 
 Caches compiled GPU shader programs per distinct stage configuration, so
 editing one stage doesn't force regenerating/recompiling every stage's
@@ -13,7 +13,7 @@ per his own Resolve reference.
 
 TWO DIFFERENT CACHING NEEDS, because Stage 2 found the two OCIO-backed
 stage kinds this app uses interactively behave differently under OCIO's
-GPU codegen (see GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 2 findings):
+GPU codegen (see docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 2 findings):
 
 - ACES DRT (and, by the same reasoning, plain colorspace stages): OCIO
   bakes working-colourspace/display/view as GLSL constants, and those

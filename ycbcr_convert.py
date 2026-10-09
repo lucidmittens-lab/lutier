@@ -21,8 +21,8 @@ convention scaled by 4x for 10-bit, per BT.709/BT.601's own N-bit
 generalization -- black=16*2^(N-8), white=235*2^(N-8), chroma
 center=128*2^(N-8)). Deliberately NOT attempting BT.2020/PQ HDR matrix
 selection or HDR metadata (mastering display / content light level)
-signaling here -- that's real additional scope (see VIEWER_CASTING_
-PLAN_2026-08-11.md's own "not attempted" list), and would need a real
+signaling here -- that's real additional scope (see docs/archive/
+VIEWER_CASTING_PLAN_2026-08-11.md's own "not attempted" list), and would need a real
 AirPlay HDR receiver to verify against, which this environment doesn't
 have. This module's SDR path is what airplay_output_sink.py uses today;
 an ACES DRT HDR Viewer output would still cast through this same BT.709

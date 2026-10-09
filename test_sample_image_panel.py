@@ -2,7 +2,7 @@
 directly: python3 test_sample_image_panel.py
 
 Covers the 2026-08-09 rework (see that module's "PREVIEW RESOLUTION"
-comment and GPU_ACCELERATION_PLAN_2026-08-08.md's "band-aid" note) AND
+comment and docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md's "band-aid" note) AND
 its 2026-08-10 follow-up (see SCOPES_MAX_DIMENSION's own comment):
 
 - A GPU-INELIGIBLE stack (e.g. containing a fork) behaves exactly
@@ -259,7 +259,7 @@ def test_empty_stack_previews_the_source_image_unchanged():
 
 
 def test_gpu_eligible_stack_always_gets_full_resolution_even_mid_burst():
-    """GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 5: a GPU-eligible stack
+    """docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 5: a GPU-eligible stack
     (this test's CDL-only stack qualifies, see gpu_stack_renderer.
     is_stack_gpu_eligible) is graded by WipeCompareWidget itself, on the
     GPU, which is fast regardless of an edit burst -- so

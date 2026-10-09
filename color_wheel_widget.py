@@ -17,7 +17,7 @@ situation as wipe_compare_widget.py: the underlying math (balance
 projection, geometry conversion, signal emission) is exercised headlessly
 via real QWidget/QPainter/QMouseEvent objects (this sandbox's Qt DOES
 construct and paint under QT_QPA_PLATFORM=offscreen -- see
-KNOWN_GOOD_SUMMARY_2026-07-23.md), but whether the gradient actually
+docs/archive/KNOWN_GOOD_SUMMARY_2026-07-23.md), but whether the gradient actually
 *looks* like a usable color wheel, and whether dragging feels right, needs
 a real display and a real mouse. Please drag it around and say whether the
 hue/desaturation gradient and puck size read clearly before treating the

@@ -1,5 +1,5 @@
 """
-gpu_fork_merge_shader.py -- GPU_ACCELERATION_PLAN_2026-08-08.md, STAGE 6.
+gpu_fork_merge_shader.py -- docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md, STAGE 6.
 
 The one hand-written (non-OCIO) shader gpu_stack_renderer.py's fork
 support needs. fork_merge is a pure texture blend -- OCIO has no

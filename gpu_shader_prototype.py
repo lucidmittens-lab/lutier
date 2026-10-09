@@ -1,5 +1,5 @@
 """
-gpu_shader_prototype.py -- GPU_ACCELERATION_PLAN_2026-08-08.md, STAGE 2.
+gpu_shader_prototype.py -- docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md, STAGE 2.
 
 TWO ROLES NOW, not just the original one (stale claim fixed in code
 review: this docstring used to say "standalone script, NOT wired into

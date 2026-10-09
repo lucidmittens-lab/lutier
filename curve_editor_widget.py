@@ -1,7 +1,7 @@
 """
 curve_editor_widget.py -- CurveEditorWidget: a draggable-control-point
 curve editor for a 'grading_rgb_curve' stage's four channel curves (see
-grading_rgb_curve.py, and OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md's
+grading_rgb_curve.py, and docs/archive/OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md's
 Stage 5). Same "Qt-free math as plain functions + thin QWidget paint/drag
 layer" split every other interactive control in this app uses (see
 color_wheel_widget.py's own docstring) -- kept as free functions in THIS

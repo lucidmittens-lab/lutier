@@ -4097,7 +4097,7 @@ class StackPanel(QObject):
 
     def _build_grading_tone_inspector(self):
         """Largest of the four Tier 1 inspectors (5 ranges x 6 fields each,
-        see OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md's own note on
+        see docs/archive/OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md's own note on
         this) -- one compact QGroupBox row per range (R/G/B/M gain +
         Start/Width, all on one line) built from a shared loop rather than
         5 hand-laid-out sections, same "don't repeat the widget-building

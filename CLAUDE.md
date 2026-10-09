@@ -135,7 +135,7 @@ PyObjC, and fail on Linux.
   (see `test_undo_debounce.py`). Use `tempfile`, never fixed `/tmp/...`
   paths.
 - **The manual lives in two places.** `help_text.USER_MANUAL_MARKDOWN` is what
-  Help > Manual shows, and it is the current copy. `USER_MANUAL.md` has
+  Help > Manual shows, and it is the current copy. `docs/USER_MANUAL.md` has
   drifted since 2026-08-16. Update both by hand.
 
 ## Don't do this (learned the hard way)
@@ -166,12 +166,20 @@ PyObjC, and fail on Linux.
   `rebuild_gl_view`, reset the items to `None` before reassigning `gl_view`.
   `GLLinePlotItem` colours are floats from 0 to 1. Switch views with
   `QStackedWidget` pages, not `setVisible`, or the panel resizes.
+- **Widget lifetime:** after `deleteLater()`, keep a Python reference until
+  Qt deletes the widget (`_pending_gl_view_deletions`). Otherwise the GC can
+  free it first, and you get a double free.
+- **Colour spaces:** colour-science's registry names are ambiguous for
+  working spaces (some entries are gamut-only). Decode and encode through
+  OCIO with `aces_drt.decode_to_linear`/`encode_from_linear`.
 - **Docks:** `addDockWidget`/`splitDockWidget` don't redock a floating dock;
   dock floating panels first (`_dock_all_floating_panels`). Restore floating
   state after the event loop starts (`QTimer.singleShot`), never
   synchronously in `__init__`.
 - **Styling:** `palette(placeholder-text)` is lost after polish, so use the
-  literal `style.HINT_TEXT_HEX`. Custom-painted widgets fill their own
+  literal `style.HINT_TEXT_HEX`. A plain `QWidget` or `QDockWidget` ignores
+  QSS backgrounds and rounded corners unless `WA_StyledBackground` is set.
+  Custom-painted widgets fill their own
   background. Check colours by pixel-sampling `grab()`, not by eye.
   Panels darker than the gaps between them is intentional.
 - **Frozen app:** never find data files via `__file__`; use the
@@ -186,12 +194,12 @@ PyObjC, and fail on Linux.
   it matches your own shell; kill by PID. If a run pollutes
   `~/.config/LUTier/workspace.json`, delete it.
 
-## History
+## History and docs
 
-The long-form dev log is `RUNNING.md` (entries #1 to #69, through
-2026-08-08). Later history is in git. Dated checkpoints and plans:
-`KNOWN_GOOD_SUMMARY_*.md`, `ARCHITECTURE_OVERVIEW_2026-08-10.md`,
-`GPU_ACCELERATION_PLAN_2026-08-08.md`,
-`OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md`,
-`VIEWER_CASTING_PLAN_2026-08-11.md`. Builds: `BUILD_ON_LINUX.md`,
-`BUILD_ON_MAC.md`.
+- `RUNNING.md`: the long-form dev log, entries #1 to #69, through
+  2026-08-08. Later history is in git.
+- `docs/`: `BUILD_ON_LINUX.md`, `BUILD_ON_MAC.md`, `USER_MANUAL.md`.
+- `docs/archive/`: dated checkpoints (`KNOWN_GOOD_SUMMARY_*`), the
+  architecture overview, the GPU, OCIO Tier 1 and viewer-casting plans, the
+  cleanup notes, and the dock-tabify bug report. Many module docstrings cite
+  these plans by stage, for example "GPU_ACCELERATION_PLAN Stage 5".

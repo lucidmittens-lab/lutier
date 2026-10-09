@@ -29,7 +29,7 @@ is the one that actually gets a clean feed: drag this window onto that
 new screen and fullscreen it there, and the receiver shows ONLY this
 window's content. This module does not (yet) automate that drag/
 fullscreen step -- Tom explicitly declined that follow-up for now (see
-VIEWER_CASTING_PLAN_2026-08-11.md).
+docs/archive/VIEWER_CASTING_PLAN_2026-08-11.md).
 
 WHAT THIS MODULE ACTUALLY DOES -- opens a small, dedicated, chrome-free
 native NSWindow (title "LUTier — Independent Viewer") whose content is an
@@ -49,7 +49,7 @@ rather than assumed possible without checking either time.
 VERIFIED END TO END IN THIS ENVIRONMENT (no AirPlay receiver available
 here, so real wireless casting itself is NOT verified -- see this
 module's own is_available()/manual-testing notes and
-VIEWER_CASTING_PLAN_2026-08-11.md):
+docs/archive/VIEWER_CASTING_PLAN_2026-08-11.md):
   - CVPixelBufferCreate with kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
     succeeds, reports 2 planes at the expected 4:2:0 dimensions, and its
     own PixelFormatDescription metadata (BitsPerComponent=10, plane 0

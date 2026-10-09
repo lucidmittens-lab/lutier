@@ -125,7 +125,7 @@ from casting_controller import CastingController
 from airplay_output_sink import AirPlayOutputSink
 
 # PREVIEW RESOLUTION (2026-08-09 rework, see RUNNING.md and
-# GPU_ACCELERATION_PLAN_2026-08-08.md's "band-aid" note) -- Sample/
+# docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md's "band-aid" note) -- Sample/
 # Reference now always load at NATIVE resolution (max_dimension=None to
 # load_image_as_array), no capped preview size and no reactive zoom/
 # resize-triggered reload. WipeCompareWidget's own _image_rect() already

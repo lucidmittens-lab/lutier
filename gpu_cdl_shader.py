@@ -1,11 +1,11 @@
 """
-gpu_cdl_shader.py -- GPU_ACCELERATION_PLAN_2026-08-08.md, STAGE 3.
+gpu_cdl_shader.py -- docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md, STAGE 3.
 
 A hand-written, uniform-driven GLSL implementation of ASC CDL SOP+SAT,
 used INSTEAD OF routing CDL through OCIO's own GPU codegen the way
 aces_drt/colorspace stages do (see gpu_shader_cache.py). This is a
 deliberate, explicit choice made in Stage 2 (see
-GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 2 findings), not a shortcut:
+docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 2 findings), not a shortcut:
 
 - `getDefaultGPUProcessor()` bakes CDL's slope/offset/power/sat as
   literal GLSL constants (measured 0 uniforms) -- fine for a stage whose
@@ -14,7 +14,7 @@ GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 2 findings), not a shortcut:
   continuously-dragged sliders (see stack_panel.py's
   enable_drag_to_scrub usage on the CDL spin boxes). Measured cost of
   regenerating+recompiling per edit: ~0.95ms/edit (see
-  GPU_ACCELERATION_PLAN_2026-08-08.md) -- not catastrophic, but a real,
+  docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md) -- not catastrophic, but a real,
   fully avoidable cost on the one control in this app already built for
   smooth continuous scrubbing.
 - The alternative OCIO offers for real-time-editable GPU parameters,
@@ -28,7 +28,7 @@ GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 2 findings), not a shortcut:
   preserving its exact, well-known formula matters more here than it
   would for an app-original grading feature -- GradingPrimaryTransform is
   a real candidate for a FUTURE, separate, additional stage kind of its
-  own (flagged in GPU_ACCELERATION_PLAN_2026-08-08.md's backlog), not a
+  own (flagged in docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md's backlog), not a
   replacement for this one.
 
 THE FORMULA BELOW IS COPIED, NOT REINVENTED: both branches (CDL_NO_CLAMP

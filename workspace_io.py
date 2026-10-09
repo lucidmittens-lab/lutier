@@ -69,12 +69,12 @@ def _default_workspace_dir():
     fixed, not user-chosen (see DEFAULT_WORKSPACE_DIR's own docstring
     below on what lives here). Per Tom, 2026-10-03: "make it more
     similar to a typical NLE" / work natively on x86 Linux, not just
-    macOS (see BUILD_ON_LINUX.md) -- this used to be unconditionally
+    macOS (see docs/BUILD_ON_LINUX.md) -- this used to be unconditionally
     the macOS path, which still worked fine functionally on another OS
     (Path.home() / "Library" / ... is a legal, if un-idiomatic, path
     anywhere), but wasn't OS-idiomatic there. Now:
       - macOS: ~/Library/Application Support/LUTier (unchanged, matches
-        the packaged .app's own convention, see BUILD_ON_MAC.md).
+        the packaged .app's own convention, see docs/BUILD_ON_MAC.md).
       - Linux: the XDG Base Directory spec's config home
         ($XDG_CONFIG_HOME, falling back to ~/.config per the spec's own
         default) / LUTier.

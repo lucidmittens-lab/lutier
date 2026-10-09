@@ -1,6 +1,6 @@
 """
 gpu_printer_lights_shader.py -- GPU path for "printer_lights" stages,
-following GPU_ACCELERATION_PLAN_2026-08-08.md's own established pattern
+following docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md's own established pattern
 for a stage kind that needs work beyond a single OCIO-generated shader.
 
 WHAT THIS BUILDS: printer_lights.py's own apply_printer_lights_in_working_

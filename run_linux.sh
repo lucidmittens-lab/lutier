@@ -1,5 +1,5 @@
 #!/bin/bash
-# Dev launcher for Linux (see BUILD_ON_LINUX.md). Uses the repo's .venv.
+# Dev launcher for Linux (see docs/BUILD_ON_LINUX.md). Uses the repo's .venv.
 #   ./run_linux.sh            run the app on the real display/GPU
 #   ./run_linux.sh test [...] run the pytest suite offscreen (extra args go to pytest)
 set -euo pipefail

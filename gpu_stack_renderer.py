@@ -1,5 +1,5 @@
 """
-gpu_stack_renderer.py -- GPU_ACCELERATION_PLAN_2026-08-08.md, STAGE 5.
+gpu_stack_renderer.py -- docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md, STAGE 5.
 
 Renders an entire eligible stack.Stack chain on the GPU, at native
 resolution, by running Stage 2/3's per-stage-kind compiled programs
@@ -25,7 +25,7 @@ to have present -- render_chain simply skips them, same "disabled ->
 exact no-op" contract stack._apply_single_stage_with_opacity already
 guarantees on CPU.
 
-FORK SUPPORT (GPU_ACCELERATION_PLAN_2026-08-08.md Stage 6, 2026-08-12) --
+FORK SUPPORT (docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md Stage 6, 2026-08-12) --
 fork_split/fork_merge no longer disqualify a stack outright. Mirrors
 _run_stages' own bookkeeping (stack.py, "STACK FORKING") closely enough
 to stay correct against it: nested forks are still NOT eligible (same
@@ -65,7 +65,7 @@ GPU-ineligible kind -- is_stack_gpu_eligible checks both conditions
 itself rather than deferring to gpu_lut_shader for the retarget check.
 
 "grading_primary"/"exposure_contrast"/"grading_tone"/"grading_rgb_curve"
-(added per OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md) use a
+(added per docs/archive/OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md) use a
 DIFFERENT caching mechanism than "cdl"/"aces_drt"/"colorspace":
 gpu_ocio_dynamic.OcioDynamicGpuStageCache, fingerprinted on style ONLY
 (not on the live brightness/contrast/gamma/exposure/curve-points/etc.

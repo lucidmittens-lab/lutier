@@ -613,7 +613,7 @@ def test_empty_stack_is_a_no_op():
     print("GpuStackRenderer: an empty stack returns the image unchanged -- OK")
 
 
-# ---- Fork rendering (GPU_ACCELERATION_PLAN_2026-08-08.md Stage 6) ---------
+# ---- Fork rendering (docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md Stage 6) ---------
 # fork_split/fork_merge, the one remaining CPU-only holdout, now render via
 # gpu_fork_merge_shader.py's dedicated 3-texture blend pass -- see
 # gpu_stack_renderer.render_chain's own docstring for exactly how the

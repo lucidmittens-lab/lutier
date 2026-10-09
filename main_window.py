@@ -13,7 +13,7 @@ nine panels below is now a real QDockWidget that can be dragged to any
 edge of the window, dragged into/out of another panel's spot, tabbed with
 a neighbor, or torn off into a floating window, all via Qt's own built-in
 docking mechanics rather than anything hand-rolled here. See
-KNOWN_GOOD_SUMMARY_2026-07-24-6.md for the pre-migration checkpoint and
+docs/archive/KNOWN_GOOD_SUMMARY_2026-07-24-6.md for the pre-migration checkpoint and
 RUNNING.md's newest entry for the full writeup (including what changed
 underneath vs. what's UNVERIFIED ON REAL HARDWARE -- this sandbox has no
 real window manager, so the actual drag/tab/tear-off gestures themselves
@@ -300,7 +300,7 @@ EXPORT_FORMATS = [
 # Position in this list is still what determines each panel's Shift+N /
 # Cmd+Shift+N shortcut digit (see _build_menu_bar's docstring on the
 # Shift+0 exception past position 9) -- unchanged by the docking
-# migration, still matches USER_MANUAL.md/help_text.py's shortcut table.
+# migration, still matches docs/USER_MANUAL.md/help_text.py's shortcut table.
 PANEL_TOGGLES_LEFT = [
     ("browser_toggle", "Browser", "browser_frame", True),
     ("image_library_toggle", "Media Libraries", "image_library_frame", True),
@@ -1839,7 +1839,7 @@ class MainWindow(QMainWindow):
 
         # ---- Help menu: Manual (per Tom) -- see _show_manual_dialog. Text
         # comes from help_text.USER_MANUAL_MARKDOWN, a plain Python string
-        # constant, not a runtime read of USER_MANUAL.md -- see that
+        # constant, not a runtime read of docs/USER_MANUAL.md -- see that
         # module's docstring for why (same frozen-app resource-path class
         # of bug default_sample_image_path hit).
         help_menu = menu_bar.addMenu("&Help")
@@ -3857,7 +3857,7 @@ def main():
     # too. MUST be set before QApplication is constructed -- Qt reads it
     # exactly once, at that point.
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
-    # NOTE for GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 5: no
+    # NOTE for docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 5: no
     # QSurfaceFormat override is set here on purpose. wipe_compare_
     # widget.py's own GPU pipeline targets GLSL 1.20/OpenGL 2.1
     # Compatibility Profile specifically because that's what this Mac's

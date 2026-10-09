@@ -1,7 +1,7 @@
 """Tests for gpu_ocio_dynamic.py -- run directly:
 python3 test_gpu_ocio_dynamic.py
 
-Turns OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md's own "Ground
+Turns docs/archive/OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md's own "Ground
 truth" validation (done ad hoc while writing that plan) into a permanent,
 repeatable check: for each of the four Tier 1 dynamic OCIO transforms
 (GradingPrimary, GradingRGBCurve, ExposureContrast, GradingTone), builds

@@ -62,7 +62,7 @@ STAGE 1 (2026-08-08, superseded by the above) -- this widget first became
 a QOpenGLWidget while paintEvent stayed plain QPainter drawing, fed
 CPU-computed QPixmaps, as a deliberately isolated first step (rendering-
 surface swap only, no color-math change) -- see
-GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 1. Left here for history since
+docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 1. Left here for history since
 the reasoning (reparent-safety via isValid(), AA_ShareOpenGLContexts)
 still applies to this file, just layered with real GL rendering now.
 

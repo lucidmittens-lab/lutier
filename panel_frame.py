@@ -13,7 +13,7 @@ existing widget into this frame's layout, so all external references
 keep working exactly as before. Only the TOP-LEVEL visibility toggle in
 MainWindow needs to target the frame instead of the raw widget.
 
-SIMPLIFIED 2026-07-25 (see CLEANUP_AND_PERF_OBSERVATIONS_2026-07-25.md)
+SIMPLIFIED 2026-07-25 (see docs/archive/CLEANUP_AND_PERF_OBSERVATIONS_2026-07-25.md)
 -- this class used to also build its own title row (a `title` string
 label, an optional right-aligned `corner_widget`, both matching style.py's
 `#panelTitleRow`/`#panelTitle` object names). That capability predated

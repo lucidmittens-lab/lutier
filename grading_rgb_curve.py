@@ -2,7 +2,7 @@
 grading_rgb_curve.py -- Qt-free backend for OCIO's GradingRGBCurveTransform:
 four independent B-spline curves (red/green/blue/master) mapping input
 value -> output value per channel, OCIO's own real-time-editing-oriented
-curve-grading tool -- see OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md,
+curve-grading tool -- see docs/archive/OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md,
 Stage 5.
 
 Same three GradingStyle variants as grading_primary.py/grading_tone.py

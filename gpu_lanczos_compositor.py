@@ -1,5 +1,5 @@
 """
-gpu_lanczos_compositor.py -- GPU_ACCELERATION_PLAN_2026-08-08.md, STAGE 5.
+gpu_lanczos_compositor.py -- docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md, STAGE 5.
 
 Replaces WipeCompareWidget's old QPainter.drawPixmap (bilinear
 SmoothPixmapTransform) scaling with a GPU Lanczos-3 resample, and folds

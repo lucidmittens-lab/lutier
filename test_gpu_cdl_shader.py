@@ -103,7 +103,7 @@ def test_handwritten_cdl_shader_matches_cpu_apply_cdl():
             delta = np.abs(cpu_result.astype(np.float64) - gpu_result.astype(np.float64))
             worst = max(worst, delta.max())
             # Same tolerance class as Stage 2's CPU-vs-OCIO-GPU numbers
-            # (GPU_ACCELERATION_PLAN_2026-08-08.md) -- float32 GPU math vs.
+            # (docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md) -- float32 GPU math vs.
             # this app's CPU path, not a bit-exact requirement.
             assert delta.max() < 1e-3, (
                 f"style={style!r} params={params!r}: hand-written CDL shader "

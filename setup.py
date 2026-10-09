@@ -2,7 +2,7 @@
 py2app build config for LUTier.
 
 This MUST be run on macOS -- py2app cannot cross-compile a .app bundle from
-another OS. See BUILD_ON_MAC.md in this folder for the exact steps.
+another OS. See docs/BUILD_ON_MAC.md for the exact steps.
 
 Build with:
     python3 setup.py py2app
@@ -86,7 +86,7 @@ OPTIONS = {
         # OpenImageIO above.
         'av',
         # PyObjC -- airplay_output_sink.py's AirPlay casting window (see
-        # VIEWER_CASTING_PLAN_2026-08-11.md). Same 'packages' (not
+        # docs/archive/VIEWER_CASTING_PLAN_2026-08-11.md). Same 'packages' (not
         # 'includes') reasoning as PySide6/PyOpenColorIO above: these are
         # compiled extension modules, not plain .py files -- without this,
         # a frozen build would still LAUNCH fine (airplay_output_sink.py's
@@ -111,8 +111,8 @@ OPTIONS = {
     # Regenerated 2026-07-25 by walking main_window.py's actual import
     # graph (ast-parsed, not eyeballed) rather than hand-maintained --
     # this list had drifted: it still named 'collapsible_section' (a
-    # dead file, deleted this same pass -- see CLEANUP_AND_PERF_
-    # OBSERVATIONS_2026-07-25.md) and was missing 13 modules the app
+    # dead file, deleted this same pass -- see docs/archive/
+    # CLEANUP_AND_PERF_OBSERVATIONS_2026-07-25.md) and was missing 13 modules the app
     # genuinely imports transitively (cdl/cdl_file_io/cdl_library,
     # color_balance/color_wheel_widget,
     # colorspace_convert, floating_dialog, lut_library/
@@ -194,7 +194,7 @@ OPTIONS = {
     # Intel and Apple Silicon, but needs universal2 wheels for numpy/scipy --
     # confirmed 2026-08-08 that the installed numpy/scipy wheels are arm64-only
     # (single-arch), so that build fails here. Building single-arch (whatever
-    # this machine is) instead; see BUILD_ON_MAC.md for how to get universal2
+    # this machine is) instead; see docs/BUILD_ON_MAC.md for how to get universal2
     # wheels if wider distribution is needed later.
     # Generate this with make_icon.sh from a square source PNG. Comment
     # this line out (or leave AppIcon.icns missing) to build with the

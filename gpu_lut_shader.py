@@ -1,5 +1,5 @@
 """
-gpu_lut_shader.py -- GPU_ACCELERATION_PLAN_2026-08-08.md, STAGE 4.
+gpu_lut_shader.py -- docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md, STAGE 4.
 
 Routes a plain (non-OCIO) "lut" stage's 3D LUT through OCIO's own
 Lut3DTransform GPU codegen, rather than hand-writing a 3D-texture

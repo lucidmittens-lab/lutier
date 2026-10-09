@@ -24,7 +24,7 @@ attribute exactly once, at that point -- so it's set here at import
 time: pytest always imports conftest.py before collecting/running any
 test module in this directory, ahead of any test's own _app() call.
 
-GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 5 note: this project's own
+docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 5 note: this project's own
 GPU shaders (gpu_shader_prototype.py, gpu_cdl_shader.py,
 gpu_lanczos_compositor.py) deliberately target GLSL 1.20/OpenGL 2.1
 Compatibility Profile, NOT a newer Core Profile -- confirmed on real
@@ -41,7 +41,7 @@ future reader doesn't "helpfully" add one back.
 
 ALSO excludes the GPU-acceleration project's own test files from normal
 `pytest -q` collection (see collect_ignore below) -- discovered while
-building GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 3: those tests each
+building docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 3: those tests each
 create/tear down their own real QOffscreenSurface/QOpenGLContext (see
 gpu_shader_prototype._make_offscreen_gl_context), and running them in the
 SAME process as test_undo_debounce.py's real MainWindow (with its own

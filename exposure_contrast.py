@@ -1,7 +1,7 @@
 """
 exposure_contrast.py -- Qt-free backend for OCIO's ExposureContrastTransform:
 exposure/contrast/gamma, OCIO's own real-time-editing-oriented exposure
-tool -- see OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md, Stage 3.
+tool -- see docs/archive/OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md, Stage 3.
 
 Three ExposureContrastStyle variants exist (see AVAILABLE_STYLES), exposed
 as a stage param (style dropdown), same pattern as grading_primary.py's

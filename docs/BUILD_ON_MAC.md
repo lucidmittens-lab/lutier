@@ -37,7 +37,7 @@ chmod +x make_icon.sh
 ./make_icon.sh AppIcon_source.png
 ```
 
-`AppIcon_source.png` is already in this folder (the ribbon-with-echoes
+`AppIcon_source.png` is already in the repo root (the ribbon-with-echoes
 design, 1024x1024). This produces `AppIcon.icns` using `sips`/`iconutil`
 (built into macOS, nothing to install). `setup.py` already points at
 `AppIcon.icns` -- if the icon changes again later, just rerun this command

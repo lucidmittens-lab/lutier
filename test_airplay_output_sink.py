@@ -5,7 +5,7 @@ Requires a real macOS process with PyObjC + the AVFoundation/AVKit/
 CoreMedia/Quartz framework bindings installed (see that module's own
 docstring) -- this is NOT verifying actual wireless AirPlay casting to a
 receiver (no receiver hardware available in this environment, see
-VIEWER_CASTING_PLAN_2026-08-11.md), only that the real CVPixelBuffer ->
+docs/archive/VIEWER_CASTING_PLAN_2026-08-11.md), only that the real CVPixelBuffer ->
 CMSampleBuffer -> AVSampleBufferDisplayLayer pipeline and the native
 NSWindow lifecycle both work correctly end to end.
 

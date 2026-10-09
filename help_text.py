@@ -1,6 +1,6 @@
 """
 help_text.py -- the in-app Help > Manual text, as a plain Python string
-constant rather than something read from USER_MANUAL.md at runtime.
+constant rather than something read from docs/USER_MANUAL.md at runtime.
 
 That's a deliberate choice, not laziness: app_logic.default_sample_image_path
 already taught this codebase the hard way that a bundled data FILE's path
@@ -12,11 +12,11 @@ class of bug entirely: once this module is imported, the text is just an
 in-memory Python object, whether running from source or from the frozen
 .app, no path resolution involved at all.
 
-TRADE-OFF: this is a second copy of USER_MANUAL.md's content, not a live
-read of that file -- editing USER_MANUAL.md alone will NOT update what
+TRADE-OFF: this is a second copy of docs/USER_MANUAL.md's content, not a live
+read of that file -- editing docs/USER_MANUAL.md alone will NOT update what
 Help > Manual shows in the app. Keep USER_MANUAL_MARKDOWN below in sync by
-hand whenever USER_MANUAL.md changes. (An alternative would be a build-time
-step that generates this file FROM USER_MANUAL.md rather than hand-copying
+hand whenever docs/USER_MANUAL.md changes. (An alternative would be a build-time
+step that generates this file FROM docs/USER_MANUAL.md rather than hand-copying
 -- not done here since the manual doesn't change often enough to justify
 the extra moving part, but worth reconsidering if that stops being true.)
 
@@ -24,7 +24,7 @@ Rendered via QTextBrowser.setMarkdown() (see main_window.py's Help menu),
 which is why this is kept as real Markdown (headers, bold, a table) rather
 than plain text.
 
-2026-08-12: resynced after USER_MANUAL.md's Stack Forking section picked
+2026-08-12: resynced after docs/USER_MANUAL.md's Stack Forking section picked
 up the enable-toggle glyph change (checkmark/cross -> filled/hollow dot)
 and the opacity control's relocation (below the list -> built into each
 row), both part of the Stack panel's "snappier and more interactive"

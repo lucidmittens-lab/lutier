@@ -1,5 +1,5 @@
 """
-gpu_ocio_dynamic.py -- OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md, STAGE 1.
+gpu_ocio_dynamic.py -- docs/archive/OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md, STAGE 1.
 
 Shared GPU plumbing for OCIO's "dynamic" transform family --
 GradingPrimaryTransform, GradingRGBCurveTransform, GradingToneTransform,
@@ -38,7 +38,7 @@ parameter values: the whole point of makeDynamic() is that the compiled
 shader's STRUCTURE (and therefore its uniform declarations) doesn't
 change when a slider moves, only the VALUES pushed into those uniforms
 do -- caching on live values would recompile on every edit and
-reintroduce exactly the cost GPU_ACCELERATION_PLAN_2026-08-08.md's Stage
+reintroduce exactly the cost docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md's Stage
 3 eliminated for CDL/ACES DRT. The fingerprint itself is the caller's
 responsibility (a (kind, style) tuple, or whatever else genuinely affects
 shader STRUCTURE for that kind) -- this module only knows how to build

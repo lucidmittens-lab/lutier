@@ -3,7 +3,7 @@ grading_tone.py -- Qt-free backend for OCIO's GradingToneTransform:
 print-style tone shaping across 5 overlapping ranges (blacks/shadows/
 midtones/highlights/whites), each an independent R/G/B/Master gain plus
 its own start/width along the tone curve, plus a single S-contrast
-scalar -- see OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md, Stage 4.
+scalar -- see docs/archive/OCIO_TIER1_GRADING_OPERATORS_PLAN_2026-08-09.md, Stage 4.
 
 Same three GradingStyle variants as grading_primary.py (see
 AVAILABLE_STYLES), same "log" default for the same reason (matches
