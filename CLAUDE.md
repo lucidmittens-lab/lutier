@@ -13,8 +13,11 @@ product owner.
 App modules are flat in the repo root (about 100 of them), except the
 `stack_panel/`, `sample_image_panel/` and `main_window_parts/` packages (see
 the module map). The 97 `test_*.py` files and `conftest.py` are in `tests/`;
-test data is in `samples/` at the root. Each module's docstring explains its purpose and history; read it
-before editing the module.
+test data is in `samples/` at the root. Each module's docstring explains its
+purpose and history; read it before editing the module. Older comments and
+docstrings still say `main_window.py`, `stack_panel.py` or
+`sample_image_panel.py` for code that has since moved into those packages;
+grep for the method name.
 
 ## Module map
 
@@ -132,7 +135,12 @@ Slowest tests (about 1 to 1.6 s each) are LUT bakes and resamples in
 check with `--durations=20`.
 
 Known failure: the 7 tests in `test_airplay_output_sink.py` need macOS and
-PyObjC, and fail on Linux.
+PyObjC, and fail on Linux. Known intermittent:
+`test_video_playback_controller.py::test_tick_notifies_scopes_for_a_gpu_eligible_stack`
+failed once in about 25 parallel runs (2026-10-09: two Scopes results where it
+expects one, the second from a later frame). The cause isn't pinned down: a
+1 ms playback timer, a slow Scopes worker and a long event-loop wait all
+failed to reproduce it. If it recurs, rerun it alone before suspecting a change.
 
 ## Conventions
 
@@ -170,8 +178,10 @@ PyObjC, and fail on Linux.
   helper that builds the QApplication, and an `if __name__ == "__main__"`
   runner. Anything that constructs `MainWindow` must first redirect
   `workspace_io.DEFAULT_WORKSPACE_DIR`/`DEFAULT_WORKSPACE_PATH` to a temp dir
-  (see `test_undo_debounce.py`). Use `tempfile`, never fixed `/tmp/...`
-  paths.
+  (see `test_undo_debounce.py`), and anything that saves prefs must redirect
+  that file too (e.g. `media_cache.MEDIA_CACHE_PREFS_PATH`). Check with a run
+  under `HOME=$(mktemp -d)`: nothing should appear in its `.config/LUTier`.
+  Use `tempfile`, never fixed `/tmp/...` paths.
 - **The manual lives in two places.** `help_text.USER_MANUAL_MARKDOWN` is what
   Help > Manual shows, and it is the current copy. `docs/USER_MANUAL.md` has
   drifted since 2026-08-16. Update both by hand.
@@ -200,7 +210,7 @@ PyObjC, and fail on Linux.
   `SCOPES_MAX_DIMENSION`. Treat LUT objects as immutable: they are
   fingerprinted by `id()`.
 - **pyqtgraph and GL widgets:** `AA_ShareOpenGLContexts` must be set before
-  any `QApplication` exists (done in `main()` and `conftest.py`). In
+  any `QApplication` exists (done in `main()` and `tests/conftest.py`). In
   `rebuild_gl_view`, reset the items to `None` before reassigning `gl_view`.
   `GLLinePlotItem` colours are floats from 0 to 1. Switch views with
   `QStackedWidget` pages, not `setVisible`, or the panel resizes.
@@ -228,8 +238,9 @@ PyObjC, and fail on Linux.
   and never fires mid-drag. For live outputs, use a leading+trailing throttle
   (`casting_controller`).
 - **Process:** report "tests pass" and "confirmed on real hardware"
-  separately. Don't use `sed -i.bak`. Don't `pkill -f main_window.py`, because
-  it matches your own shell; kill by PID. If a run pollutes
+  separately. Don't use `sed -i.bak`. Don't `pkill -f` a pattern that also
+  appears in your own command line (`main_window.py`, a `python -c` snippet):
+  it kills your own shell. Kill by PID. If a run pollutes
   `~/.config/LUTier/workspace.json`, delete it.
 
 ## History and docs
