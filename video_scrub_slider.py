@@ -120,7 +120,7 @@ class VideoScrubSlider(QSlider):
 
         def snapped(left, top, width, height):
             # Whole PHYSICAL pixels (hidpi.snap_rect), back in logical units:
-            # at a fractional ratio (Interface Scale) integer logical edges
+            # at a fractional ratio (e.g. QT_SCALE_FACTOR=0.75) integer logical edges
             # fall between physical pixels and the 2px marks went soft.
             l, t, w, h = hidpi.snap_rect(left * dpr, top * dpr, width * dpr, height * dpr)
             return QRectF(l / dpr, t / dpr, max(w, 1) / dpr, max(h, 1) / dpr)

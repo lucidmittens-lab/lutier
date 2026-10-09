@@ -443,7 +443,7 @@ class LutViewer3D(QWidget):
         visible at a time, per Tom -- see VIEW_CHOICES above)."""
         plot = pg.PlotWidget()
         # Opaque, in the panel colour -- NOT None (transparent): at a
-        # fractional device pixel ratio (Interface Scale) the areas a
+        # fractional device pixel ratio (e.g. QT_SCALE_FACTOR=0.75) the areas a
         # transparent plot leaves unpainted showed uninitialised memory
         # (seen on the real display at QT_SCALE_FACTOR=0.75, 2026-10-09).
         plot.setBackground(style._DARK_BASE)

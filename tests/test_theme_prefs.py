@@ -118,69 +118,24 @@ def test_save_accent_color_leaves_the_previous_file_intact_on_a_failed_write():
           "saved accent color completely intact, not truncated -- OK")
 
 
-# ---- Interface Scale (save_ui_scale / load_ui_scale / apply_saved_ui_scale) ----
+# ---- merge-on-save ---------------------------------------------------------
 
-def _with_temp_prefs(fn):
+def test_save_accent_color_keeps_other_values_in_the_file():
     original_path = tp.THEME_PREFS_PATH
     with tempfile.TemporaryDirectory() as tmp_dir:
-        tp.THEME_PREFS_PATH = Path(tmp_dir) / "LUTier" / "theme_prefs.json"
+        tp.THEME_PREFS_PATH = Path(tmp_dir) / "theme_prefs.json"
         try:
-            fn()
+            tp.THEME_PREFS_PATH.write_text('{"some_future_value": 7}', encoding="utf-8")
+            tp.save_accent_color("#abcdef")
+            assert tp.load_accent_color() == "#abcdef"
+            assert '"some_future_value": 7' in tp.THEME_PREFS_PATH.read_text(encoding="utf-8")
         finally:
             tp.THEME_PREFS_PATH = original_path
-
-
-def test_ui_scale_round_trips_and_defaults_to_100_percent():
-    def body():
-        assert tp.load_ui_scale() == tp.DEFAULT_UI_SCALE == 1.0
-        tp.save_ui_scale(0.75)
-        assert tp.load_ui_scale() == 0.75
-    _with_temp_prefs(body)
-    print("ui scale round-trips; nothing saved means 100% -- OK")
-
-
-def test_ui_scale_and_accent_color_share_the_file_without_clobbering():
-    def body():
-        tp.save_accent_color("#123456")
-        tp.save_ui_scale(1.25)
-        tp.save_accent_color("#abcdef")
-        assert tp.load_ui_scale() == 1.25, "saving the accent must keep the scale"
-        tp.save_ui_scale(0.9)
-        assert tp.load_accent_color() == "#abcdef", "saving the scale must keep the accent"
-    _with_temp_prefs(body)
-    print("accent colour and ui scale saves merge into one file -- OK")
-
-
-def test_load_ui_scale_tolerates_corrupt_and_out_of_list_values():
-    def body():
-        tp.THEME_PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        for raw in ("not json{{", "[]", '{"ui_scale": "0.75"}', '{"ui_scale": 0.33}',
-                    '{"ui_scale": true}', '{"ui_scale": null}'):
-            tp.THEME_PREFS_PATH.write_text(raw, encoding="utf-8")
-            assert tp.load_ui_scale() == tp.DEFAULT_UI_SCALE, raw
-    _with_temp_prefs(body)
-    print("corrupt/out-of-list ui scale reads as the default -- OK")
-
-
-def test_apply_saved_ui_scale_sets_qt_scale_factor_and_environment_wins():
-    def body():
-        env = {}
-        assert tp.apply_saved_ui_scale(env) is None and env == {}, "100% leaves it unset"
-        tp.save_ui_scale(0.75)
-        assert tp.apply_saved_ui_scale(env) == "0.75" and env["QT_SCALE_FACTOR"] == "0.75"
-        assert tp.ui_scale_from_environment() is False
-        user_env = {"QT_SCALE_FACTOR": "1.5"}
-        assert tp.apply_saved_ui_scale(user_env) == "1.5" and user_env["QT_SCALE_FACTOR"] == "1.5"
-        assert tp.ui_scale_from_environment() is True
-    _with_temp_prefs(body)
-    print("apply_saved_ui_scale sets QT_SCALE_FACTOR; an existing one wins -- OK")
+    print("save_accent_color merges, keeping other saved values -- OK")
 
 
 if __name__ == "__main__":
-    test_ui_scale_round_trips_and_defaults_to_100_percent()
-    test_ui_scale_and_accent_color_share_the_file_without_clobbering()
-    test_load_ui_scale_tolerates_corrupt_and_out_of_list_values()
-    test_apply_saved_ui_scale_sets_qt_scale_factor_and_environment_wins()
+    test_save_accent_color_keeps_other_values_in_the_file()
     test_accent_color_round_trips()
     test_load_accent_color_returns_none_when_nothing_saved_yet()
     test_load_accent_color_returns_none_for_a_malformed_file()

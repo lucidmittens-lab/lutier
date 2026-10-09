@@ -48,7 +48,7 @@ class _SafeGLViewWidget(gl.GLViewWidget):
 
     # pyqtgraph sizes its glViewport/projection from these, as
     # int(logical * dpr) -- TRUNCATED, while Qt allocates the framebuffer
-    # as qRound(logical * dpr). At a fractional ratio (Interface Scale)
+    # as qRound(logical * dpr). At a fractional ratio (e.g. QT_SCALE_FACTOR=0.75)
     # that drew one pixel short of the framebuffer. Match Qt exactly.
     def deviceWidth(self):
         return hidpi.physical_size(self.width(), self.height(), self.devicePixelRatioF())[0]

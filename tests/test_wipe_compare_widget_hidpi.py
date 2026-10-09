@@ -1,4 +1,4 @@
-"""The GL viewer at FRACTIONAL device pixel ratios (Interface Scale) --
+"""The GL viewer at FRACTIONAL device pixel ratios (e.g. QT_SCALE_FACTOR=0.75) --
 run directly: QT_QPA_PLATFORM=xcb PYOPENGL_PLATFORM=glx python3 -m tests.test_wipe_compare_widget_hidpi
 
 Needs a real GL context (conftest.GL_TEST_FILES; ./run_linux.sh test-gl).

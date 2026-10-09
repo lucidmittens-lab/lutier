@@ -7,12 +7,11 @@ from PySide6.QtWidgets import (
     QApplication, QVBoxLayout, QFileDialog, QMessageBox, QDialog,
     QTextBrowser, QDialogButtonBox, QColorDialog,
 )
-from PySide6.QtGui import QActionGroup, QKeySequence, QColor
+from PySide6.QtGui import QKeySequence, QColor
 from style import (
     STYLESHEET, build_dark_palette, get_accent_color, set_accent_color,
 )
 import media_cache
-import theme_prefs
 from help_text import USER_MANUAL_MARKDOWN
 from floating_dialog import make_floating_tool_window, show_floating
 from .constants import PANEL_TOGGLES
@@ -215,7 +214,6 @@ class MenuMixin:
         # looking like a workspace preset option.
         workspace_menu.addSeparator()
         workspace_menu.addAction("Accent Color...", self._choose_accent_color)
-        self._build_ui_scale_menu(workspace_menu.addMenu("Interface Scale"))
 
         # Media Cache Folder... (Phase 1 of the Media Library/Stills
         # Gallery work, per Tom: "thumbnails can go in the session file,
@@ -288,37 +286,6 @@ class MenuMixin:
 
             self._manual_dialog = dialog
         show_floating(self._manual_dialog)
-
-    def _build_ui_scale_menu(self, menu):
-        """Workspace > Interface Scale: a UI scale multiplier on top of the
-        OS display scale, so Qt itself draws at in-between sizes (sharp)
-        rather than the compositor resampling a 2x render (soft). One
-        checkable action per theme_prefs.UI_SCALE_CHOICES, checked at the
-        SAVED value; applied at the next launch (theme_prefs.
-        apply_saved_ui_scale sets QT_SCALE_FACTOR before the QApplication
-        exists -- Qt can't re-scale a running app)."""
-        self._ui_scale_action_group = QActionGroup(self)
-        saved = theme_prefs.load_ui_scale()
-        for scale in theme_prefs.UI_SCALE_CHOICES:
-            action = menu.addAction(f"{round(scale * 100)}%")
-            action.setCheckable(True)
-            action.setChecked(abs(scale - saved) < 1e-6)
-            action.setData(scale)
-            self._ui_scale_action_group.addAction(action)
-            action.triggered.connect(lambda _checked=False, s=scale: self._choose_ui_scale(s))
-
-    def _choose_ui_scale(self, scale):
-        """Save a new Interface Scale and say it applies after a restart
-        (and, when QT_SCALE_FACTOR came from the user's own environment,
-        that the environment value is the one in charge)."""
-        if abs(scale - theme_prefs.load_ui_scale()) < 1e-6:
-            return
-        theme_prefs.save_ui_scale(scale)
-        note = "Takes effect after restart."
-        if theme_prefs.ui_scale_from_environment():
-            note += (f"\n\n{theme_prefs.UI_SCALE_ENV_VAR} is set in your environment "
-                     "and overrides this setting while it is.")
-        QMessageBox.information(self, "Interface Scale", note)
 
     def _choose_accent_color(self):
         """Workspace menu "Accent Color..." (SIXTEENTH PASS, per Tom: "give

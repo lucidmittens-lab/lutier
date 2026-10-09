@@ -50,8 +50,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QSplashScreen
 
-import theme_prefs
-
 _SPLASH_WIDTH, _SPLASH_HEIGHT = 480, 320
 
 # Mirrors style._DARK_WINDOW -- a literal duplicate, not an import, so
@@ -148,10 +146,6 @@ def main():
     # Compatibility Profile on this Mac) is exactly what wipe_compare_
     # widget.py's GPU pipeline targets, and why forcing a newer Core
     # Profile app-wide broke the Graph panel's pyqtgraph rendering.
-    # Interface Scale (Workspace menu): QT_SCALE_FACTOR from theme_prefs,
-    # which Qt only reads when the QApplication is built. An explicit
-    # QT_SCALE_FACTOR in the environment wins.
-    theme_prefs.apply_saved_ui_scale()
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
     app = QApplication(sys.argv)
 

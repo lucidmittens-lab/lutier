@@ -142,8 +142,8 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
-    # Never read or write the user's real theme_prefs.json (saved accent,
-    # Interface Scale) -- point it at a per-process temp file. Tests that
+    # Never read or write the user's real theme_prefs.json (their saved
+    # accent colour) -- point it at a per-process temp file. Tests that
     # exercise theme_prefs redirect it again themselves.
     import tempfile
     import theme_prefs

@@ -1,8 +1,8 @@
 """
 hidpi.py -- Qt-free helpers for fractional device pixel ratios.
 
-With Interface Scale (theme_prefs.apply_saved_ui_scale -> QT_SCALE_FACTOR)
-the device pixel ratio is often fractional (0.75, 1.25, 2 x 0.75 = 1.5).
+With QT_SCALE_FACTOR set (or fractional OS scaling), the device pixel
+ratio is often fractional (0.75, 1.25, 2 x 0.75 = 1.5).
 Qt sizes a QOpenGLWidget's framebuffer as qRound(logical * dpr) per
 dimension -- the PRODUCT rounded half away from zero, never the ratio
 rounded -- so every GL-side size in this app must agree with that exactly,

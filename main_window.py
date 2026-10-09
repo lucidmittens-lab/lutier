@@ -214,7 +214,6 @@ from PySide6.QtWidgets import QApplication, QMainWindow
 from PySide6.QtCore import Qt, QTimer, QEvent
 
 from style import STYLESHEET, build_dark_palette, register_bundled_fonts, ui_font
-import theme_prefs
 import workspace_io
 import stack as st
 from undo_history import UndoHistory
@@ -521,10 +520,6 @@ def main():
     # program) created via any one of them stays valid in all the others
     # too. MUST be set before QApplication is constructed -- Qt reads it
     # exactly once, at that point.
-    # Interface Scale (Workspace menu): QT_SCALE_FACTOR from theme_prefs,
-    # which Qt only reads when the QApplication is built. An explicit
-    # QT_SCALE_FACTOR in the environment wins.
-    theme_prefs.apply_saved_ui_scale()
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
     # NOTE for docs/archive/GPU_ACCELERATION_PLAN_2026-08-08.md's Stage 5: no
     # QSurfaceFormat override is set here on purpose. wipe_compare_

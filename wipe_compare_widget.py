@@ -897,7 +897,7 @@ class WipeCompareWidget(QOpenGLWidget):
         # logical sizes on a scaled (HiDPI) display drew the image into
         # only the bottom-left 1/dpr of the viewer -- reproduced on a 4K
         # Linux/GNOME desktop at 200% scaling (2026-10-05).
-        # Fractional ratios (Interface Scale, 2026-10-09): the target size
+        # Fractional ratios (e.g. QT_SCALE_FACTOR=0.75, 2026-10-09): the target size
         # is the framebuffer's real size (qRound(logical * dpr) -- not the
         # truncated viewport Qt sets), the rects are computed directly in
         # physical pixels, and

@@ -193,7 +193,9 @@ failed to reproduce it. If it recurs, rerun it alone before suspecting a change.
 - **GL state:** never "reset" by binding framebuffer 0. Inside `paintGL`, Qt
   renders to its own FBO. Save `GL_FRAMEBUFFER_BINDING` and restore it, or the
   Viewer goes black.
-- **Fractional device pixel ratio (Interface Scale):** the ratio can be
+- **Fractional device pixel ratio** (`QT_SCALE_FACTOR`, fractional OS
+  scaling; an Interface Scale setting is parked on the `interface-scale`
+  branch): the ratio can be
   0.75, 1.25, 1.5... Size every GL target as `hidpi.physical_size()` (Qt's
   qRound of logical x dpr, the ratio used unrounded), never `int()` or
   Python's `round()` of a product, and never the ratio rounded. Don't read
