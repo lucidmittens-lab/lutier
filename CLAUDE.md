@@ -245,8 +245,10 @@ failed to reproduce it. If it recurs, rerun it alone before suspecting a change.
 
 ## History and docs
 
-- `RUNNING.md`: the long-form dev log, entries #1 to #69, through
-  2026-08-08. Later history is in git.
+- `RUNNING.md`: the project's spirit, stated goals and mechanisms, plus a
+  one-line index of the old dev log's entries #1 to #69 (cited in code as
+  "RUNNING.md #N"). The full log is `docs/archive/RUNNING_LOG_2026-08-08.md`.
+  Later history is in git.
 - `docs/`: `BUILD_ON_LINUX.md`, `BUILD_ON_MAC.md`, `USER_MANUAL.md`.
 - `docs/archive/`: dated checkpoints (`KNOWN_GOOD_SUMMARY_*`), the
   architecture overview, the GPU, OCIO Tier 1 and viewer-casting plans, the
