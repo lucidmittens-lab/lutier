@@ -62,9 +62,28 @@ to Timeline / Rename / Delete; video only supports Source). Entries are
 catalogued by path and header metadata only — moving or deleting the
 source file after import breaks that entry.
 
-Only the essential columns show by default (Name, Kind, Resolution,
-Duration, FPS, Codec); Path, timecode and the rest are a header
-right-click away, and Alt+hover shows them for any row.
+By default the List shows Name, Reel, Resolution, Duration, Start TC,
+FPS, Codec, Camera and Input Space; the rest (Clip, End TC, Frames, Bit
+Depth, Chroma, Audio, Recorded, Firmware, Colour Tags, Size, Path, ...)
+are a header right-click away, where **Fit Columns to Contents** also
+lives. A dash means the file doesn't say. The first import into an empty
+library fits the columns to it; after that the widths are yours. Reel and
+Clip come from the file's own reel tag or a camera file name such as
+F003C002_190925_MN99. Right-click media → **Re-read Metadata** re-reads
+the files (useful for media imported before a field existed).
+
+## Metadata
+
+The **Metadata** panel (part of the Media layout) shows everything known
+about the clip selected in Media Libraries, grouped as Clip, Timing,
+Image, Camera, Audio and File: reel and clip, start and end timecode,
+codec, bit depth, chroma, the stream's colour tags, camera, firmware,
+recording date, audio format, size and path. Fields the file doesn't
+carry are left out; values can be selected and copied. With a timeline
+selected it shows the timeline's details, and with several items a count.
+
+**Source:** `metadata_panel.py`; the fields come from `media_probe.py`
+and the same cell functions as the Media Libraries columns.
 
 Double-click a timeline (or right-click → Load Timeline) to open it in
 the Timeline panel; the loaded one is marked ▶. Unload it from the same

@@ -841,6 +841,35 @@ QSplitter::handle:hover {{
     background-color: {_DARK_LIGHT};
 }}
 
+/* Metadata panel (metadata_panel.py). */
+QScrollArea#metadataScroll,
+QScrollArea#metadataScroll > QWidget#qt_scrollarea_viewport,
+QWidget#metadataContent {{
+    background-color: palette(base);
+}}
+
+QLabel#metadataTitle {{
+    font-size: 15px;
+    font-weight: 600;
+}}
+
+QLabel#metadataSection {{
+    font-size: 11px;
+    font-weight: 600;
+    color: {_HINT_TEXT};
+    padding-top: 4px;
+    border-bottom: 1px solid palette(mid);
+}}
+
+QLabel#metadataKey, QLabel#metadataHint {{
+    color: {_HINT_TEXT};
+}}
+
+QLabel#metadataValueMono {{
+    font-family: "{MONO_FONT_FAMILY}";
+    font-size: 12px;
+}}
+
 /* A panel's footer status line (e.g. the Browser's "2 Videos"). */
 QLabel#panelStatusLabel {{
     color: {_HINT_TEXT};

@@ -90,12 +90,12 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelection, QItemSelectionModel, QMimeData, QTimer, Signal, Qt
-from PySide6.QtGui import QDrag, QKeySequence, QPixmap
+from PySide6.QtGui import QColor, QDrag, QFont, QKeySequence, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QAbstractItemView,
     QHeaderView, QMessageBox, QInputDialog, QFileDialog, QToolButton, QMenu,
     QLineEdit, QListWidget, QListWidgetItem, QSplitter, QStackedWidget, QScrollArea,
-    QFrame, QHBoxLayout, QPushButton, QButtonGroup, QSizePolicy,
+    QFrame, QHBoxLayout, QPushButton, QButtonGroup, QSizePolicy, QStyledItemDelegate,
 )
 
 from app_logic import load_image_as_array, get_image_native_size
@@ -103,6 +103,7 @@ from media_library import MediaPool, MediaEntry, MEDIA_ENTRY_DRAG_MIME_TYPE
 import timeline as tl
 import hover_inspector
 import media_cache
+import style
 from media_grid import GridItem, MediaGrid
 import media_probe
 import colour_pipeline
@@ -193,7 +194,9 @@ def _audio_cell(entry):
     if not channels:
         return "", None
     rate = entry.metadata.get("audio_sample_rate")
-    text = f"{channels} ch" + (f", {rate / 1000:g} kHz" if rate else "")
+    bits = entry.metadata.get("audio_bit_depth")
+    text = (f"{channels} ch" + (f", {rate / 1000:g} kHz" if rate else "")
+            + (f", {bits}-bit" if bits else ""))
     return text, channels
 
 
@@ -236,6 +239,22 @@ def _modified_cell(entry):
     if mtime is None:
         return "", None
     return datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M"), mtime
+
+
+def _recorded_cell(entry):
+    """The file's own recording date (media_probe "recorded", ISO 8601) --
+    sorts correctly as text."""
+    recorded = entry.metadata.get("recorded")
+    return (recorded.replace("T", " "), None) if recorded else ("", None)
+
+
+def _colour_tags_cell(entry):
+    """"Primaries / Transfer / Matrix" as the stream declares them ("—" for
+    an undeclared one), or blank when it declares none."""
+    tags = [entry.metadata.get(k) for k in ("colour_primaries", "colour_transfer", "colour_matrix")]
+    if not any(tags):
+        return "", None
+    return " / ".join(t or "—" for t in tags), None
 
 
 def _text_cell(value):
@@ -290,11 +309,14 @@ class _Column:
 # Thumbnail stays logical column 0: it carries the entry id (ENTRY_ID_ROLE).
 COLUMNS = (
     _Column("thumbnail", "", lambda e: ("", None), True, 40),
-    _Column("name", "Name", lambda e: _text_cell(e.name), True, 150),
-    _Column("kind", "Kind", lambda e: ("Video" if e.is_video else "Still", None), True, 66),
+    _Column("name", "Name", lambda e: _text_cell(e.name), True, 220),
+    # Reel / Clip (media_probe: a reel tag, else the camera file name).
+    _Column("reel", "Reel", lambda e: _text_cell(e.metadata.get("reel")), True, 60),
+    _Column("clip", "Clip", lambda e: _text_cell(e.metadata.get("clip")), False, 56),
+    _Column("kind", "Kind", lambda e: ("Video" if e.is_video else "Still", None), False, 66),
     _Column("resolution", "Resolution", _resolution_cell, True, 84, numeric=True),
     _Column("duration", "Duration", _duration_cell, True, 64, numeric=True),
-    _Column("start_tc", "Start TC", lambda e: _timecode_cell(e, 0), False, 96, numeric=True),
+    _Column("start_tc", "Start TC", lambda e: _timecode_cell(e, 0), True, 96, numeric=True),
     _Column("end_tc", "End TC",
             lambda e: _timecode_cell(e, max(0, (e.frame_count or 1) - 1)), False, 96, numeric=True),
     _Column("frames", "Frames", _frames_cell, False, 64, numeric=True),
@@ -302,9 +324,12 @@ COLUMNS = (
     _Column("codec", "Codec", lambda e: _text_cell(e.metadata.get("codec")), True, 100),
     _Column("bit_depth", "Bit Depth", _bit_depth_cell, False, 80, numeric=True),
     _Column("chroma", "Chroma", _chroma_cell, False, 64),
-    _Column("audio", "Audio", _audio_cell, False, 96, numeric=True),
+    _Column("audio", "Audio", _audio_cell, False, 140, numeric=True),
     _Column("pixel_aspect", "Pixel Aspect", _par_cell, False, 80, numeric=True),
-    _Column("camera", "Camera", lambda e: _text_cell(e.metadata.get("camera")), False, 140),
+    _Column("camera", "Camera", lambda e: _text_cell(e.metadata.get("camera")), True, 140),
+    _Column("recorded", "Recorded", _recorded_cell, False, 140),
+    _Column("firmware", "Firmware", lambda e: _text_cell(e.metadata.get("firmware")), False, 100),
+    _Column("colour_tags", "Colour Tags", _colour_tags_cell, False, 160),
     _Column("format", "Format", lambda e: _text_cell(e.metadata.get("format")), False, 90),
     _Column("size", "Size", _size_cell, False, 76, numeric=True),
     _Column("modified", "Date Modified", _modified_cell, False, 130, numeric=True),
@@ -329,7 +354,7 @@ COLUMN_COLORSPACE = COLUMN_KEYS.index("colorspace")
 COLUMN_PATH = COLUMN_KEYS.index("path")
 # Bumped when the default column set changes, so a remembered layout from
 # before (which just recorded the old defaults) gives way to the new ones.
-HEADER_STATE_VERSION = 3  # 3: Input Space on by default
+HEADER_STATE_VERSION = 4  # 3: Input Space on by default; 4: Reel/Start TC/Camera on, Kind off
 # Never hideable -- a row with no visible name is unidentifiable.
 _ALWAYS_VISIBLE = {"name"}
 
@@ -451,6 +476,19 @@ class _MediaTable(QTableWidget):
         return mime
 
 
+class _EmptyCellDelegate(QStyledItemDelegate):
+    """Draws an empty cell as a quiet "—" (secondary text), so a missing
+    value reads as "not known" rather than a rendering gap. The item's own
+    text stays empty -- sorting and copying are unaffected."""
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        if index.column() != COLUMN_THUMBNAIL and not option.text and not index.data(TIMELINE_ID_ROLE):
+            option.text = "—"
+            option.palette.setColor(QPalette.ColorRole.Text, QColor(style._HINT_TEXT))
+            option.palette.setColor(QPalette.ColorRole.HighlightedText, QColor(style._HINT_TEXT))
+
+
 class _DropMediaGrid(MediaGrid):
     """The Grid view, also a drop target for media files (from the
     Browser or the desktop) -- the same rule and import path as the
@@ -484,6 +522,9 @@ class _DropMediaGrid(MediaGrid):
 
 class MediaPanel(QWidget):
     load_as_sample_requested = Signal(object)      # a media_library.MediaEntry -- grade it in Record
+    # The selection changed (from the List or the Grid) -- see
+    # selected_items(); drives the Metadata panel.
+    selection_changed = Signal()
     open_in_source_requested = Signal(object)      # a media_library.MediaEntry -- view it in Source
     load_as_reference_requested = Signal(object)   # a media_library.MediaEntry
     add_to_timeline_requested = Signal(object)     # a media_library.MediaEntry
@@ -514,6 +555,8 @@ class MediaPanel(QWidget):
         self._refresh_table()
 
     def _build_layout(self):
+        self._mono_font = QFont(style.MONO_FONT_FAMILY)
+        self._mono_font.setPixelSize(12)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)  # PanelFrame provides the outer gutter
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -602,7 +645,12 @@ class MediaPanel(QWidget):
         # interactive resize handle.
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        header.setStretchLastSection(True)
+        # No stretched last column (it grew to fill the panel, whatever it
+        # was); names elide in the MIDDLE, where camera file names differ
+        # least (F003C002_1909..._MN99); empty cells draw a quiet "—".
+        header.setStretchLastSection(False)
+        self.table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.table.setItemDelegate(_EmptyCellDelegate(self.table))
         # Drag a header to reorder; right-click it to show/hide columns
         # (most of COLUMNS start hidden -- see _on_header_context_menu).
         header.setSectionsMovable(True)
@@ -645,6 +693,7 @@ class MediaPanel(QWidget):
         self.grid_scroll.setWidget(self.grid)
         self.table.itemSelectionChanged.connect(
             lambda: self.grid.set_selected_rows(self._table_selected_row_set()))
+        self.table.itemSelectionChanged.connect(self.selection_changed.emit)
         self.table.horizontalHeader().sortIndicatorChanged.connect(
             lambda *_args: QTimer.singleShot(0, self._rebuild_grid))
 
@@ -728,6 +777,7 @@ class MediaPanel(QWidget):
         menu.addAction("Grade in Record (no timeline)", self._on_load_as_sample_clicked)
         menu.addAction("Load as Reference", self._on_load_as_reference_clicked)
         menu.addAction("Add to Timeline", self._on_add_to_timeline_clicked)
+        menu.addAction("Re-read Metadata", self.reread_metadata)
         self._add_input_space_menu(menu)
         menu.addSeparator()
         menu.addAction("Rename...", self._on_rename_clicked)
@@ -750,8 +800,35 @@ class MediaPanel(QWidget):
             action.toggled.connect(
                 lambda checked, i=index: self.table.setColumnHidden(i, not checked))
         menu.addSeparator()
+        menu.addAction("Fit Columns to Contents", self.fit_columns_to_contents)
         menu.addAction("Reset Columns", self.reset_columns)
         menu.exec(header.mapToGlobal(pos))
+
+    def reread_metadata(self, entries=None):
+        """Re-probe the selected entries' files (media_probe) and refresh
+        their columns -- picks up fields added since they were imported
+        (an older session) or a file that has since changed. A file that
+        can no longer be read keeps the metadata it had."""
+        entries = entries if entries is not None else self._selected_entries()
+        for entry in entries:
+            if not entry.source_path:
+                continue
+            fresh = _probe_or_empty(entry.source_path, is_video=entry.is_video)
+            if fresh:
+                entry.metadata.update(fresh)
+        if entries:
+            self._refresh_table(keep_selection_id=entries[0].id)
+            self.selection_changed.emit()
+
+    def fit_columns_to_contents(self):
+        """Every shown column to its contents' width (headers included),
+        within sane bounds so a long path doesn't take the whole panel."""
+        for index in range(self.table.columnCount()):
+            if index == COLUMN_THUMBNAIL or self.table.isColumnHidden(index):
+                continue
+            self.table.resizeColumnToContents(index)
+            width = self.table.columnWidth(index)
+            self.table.setColumnWidth(index, max(48, min(width + 12, 360)))
 
     def reset_columns(self):
         header = self.table.horizontalHeader()
@@ -931,6 +1008,8 @@ class MediaPanel(QWidget):
                 continue
             text, sort_key = column.cell(entry)
             item = _NumericItem(text, sort_key) if column.numeric else QTableWidgetItem(text)
+            if column.numeric:
+                item.setFont(self._mono_font)  # numbers line up down the column
             self.table.setItem(row, index, item)
 
     # ---- import (ingest a real file) -------------------------------------
@@ -963,6 +1042,7 @@ class MediaPanel(QWidget):
         read are listed in ONE warning at the end rather than a dialog
         each. Returns the new entries."""
         library = library or self.library
+        first_items = library is self.library and self.table.rowCount() == 0
         media = [p for p in paths if Path(p).suffix.lower() in IMAGE_EXTENSIONS + VIDEO_EXTENSIONS]
         entries, failures = [], []
         for path in media:
@@ -972,6 +1052,10 @@ class MediaPanel(QWidget):
                 failures.append(f"{Path(path).name}: {e}")
         if library is self.library:
             self._refresh_table(keep_selection_id=entries[-1].id if entries else None)
+            if first_items and entries:
+                # An empty library's first import fits the columns to what
+                # arrived; after that, widths are the user's to set.
+                self.fit_columns_to_contents()
         else:
             self._refresh_library_counts()
         if failures:
@@ -1357,6 +1441,10 @@ class MediaPanel(QWidget):
         self.grid.set_items(items)
         self.grid.set_selected_rows(self._table_selected_row_set())
 
+    def selected_items(self):
+        """(entries, timelines) currently selected, in table order."""
+        return self._selected_entries(), self._selected_timelines()
+
     def _table_selected_row_set(self):
         """Rows with any selected cell -- selectedRows() needs EVERY column
         selected, and selectRow() leaves the hidden columns out."""
@@ -1376,6 +1464,8 @@ class MediaPanel(QWidget):
             model.setCurrentIndex(self.table.model().index(rows[0], 0),
                                   QItemSelectionModel.SelectionFlag.NoUpdate)
         self.table.blockSignals(False)
+        self.grid.set_selected_rows(set(rows))  # in step when called programmatically too
+        self.selection_changed.emit()  # the table's own signal was blocked
 
     def _start_grid_drag(self, rows):
         """Drag from the Grid -- the same payload as dragging table rows."""

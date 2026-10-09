@@ -311,6 +311,9 @@ class DockMixin:
         # right column: Parameters / Scopes / Graph, top to bottom.
         self.splitDockWidget(self.stack_params_frame, self.scopes_frame, Qt.Orientation.Vertical)
         self.splitDockWidget(self.scopes_frame, self.viewer_3d_frame, Qt.Orientation.Vertical)
+        # Metadata's default slot (hidden by default; the Media suggested
+        # layout puts it beside the Source viewer).
+        self.splitDockWidget(self.viewer_3d_frame, self.metadata_frame, Qt.Orientation.Vertical)
 
         # Source beside Record -- split AFTER the center column's vertical
         # splits, so the two viewers share the top of the column and Stack/

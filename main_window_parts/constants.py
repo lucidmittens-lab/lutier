@@ -60,6 +60,9 @@ PANEL_TOGGLES_TIMELINE = [
     # windows") -- appended last so every existing Shift+N panel toggle
     # keeps its number.
     ("source_viewer_toggle", "Source", "source_viewer_frame", False),
+    # The selected media clip's details (metadata_panel.py) -- part of
+    # the Media suggested layout.
+    ("metadata_toggle", "Metadata", "metadata_frame", False),
 ]
 PANEL_TOGGLES = (
     PANEL_TOGGLES_LEFT + PANEL_TOGGLES_CENTER + PANEL_TOGGLES_RIGHT + PANEL_TOGGLES_TIMELINE)
@@ -88,7 +91,7 @@ MEDIA_LAYOUT = "media"
 GRADE_LAYOUT = "grade"
 SUGGESTED_LAYOUTS = ((MEDIA_LAYOUT, "Media"), (GRADE_LAYOUT, "Grade"))
 SUGGESTED_LAYOUT_PANELS = {
-    MEDIA_LAYOUT: {"browser_frame", "source_viewer_frame", "image_library_frame"},
+    MEDIA_LAYOUT: {"browser_frame", "source_viewer_frame", "metadata_frame", "image_library_frame"},
     GRADE_LAYOUT: {frame_attr for _a, _l, frame_attr, default_visible in PANEL_TOGGLES
                    if default_visible},
 }

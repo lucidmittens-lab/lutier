@@ -458,8 +458,10 @@ def test_restoring_an_older_header_state_keeps_new_columns_at_their_defaults():
     panel.restore_header_state({"version": media_panel.HEADER_STATE_VERSION, "order": old_keys,
                                 "hidden": ["kind", "removed_column"], "widths": {}})
     assert panel.table.isColumnHidden(COLUMN_KEYS.index("kind"))
-    assert panel.table.isColumnHidden(COLUMN_KEYS.index("camera"))
-    assert not panel.table.isColumnHidden(COLUMN_KEYS.index("fps"))
+    # Neither was in the saved state, so each keeps its COLUMNS default.
+    for key in ("camera", "fps"):
+        assert panel.table.isColumnHidden(COLUMN_KEYS.index(key)) == (
+            not COLUMNS[COLUMN_KEYS.index(key)].visible), key
     print("MediaPanel: an older saved layout restores, new columns keep "
           "their defaults -- OK")
 

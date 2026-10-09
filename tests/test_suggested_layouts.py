@@ -48,7 +48,9 @@ def test_suggested_layouts_show_exactly_their_panels_and_can_be_reapplied():
         assert _shown(win) == SUGGESTED_LAYOUT_PANELS[GRADE_LAYOUT], "launch = Grade"
         win.apply_suggested_layout(MEDIA_LAYOUT)
         QApplication.processEvents()
-        assert _shown(win) == {"browser_frame", "source_viewer_frame", "image_library_frame"}
+        assert _shown(win) == SUGGESTED_LAYOUT_PANELS[MEDIA_LAYOUT]
+        assert {"browser_frame", "source_viewer_frame", "metadata_frame",
+                "image_library_frame"} == SUGGESTED_LAYOUT_PANELS[MEDIA_LAYOUT]
         assert win.dockWidgetArea(win.image_library_frame) == Qt.DockWidgetArea.BottomDockWidgetArea
 
         # Not a mode: the user can change things, and re-applying still works.

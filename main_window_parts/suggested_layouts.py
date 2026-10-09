@@ -5,8 +5,9 @@ one simply rearranges the one workspace (docks shown/hidden and placed),
 which is then yours to change and is remembered as usual. Nothing tracks
 "which layout you're in".
 
-- MEDIA: the file Browser, the Source viewer and Media Libraries
-  (spanning the bottom) -- finding, previewing and organising media.
+- MEDIA: the file Browser, the Source viewer, the selected clip's
+  Metadata and Media Libraries (spanning the bottom) -- finding,
+  previewing and organising media.
 - GRADE: the grading screen -- Record, the Timeline's thumbnail strip,
   the Stack, Parameters, Scopes. Also what Reset to Default Workspace
   and a first launch give you.
@@ -68,16 +69,18 @@ class SuggestedLayoutMixin:
             getattr(self, frame_attr).setVisible(frame_attr in SUGGESTED_LAYOUT_PANELS[layout_key])
 
     def _build_media_layout(self):
-        """Browser top-left, Source viewer top-centre, Media Libraries
+        """Browser top-left, Source viewer top-centre, Metadata top-right, Media Libraries
         across the whole bottom (the bottom dock area owns both bottom
         corners, so it spans the full width)."""
         self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.BottomDockWidgetArea)
         self.setCorner(Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.BottomDockWidgetArea)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.browser_frame)
         self.splitDockWidget(self.browser_frame, self.source_viewer_frame, Qt.Orientation.Horizontal)
+        self.splitDockWidget(self.source_viewer_frame, self.metadata_frame, Qt.Orientation.Horizontal)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.image_library_frame)
         width, height = max(1, self.width()), max(1, self.height())
-        self.resizeDocks([self.browser_frame, self.source_viewer_frame],
-                         [round(width * 0.24), round(width * 0.76)], Qt.Orientation.Horizontal)
+        self.resizeDocks([self.browser_frame, self.source_viewer_frame, self.metadata_frame],
+                         [round(width * 0.22), round(width * 0.56), round(width * 0.22)],
+                         Qt.Orientation.Horizontal)
         self.resizeDocks([self.source_viewer_frame, self.image_library_frame],
                          [round(height * 0.55), round(height * 0.45)], Qt.Orientation.Vertical)

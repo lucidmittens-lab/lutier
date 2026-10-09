@@ -60,7 +60,8 @@ grep for the method name.
   `constants`) and `source_viewer`, `wipe_compare_widget` (the GL Viewer
   surface), `browser_panel`, `media_panel`, `lut_library_panel`,
   `stack_memories_panel` (Stills Gallery), `lut_viewer_3d` (Graph panel),
-  `media_grid` (Media Libraries' Grid view), `timeline_thumbnail_strip`
+  `media_grid` (Media Libraries' Grid view), `metadata_panel` (selected
+  clip's details), `timeline_thumbnail_strip`
   (the Timeline's Thumbnails view), `curve_editor_widget`,
   `color_wheel_widget`, `color_warper_wheel`,
   `color_warper_cloud_widget`, `safe_gl_view_widget`.

@@ -11,6 +11,7 @@ from timeline_panel import TimelinePanel
 from sample_image_panel import SampleImagePanel
 from stack_panel import StackPanel
 from source_viewer import SourceViewerPanel
+from metadata_panel import MetadataPanel
 from scopes_panel import ScopesPanel
 from lut_viewer_3d import LutViewer3D
 import canvas as cv
@@ -165,6 +166,12 @@ class LayoutMixin:
         self.source_viewer = SourceViewerPanel()
         self.source_viewer.edit_requested.connect(self._on_source_edit_requested)
         self._make_dock("source_viewer_frame", "Source", self.source_viewer)
+
+        # Metadata: the clip selected in Media Libraries, spelled out.
+        self.metadata_panel = MetadataPanel()
+        self.media_panel.selection_changed.connect(
+            lambda: self.metadata_panel.show_selection(*self.media_panel.selected_items()))
+        self._make_dock("metadata_frame", "Metadata", self.metadata_panel)
         # SampleImagePanel previews the live stack directly (no baking --
         # exact per-pixel apply, see stack.apply_stack_to_image_array),
         # re-rendering on every stack_changed the same way it used to for

@@ -164,21 +164,25 @@ class MenuMixin:
         for i, (action_attr, label, frame_attr, _default_visible) in enumerate(PANEL_TOGGLES, start=1):
             # Only matters once a 10th panel exists again -- see this
             # method's own docstring on Shift+0's fallback role.
-            shortcut_digit = i if i <= 9 else 0
+            shortcut_digit = i if i <= 9 else (0 if i == 10 else None)
             # The dock's OWN toggleViewAction() -- Qt's built-in show/hide
             # action, kept correctly in sync with actual visibility no
             # matter how it changes (see this method's docstring). Just
             # needs its shortcut set and to be added to this menu; text
             # already matches the dock's windowTitle (== label).
             toggle_action = getattr(self, frame_attr).toggleViewAction()
-            toggle_action.setShortcut(QKeySequence(f"Shift+{shortcut_digit}"))
+            # Shift+1..9, Shift+0 for the 10th; panels past the 10th have no
+            # digit left (sharing Shift+0 would make it ambiguous -- Qt then
+            # fires neither).
+            if shortcut_digit is not None:
+                toggle_action.setShortcut(QKeySequence(f"Shift+{shortcut_digit}"))
             workspace_menu.addAction(toggle_action)
             setattr(self, action_attr, toggle_action)
 
         workspace_menu.addSeparator()
 
         for i, (_action_attr, label, frame_attr, _default_visible) in enumerate(PANEL_TOGGLES, start=1):
-            shortcut_digit = i if i <= 9 else 0
+            shortcut_digit = i if i <= 9 else (0 if i == 10 else None)
             # Float (per Tom): Cmd+Shift+<same digit> -- pops the panel out
             # of the main window into its own always-on-top window (see
             # _float_panel). Every frame_attr in PANEL_TOGGLES ends in
@@ -190,7 +194,7 @@ class MenuMixin:
             float_action_attr = f"{frame_attr[:-len('_frame')]}_float_toggle"
             self._make_float_action(
                 workspace_menu, float_action_attr, label, frame_attr,
-                shortcut=f"Ctrl+Shift+{shortcut_digit}")
+                shortcut=f"Ctrl+Shift+{shortcut_digit}" if shortcut_digit is not None else None)
             self._panel_float_action_attr[frame_attr] = float_action_attr
 
         workspace_menu.addSeparator()
