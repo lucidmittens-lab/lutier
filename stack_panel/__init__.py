@@ -15,8 +15,11 @@ from .labels import (  # noqa: F401
     CDL_SOP_FIELD_DEFAULTS, GRADING_PRIMARY_FIELD_SPECS,
     GRADING_TONE_RANGE_LABELS, _stage_info_text, _stage_kind_badge_text,
 )
+from .list_widget import (  # noqa: F401
+    _StackListWidget,
+)
 from .panel import (  # noqa: F401
-    StackPanel, _ParamLabel, _StackListWidget,
+    StackPanel, _ParamLabel,
 )
 from .rows import (  # noqa: F401
     _ElidingLabel, _ForkBranchGridRowWidget, _StageRowWidget,
