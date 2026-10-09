@@ -134,8 +134,9 @@ Slowest tests (about 1 to 1.6 s each) are LUT bakes and resamples in
 `test_lut_controls.py`, `test_printer_lights.py` and `test_stack.py`;
 check with `--durations=20`.
 
-Known failure: the 7 tests in `test_airplay_output_sink.py` need macOS and
-PyObjC, and fail on Linux. Known intermittent:
+A healthy Linux run has 0 failures: the 8 tests in
+`test_airplay_output_sink.py` need macOS and PyObjC, and skip elsewhere.
+Known intermittent:
 `test_video_playback_controller.py::test_tick_notifies_scopes_for_a_gpu_eligible_stack`
 failed once in about 25 parallel runs (2026-10-09: two Scopes results where it
 expects one, the second from a later frame). The cause isn't pinned down: a
@@ -182,9 +183,10 @@ failed to reproduce it. If it recurs, rerun it alone before suspecting a change.
   that file too (e.g. `media_cache.MEDIA_CACHE_PREFS_PATH`). Check with a run
   under `HOME=$(mktemp -d)`: nothing should appear in its `.config/LUTier`.
   Use `tempfile`, never fixed `/tmp/...` paths.
-- **The manual lives in two places.** `help_text.USER_MANUAL_MARKDOWN` is what
-  Help > Manual shows, and it is the current copy. `docs/USER_MANUAL.md` has
-  drifted since 2026-08-16. Update both by hand.
+- **The manual has one source:** `help_text.USER_MANUAL_MARKDOWN` (what
+  Help > Manual shows). Edit it there, then run `python3 help_text.py` to
+  regenerate `docs/USER_MANUAL.md`; `tests/test_help_text.py` fails if they
+  differ.
 
 ## Don't do this (learned the hard way)
 

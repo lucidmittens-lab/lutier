@@ -16,10 +16,17 @@ for OpenGL, just for Cocoa/AVFoundation instead.
 import sys
 
 import numpy as np
+import pytest
 from PySide6.QtWidgets import QApplication
 
 import airplay_output_sink as aos
 from video_output_sink import VideoFrame
+
+# Same condition AirPlayOutputSink.is_available() uses: these exercise the
+# real Cocoa/AVFoundation pipeline, so off macOS they skip rather than fail
+# (they used to be the suite's 7 permanent Linux failures, which hid real ones).
+_ON_REAL_MACOS = aos.PYOBJC_AVAILABLE and sys.platform == "darwin"
+pytestmark = pytest.mark.skipif(not _ON_REAL_MACOS, reason="needs macOS with PyObjC")
 
 
 def _app():
