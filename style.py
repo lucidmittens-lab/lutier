@@ -391,6 +391,9 @@ _ACCENT_DEFAULT = "#E8A33D"    # DEFAULT accent (first launch, or no saved
 _BRANCH_B_COLOR = "#3CC4D2"    # Stack Forking Branch B (palette(link)) --
                                # must differ from the accent (Branch A);
                                # cyan now the accent is amber
+_TEXT_DISABLED = "#5c5c5c"     # unavailable controls (e.g. a disabled segment):
+                               # readable, clearly inactive -- 2.6:1 on the field
+                               # colour, deliberately below body-text contrast
 _HINT_TEXT = "#9e9e9e"         # secondary text: hints, labels, panel titles,
                                # disabled text -- 6.6:1 on _DARK_BASE.
                                # (Literal hex in QSS, not
@@ -815,7 +818,7 @@ QPushButton#segmentButton:checked {{
 }}
 
 QPushButton#segmentButton:disabled {{
-    color: {_DARK_MID};
+    color: {_TEXT_DISABLED};
 }}
 
 /* The Timeline's Thumbnails view (timeline_thumbnail_strip.py): the
