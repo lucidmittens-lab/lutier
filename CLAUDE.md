@@ -11,8 +11,8 @@ the main dev and real-GPU test bed. "Tom" in comments and docs is the
 product owner.
 
 Almost everything is flat in the repo root: about 100 app modules and 97
-`test_*.py` files. The exception is the `stack_panel/` package (see the module
-map). Each module's docstring explains its purpose and history; read it
+`test_*.py` files. The exceptions are the `stack_panel/` and
+`main_window_parts/` packages (see the module map). Each module's docstring explains its purpose and history; read it
 before editing the module.
 
 ## Module map
@@ -38,11 +38,17 @@ before editing the module.
   special kind (`cdl`, `lut`, `aces_drt`, `custom_drt`, `printer_lights`,
   `color_warper`, `matte_shaders`, `fork_merge`), `gpu_lanczos_compositor`
   (scaling and wipe compositing).
-- **UI shell:** `main_window` (QMainWindow, docks, menus, undo, export),
-  `splash_launcher` (packaged entry point), `style` (all QSS and the palette),
-  `theme_prefs`, `panel_frame`, `floating_dialog`, `hover_inspector`,
-  `spinbox_scrub`, `help_text` (in-app manual), `bake_settings_form`,
-  `transport_icons`.
+- **UI shell:** `main_window` (the entry point, `python3 main_window.py`:
+  `MainWindow.__init__`, its Qt event overrides, `main()`), whose methods live
+  in `main_window_parts/` mixins: `docks`, `layout` (`_build_layout`),
+  `menus`, `workspace`, `session` (sessions and project settings), `undo`,
+  `pipeline` (stack changes, effective stack, Sequence/Shot),
+  `timeline_wiring`, `export_lut`, `export_video`, `constants`
+  (`PANEL_TOGGLES`). Parts never import `main_window` (run as a script it is
+  `__main__`). Also `splash_launcher` (packaged entry point), `style` (all QSS
+  and the palette), `theme_prefs`, `panel_frame`, `floating_dialog`,
+  `hover_inspector`, `spinbox_scrub`, `help_text` (in-app manual),
+  `bake_settings_form`, `transport_icons`.
 - **UI panels and widgets:** `stack_panel/` (the Stack list plus every
   Parameters inspector page; see below), `sample_image_panel` (Record viewer)
   and `source_viewer`, `wipe_compare_widget` (the GL Viewer surface),
