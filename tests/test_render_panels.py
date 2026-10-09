@@ -91,6 +91,13 @@ def test_queue_renders_jobs_in_order_and_can_stop():
     queue.add_job(first)
     queue.add_job(second)
     assert queue.render_all_button.isEnabled() and "2 queued" in queue.status_label.text()
+    queue.resize(300, 400)
+    queue.show()
+    QApplication.processEvents()
+    card = queue.list.itemWidget(queue.list.item(0))
+    assert card.width() <= queue.list.viewport().width(), "a long path elides, never widens the card"
+    assert card.status_label.geometry().right() <= card.width()
+    queue.hide()
     queue.render_all()
     assert queue.wait_until_idle()
     assert [first.status, second.status] == [rj.DONE, rj.DONE]

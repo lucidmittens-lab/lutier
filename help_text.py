@@ -645,7 +645,7 @@ The **Render** layout (Alt+3) renders graded movies and image sequences.
 Set up a job in **Render Settings**, press **Add to Render Queue**, then
 **Render All** in the **Render Queue**.
 
-- **Render:** the whole **Timeline**, or the **Current Clip** (the clip
+- **Source:** the whole **Timeline**, or the **Current Clip** (the clip
   selected on the Timeline, or else whatever is loaded in Record). A
   timeline renders as a **Single File** or as **Individual Clips**, one
   file per clip.

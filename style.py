@@ -1288,6 +1288,15 @@ QPushButton#primaryButton:hover {{
     border-color: palette(text);
 }}
 
+/* The id rule above outranks QPushButton:disabled below, so a disabled
+   primary button needs its own (e.g. Render All while rendering). */
+QPushButton#primaryButton:disabled {{
+    color: {_HINT_TEXT};
+    background: transparent;
+    border-color: {_DARK_MIDLIGHT};
+    font-weight: 600;
+}}
+
 QPushButton:disabled {{
     color: {_HINT_TEXT};
     background: transparent;

@@ -16,11 +16,11 @@ methods, not lambdas). Call shutdown() before the window closes.
 """
 import os
 
-from PySide6.QtCore import QObject, QThread, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QObject, QSize, QThread, Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
-    QProgressBar, QPushButton, QVBoxLayout, QWidget,
+    QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
 import render_job as rj
@@ -45,6 +45,25 @@ class _RenderWorker(QObject):
         self.finished.emit(self._job.id)
 
 
+class _ElidedLabel(QLabel):
+    """A one-line label that never asks for more width than it gets: the
+    text is elided in the middle (paths keep their start and file name)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def minimumSizeHint(self):
+        return QSize(0, super().minimumSizeHint().height())
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setPen(self.palette().color(self.foregroundRole()))
+        painter.setFont(self.font())
+        text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideMiddle, self.width())
+        painter.drawText(self.rect(), int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), text)
+
+
 class _JobCard(QWidget):
     def __init__(self, job, parent=None):
         super().__init__(parent)
@@ -53,14 +72,14 @@ class _JobCard(QWidget):
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(4)
         top = QHBoxLayout()
-        self.name_label = QLabel()
+        self.name_label = _ElidedLabel()
         self.name_label.setObjectName("renderJobName")
         self.status_label = QLabel()
         self.status_label.setObjectName("renderJobStatus")
         top.addWidget(self.name_label, stretch=1)
         top.addWidget(self.status_label)
         layout.addLayout(top)
-        self.summary_label = QLabel()
+        self.summary_label = _ElidedLabel()
         self.summary_label.setObjectName("metadataHint")
         layout.addWidget(self.summary_label)
         bar_row = QHBoxLayout()
@@ -73,7 +92,7 @@ class _JobCard(QWidget):
         bar_row.addWidget(self.progress_bar, stretch=1)
         bar_row.addWidget(self.count_label)
         layout.addLayout(bar_row)
-        self.path_label = QLabel()
+        self.path_label = _ElidedLabel()
         self.path_label.setObjectName("renderJobPath")
         layout.addWidget(self.path_label)
         self.update_from(job)
@@ -128,6 +147,7 @@ class RenderQueuePanel(QWidget):
         self.list.setObjectName("renderQueueList")
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self.list, stretch=1)
@@ -152,7 +172,9 @@ class RenderQueuePanel(QWidget):
         item = QListWidgetItem()
         item.setData(Qt.ItemDataRole.UserRole, job.id)
         card = _JobCard(job)
-        item.setSizeHint(card.sizeHint())
+        # Width 0: the card takes the list's width (and its labels elide)
+        # rather than widening the list.
+        item.setSizeHint(QSize(0, card.sizeHint().height()))
         self.list.addItem(item)
         self.list.setItemWidget(item, card)
         self._cards[job.id] = card

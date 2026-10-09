@@ -3,7 +3,7 @@ render_settings_panel.py -- the "Render Settings" panel (2026-10-09): what
 to render and how, ending in "Add to Render Queue". Part of the Render
 suggested layout, beside Record and the Render Queue.
 
-  Render       Timeline | Current Clip
+  Source       Timeline | Current Clip
   Output       Single File | Individual Clips   (a timeline only)
   Format       ProRes 4444, H.264, EXR/DPX/TIFF/PNG sequences
   Bit Depth    what the format can carry
@@ -133,9 +133,9 @@ class RenderSettingsPanel(QWidget):
         tokens.setWordWrap(True)
         tokens.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
-        self._section(layout, "Render", [("Render", self.source_control),
+        self._section(layout, "Render", [("Source", self.source_control),
                                          ("Output", self.output_control)])
-        self._section(layout, "Format", [("Format", self.format_combo),
+        self._section(layout, "Image", [("Format", self.format_combo),
                                          ("Bit Depth", self.bit_depth_combo),
                                          ("Size", self.size_control),
                                          ("Colour", self.colour_control)])
