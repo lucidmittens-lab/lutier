@@ -210,25 +210,13 @@ Run with: python3 main_window.py
 """
 import sys
 
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QFileDialog, QMessageBox,
-)
+from PySide6.QtWidgets import QApplication, QMainWindow, QFileDialog, QMessageBox
 from PySide6.QtCore import Qt, QTimer, QEvent
 
 from style import STYLESHEET, build_dark_palette
 import workspace_io
 import stack as st
 from undo_history import UndoHistory
-
-
-# Names tests reach for on this module (main_window.QFileDialog etc.) --
-# kept importable here even where the code using them moved into
-# main_window_parts/.
-from PySide6.QtWidgets import QFileDialog, QMessageBox  # noqa: F401,F811
-import workspace_io  # noqa: F401,F811
-from main_window_parts.export_video import _GpuVideoExportRunner  # noqa: F401,F811
-from main_window_parts.undo import _UNDO_DEBOUNCE_MS  # noqa: F401,F811
-from main_window_parts.constants import PANEL_TOGGLES  # noqa: F401,F811
 from main_window_parts.constants import DEFAULT_WORKSPACE_STATE
 from main_window_parts.docks import DockMixin
 from main_window_parts.layout import LayoutMixin
@@ -241,7 +229,16 @@ from main_window_parts.timeline_wiring import TimelineMixin
 from main_window_parts.export_lut import ExportLutMixin
 from main_window_parts.export_video import VideoExportMixin
 
-class MainWindow(DockMixin, LayoutMixin, MenuMixin, WorkspaceMixin, SessionMixin, UndoMixin, PipelineMixin, TimelineMixin, ExportLutMixin, VideoExportMixin, QMainWindow):
+# Re-exported: tests read these from main_window (main_window.PANEL_TOGGLES
+# etc.); they live in main_window_parts/ now.
+from main_window_parts.constants import PANEL_TOGGLES  # noqa: F401
+from main_window_parts.export_video import _GpuVideoExportRunner  # noqa: F401
+from main_window_parts.undo import _UNDO_DEBOUNCE_MS  # noqa: F401
+
+
+class MainWindow(DockMixin, LayoutMixin, MenuMixin, WorkspaceMixin, SessionMixin,
+                 UndoMixin, PipelineMixin, TimelineMixin, ExportLutMixin,
+                 VideoExportMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("LUTier")
