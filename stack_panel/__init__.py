@@ -19,8 +19,11 @@ from .list_widget import (  # noqa: F401
     _StackListWidget,
 )
 from .panel import (  # noqa: F401
-    StackPanel, _ParamLabel,
+    StackPanel,
 )
 from .rows import (  # noqa: F401
     _ElidingLabel, _ForkBranchGridRowWidget, _StageRowWidget,
+)
+from .widgets import (  # noqa: F401
+    _ParamLabel,
 )
