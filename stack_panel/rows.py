@@ -5,7 +5,9 @@ two-column fork grid rows, and the project working space their
 StackPanel.set_default_working_colourspace).
 """
 from PySide6.QtCore import Qt, QSize, QVariantAnimation, QEasingCurve
-from PySide6.QtGui import QPainter, QColor
+from html import escape
+
+from PySide6.QtGui import QPainter, QColor, QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QSpinBox, QFrame, QToolButton, QSizePolicy,
 )
@@ -13,7 +15,7 @@ import stack as st
 import colour_pipeline
 from printer_lights import DEFAULT_WORKING_COLOURSPACE
 from spinbox_scrub import enable_drag_to_scrub
-from style import PANEL_BORDER_RADIUS
+from style import CONTROL_RADIUS, HINT_TEXT_HEX, MONO_FONT_FAMILY
 from .labels import _stage_kind_badge_text
 
 
@@ -75,6 +77,39 @@ class _ElidingLabel(QLabel):
 
 # The project working space, for rows' "in <space>" notes (see
 # _row_label_text) -- set by StackPanel.set_default_working_colourspace.
+class _StageLabel(_ElidingLabel):
+    """A Stack row's two-tone label (style.py IDENTITY PASS): the stage's
+    name in primary text, the rest of its label -- the parameter summary
+    the formatters in labels.py append after two spaces, plus any
+    "· in <space>" note -- in secondary mono, and only that part elides.
+    full_text() is unchanged (exactly _row_label_text(stage), which is
+    also what's saved), only the drawing differs."""
+
+    _SUMMARY_PX = 12
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setTextFormat(Qt.TextFormat.RichText)
+        self._apply_elided_text()
+
+    def _apply_elided_text(self):
+        name, _sep, rest = self._full_text.partition("  ")
+        rest = rest.strip()
+        fm = self.fontMetrics()
+        room = max(self.width(), 0) - fm.horizontalAdvance(name + "  ")
+        if not rest or room <= 0 or self.textFormat() != Qt.TextFormat.RichText:
+            super()._apply_elided_text()
+            return
+        mono = QFont(MONO_FONT_FAMILY)
+        mono.setPixelSize(self._SUMMARY_PX)
+        shown = QFontMetrics(mono).elidedText(rest, Qt.TextElideMode.ElideRight, room)
+        QLabel.setText(self, (
+            f"{escape(name)}&nbsp;&nbsp;<span style=\"color:{HINT_TEXT_HEX}; "
+            f"font-family:'{MONO_FONT_FAMILY}'; font-size:{self._SUMMARY_PX}px\">"
+            f"{escape(shown)}</span>"))
+        self.setToolTip(self._full_text if shown != rest else "")
+
+
 _project_working_space = DEFAULT_WORKING_COLOURSPACE
 
 
@@ -227,8 +262,8 @@ class _StageRowWidget(QFrame):
             layout.setContentsMargins(4, 2, 4, 2)
             layout.setSpacing(3)
         else:
-            layout.setContentsMargins(6, 4, 6, 4)
-            layout.setSpacing(6)
+            layout.setContentsMargins(8, 3, 8, 3)
+            layout.setSpacing(8)
 
         self.enabled_button = QToolButton()
         self.enabled_button.setObjectName("stageEnabledToggle")
@@ -285,7 +320,7 @@ class _StageRowWidget(QFrame):
         # _elide()) since a full-width row can run out of space too, per
         # Tom: the delete button at the row's far end should stay visible
         # regardless of panel width, not get pushed off past it.
-        self.label_widget = _ElidingLabel(_row_label_text(stage))
+        self.label_widget = _StageLabel(_row_label_text(stage))
         self.label_widget.setObjectName("stageLabel")
         # Transparent to mouse events -- otherwise a click on the label
         # text itself is swallowed by the QLabel rather than reaching this
@@ -343,6 +378,9 @@ class _StageRowWidget(QFrame):
         current_matte_source = stage.params.get("matte_source_id")
         idx = self.matte_combo.findData(current_matte_source)
         self.matte_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        # Never shown on a matte-producing row; on every other row only
+        # when selected or set -- see _update_row_controls.
+        self._matte_allowed = stage.kind not in st.MATTE_PRODUCING_KINDS
         if stage.kind in st.MATTE_PRODUCING_KINDS:
             # A matte-PRODUCING row's own opacity is repurposed as "matte
             # amount" (see make_keyer_stage's own docstring) -- it never
@@ -375,6 +413,20 @@ class _StageRowWidget(QFrame):
         # False at construction time: nothing's been painted yet, so
         # there's nothing to ease from.
         self._apply_enabled_state(stage.enabled, animate=False, repolish=False)
+        self.opacity_spin.valueChanged.connect(lambda _value: self._update_row_controls())
+        self.matte_combo.currentIndexChanged.connect(lambda _index: self._update_row_controls())
+        self._update_row_controls()
+
+    def _update_row_controls(self):
+        """IDENTITY PASS: a row shows its Mix/Matte/delete controls only
+        when it's the selected row -- plus Mix whenever it isn't 100% and
+        Matte whenever one is set, so a non-default value is never
+        hidden. Keeps every other row to just its name and summary."""
+        selected = self._selected
+        self.opacity_spin.setVisible(selected or self.opacity_spin.value() != 100)
+        self.matte_combo.setVisible(
+            self._matte_allowed and (selected or self.matte_combo.currentIndex() > 0))
+        self.delete_button.setVisible(selected)
 
     def _apply_enabled_state(self, enabled, animate=True, repolish=True):
         """Sets the enabled/disabled glyph + QSS property on every part of
@@ -418,6 +470,7 @@ class _StageRowWidget(QFrame):
         if selected == self._selected:
             return
         self._selected = selected
+        self._update_row_controls()
         self.setProperty("stageSelected", selected)
         self.style().unpolish(self)
         self.style().polish(self)
@@ -471,7 +524,7 @@ class _StageRowWidget(QFrame):
             color = QColor(self.palette().window().color())
             color.setAlphaF(disabled_alpha)
             painter.setBrush(color)
-            painter.drawRoundedRect(rect, PANEL_BORDER_RADIUS, PANEL_BORDER_RADIUS)
+            painter.drawRoundedRect(rect, CONTROL_RADIUS, CONTROL_RADIUS)
         finally:
             painter.end()
 

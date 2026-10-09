@@ -1094,6 +1094,20 @@ QPushButton:pressed {{
     background-color: {_DARK_DARK};
 }}
 
+/* The one main action on a page (e.g. Save to CDL Library): the accent,
+   filled. Use sparingly -- one per page at most. */
+QPushButton#primaryButton {{
+    background-color: palette(highlight);
+    border-color: palette(highlight);
+    color: palette(highlighted-text);
+    font-weight: 600;
+}}
+
+QPushButton#primaryButton:hover {{
+    background-color: palette(highlight);
+    border-color: palette(text);
+}}
+
 QPushButton:disabled {{
     color: {_HINT_TEXT};
     background: transparent;

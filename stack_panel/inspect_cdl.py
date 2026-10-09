@@ -6,7 +6,7 @@ A mixin: StackPanel inherits it, so these methods share the panel's own
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QDoubleSpinBox,
-    QGroupBox, QSlider, QCheckBox, QInputDialog,
+    QGroupBox, QSlider, QCheckBox, QInputDialog, QSizePolicy,
 )
 import cdl
 import color_balance as cb
@@ -61,31 +61,43 @@ class CdlInspectorMixin:
         self._cdl_sop_spins = {}      # {"slope": {"R": spin, ...}, ...}
         self._cdl_wheel_strength = {}
 
+        # IDENTITY PASS layout: one column per field (title, wheel, master,
+        # then R/G/B stacked), three columns side by side -- the old
+        # wheel-beside-a-row-of-three-spins layout needed ~430px and was
+        # cut off at the Parameters panel's default width.
+        wheels_row = QHBoxLayout()
+        wheels_row.setSpacing(10)
         for field_key, field_label, lo, hi, default, step, strength in CDL_SOP_FIELD_SPECS:
             self._cdl_wheel_strength[field_key] = strength
+            column = QVBoxLayout()
+            column.setSpacing(4)
+            title = _ParamLabel(field_label, lambda fk=field_key: self._reset_one_cdl_field(fk))
+            title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            column.addWidget(title)
 
-            field_row = QHBoxLayout()
             wheel = ColorBalanceWheel(diameter=CDL_WHEEL_DIAMETER)
             wheel.balance_changed.connect(
                 lambda x, y, fk=field_key: self._on_cdl_wheel_changed(fk, x, y))
-            field_row.addWidget(wheel)
+            column.addWidget(wheel, alignment=Qt.AlignmentFlag.AlignHCenter)
             self._cdl_wheels[field_key] = wheel
 
-            master_col = QVBoxLayout()
-            master_col.addWidget(_ParamLabel(
-                f"{field_label} (Master):", lambda fk=field_key: self._reset_one_cdl_field(fk)))
             master_spin = QDoubleSpinBox()
             master_spin.setRange(lo, hi)
             master_spin.setDecimals(4)
             master_spin.setSingleStep(step)
             master_spin.setValue(default)
+            master_spin.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            # Columns share the panel width; a spin box's own size hint
+            # (its widest possible text) would otherwise force a scrollbar.
+            master_spin.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            master_spin.setMinimumWidth(56)
+            master_spin.setToolTip(f"{field_label} master (all channels)")
             enable_drag_to_scrub(master_spin)
             master_spin.valueChanged.connect(
                 lambda _v, fk=field_key: self._on_cdl_master_changed(fk))
-            master_col.addWidget(master_spin)
+            column.addWidget(master_spin)
             self._cdl_master_spins[field_key] = master_spin
 
-            fine_row = QHBoxLayout()
             channel_spins = {}
             for channel in ("R", "G", "B"):
                 spin = QDoubleSpinBox()
@@ -96,18 +108,20 @@ class CdlInspectorMixin:
                 enable_drag_to_scrub(spin)
                 spin.valueChanged.connect(
                     lambda _v, fk=field_key: self._on_cdl_channel_spin_changed(fk))
-                fine_row.addWidget(_ParamLabel(channel, lambda s=spin, d=default: s.setValue(d)))
-                fine_row.addWidget(spin)
+                spin.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+                spin.setMinimumWidth(48)
+                channel_row = QHBoxLayout()
+                channel_row.setSpacing(4)
+                channel_row.addWidget(_ParamLabel(channel, lambda s=spin, d=default: s.setValue(d)))
+                channel_row.addWidget(spin, stretch=1)
+                column.addLayout(channel_row)
                 channel_spins[channel] = spin
             self._cdl_sop_spins[field_key] = channel_spins
-            master_col.addLayout(fine_row)
-
-            field_row.addLayout(master_col, stretch=1)
-            outer.addLayout(field_row)
-
+            wheels_row.addLayout(column, stretch=1)
+        outer.addLayout(wheels_row)
         reset_sop_button = QPushButton("Reset SOP to Identity")
         reset_sop_button.clicked.connect(self._on_cdl_reset_sop_clicked)
-        outer.addWidget(reset_sop_button)
+        outer.addWidget(reset_sop_button, alignment=Qt.AlignmentFlag.AlignLeft)
 
         # SAT (Saturation) ------------------------------------------------
         # Scalar, not a balance -- a slider (matching Printer Lights'
@@ -143,7 +157,7 @@ class CdlInspectorMixin:
 
         reset_sat_button = QPushButton("Reset SAT to 1.0")
         reset_sat_button.clicked.connect(self._on_cdl_reset_sat_clicked)
-        outer.addWidget(reset_sat_button)
+        outer.addWidget(reset_sat_button, alignment=Qt.AlignmentFlag.AlignLeft)
 
         # Style -------------------------------------------------------
         style_row = QHBoxLayout()
@@ -161,7 +175,8 @@ class CdlInspectorMixin:
             "Save this stage's current SOP/SAT values as a named, reusable "
             "entry in the CDL Library panel.")
         save_to_library_button.clicked.connect(self._on_cdl_save_to_library_clicked)
-        outer.addWidget(save_to_library_button)
+        save_to_library_button.setObjectName("primaryButton")
+        outer.addWidget(save_to_library_button, alignment=Qt.AlignmentFlag.AlignLeft)
 
         # See _build_printer_lights_inspector's own comment on why every
         # inspector page needs a trailing vertical stretch.
@@ -270,7 +285,7 @@ class CdlInspectorMixin:
         real fine-spin edit that can land anywhere. `apply=False` lets
         _on_cdl_reset_sop_clicked call this once per field (all three)
         and apply/re-render exactly once at the end, instead of once per
-        field; shared with each field's own "{label} (Master):" label
+        field; shared with each field's own column title label
         double-click (per Tom, see _ParamLabel), which resets just that
         one field and still wants its own immediate apply (the
         default)."""

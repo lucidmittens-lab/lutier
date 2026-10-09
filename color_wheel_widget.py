@@ -26,17 +26,23 @@ visual design as settled.
 import math
 
 from PySide6.QtCore import Qt, QPointF, QRectF, Signal
-from PySide6.QtGui import QPainter, QPen, QColor, QConicalGradient, QRadialGradient
+from PySide6.QtGui import QBrush, QPainter, QPen, QColor, QConicalGradient
 from PySide6.QtWidgets import QWidget, QSizePolicy
 
 import color_balance as cb
+import style
 
 DEFAULT_DIAMETER = 96
 PUCK_RADIUS = 6
-RING_COLOR = QColor(90, 90, 90)
-CENTER_MARK_COLOR = QColor(255, 255, 255, 160)
-PUCK_FILL = QColor(255, 255, 255, 235)
-PUCK_BORDER = QColor(20, 20, 20, 220)
+# style.py IDENTITY PASS look: a dark face with a thin, muted hue ring at
+# the edge (was a full-saturation rainbow disc), hairline crosshairs, and a
+# light-ring puck joined to the centre by a faint line showing the offset.
+RING_WIDTH = 5
+FACE_COLOR = QColor(style._FIELD_BG)
+CROSSHAIR_COLOR = QColor(style._DARK_MID)
+OFFSET_LINE_COLOR = QColor(style._HINT_TEXT)
+PUCK_FILL = QColor(style._FIELD_BG)
+PUCK_BORDER = QColor(style._TEXT_PRIMARY)
 
 # Hue stops at each axis angle (see color_balance.py's _AXIS_ANGLES_DEG:
 # R=90 deg, G=210 deg, B=330 deg) plus the complementary secondaries
@@ -44,14 +50,16 @@ PUCK_BORDER = QColor(20, 20, 20, 220)
 # wheel rather than three bare primaries with dead space between them.
 # QConicalGradient's angle is measured counterclockwise from the
 # 3-o'clock position, matching the same convention color_balance.py uses.
+# Muted (about half saturation): the ring says which way is which hue
+# without shouting next to the picture.
 _HUE_STOPS = [
-    (90, QColor(255, 60, 60)),    # R
-    (150, QColor(255, 230, 60)),  # R/G -> yellow
-    (210, QColor(60, 255, 90)),   # G
-    (270, QColor(60, 230, 255)),  # G/B -> cyan
-    (330, QColor(90, 90, 255)),   # B
-    (30, QColor(230, 60, 255)),   # B/R -> magenta
-    (90, QColor(255, 60, 60)),    # wrap back to R
+    (90, QColor(210, 92, 86)),    # R
+    (150, QColor(205, 186, 82)),  # R/G -> yellow
+    (210, QColor(96, 182, 102)),  # G
+    (270, QColor(82, 180, 190)),  # G/B -> cyan
+    (330, QColor(104, 112, 216)), # B
+    (30, QColor(186, 96, 196)),   # B/R -> magenta
+    (90, QColor(210, 92, 86)),    # wrap back to R
 ]
 
 
@@ -145,29 +153,24 @@ class ColorBalanceWheel(QWidget):
             stop = 1.0 if i == len(_HUE_STOPS) - 1 else (angle_deg % 360) / 360.0
             hue_gradient.setColorAt(stop, color)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(hue_gradient)
+        painter.setBrush(FACE_COLOR)
         painter.drawEllipse(rect)
 
-        # Desaturate toward the center (a real color wheel is gray/neutral
-        # at its middle -- full saturation only at the rim) via a white
-        # radial gradient fading out before the edge.
-        desaturate = QRadialGradient(center, radius)
-        desaturate.setColorAt(0.0, QColor(255, 255, 255, 235))
-        desaturate.setColorAt(0.55, QColor(255, 255, 255, 60))
-        desaturate.setColorAt(1.0, QColor(255, 255, 255, 0))
-        painter.setBrush(desaturate)
-        painter.drawEllipse(rect)
-
-        painter.setPen(QPen(RING_COLOR, 1))
+        half = RING_WIDTH / 2.0
+        painter.setPen(QPen(QBrush(hue_gradient), RING_WIDTH))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawEllipse(rect)
+        painter.drawEllipse(rect.adjusted(half, half, -half, -half))
 
-        painter.setPen(QPen(CENTER_MARK_COLOR, 1))
-        painter.drawLine(QPointF(center.x() - 4, center.y()), QPointF(center.x() + 4, center.y()))
-        painter.drawLine(QPointF(center.x(), center.y() - 4), QPointF(center.x(), center.y() + 4))
+        inner = radius - RING_WIDTH - 3
+        painter.setPen(QPen(CROSSHAIR_COLOR, 1))
+        painter.drawLine(QPointF(center.x() - inner, center.y()), QPointF(center.x() + inner, center.y()))
+        painter.drawLine(QPointF(center.x(), center.y() - inner), QPointF(center.x(), center.y() + inner))
 
         puck_pos = _unit_to_pos(self._x, self._y, rect)
-        painter.setPen(QPen(PUCK_BORDER, 1.5))
+        if (self._x, self._y) != (0.0, 0.0):
+            painter.setPen(QPen(OFFSET_LINE_COLOR, 1))
+            painter.drawLine(center, puck_pos)
+        painter.setPen(QPen(PUCK_BORDER, 2))
         painter.setBrush(PUCK_FILL)
         painter.drawEllipse(puck_pos, PUCK_RADIUS, PUCK_RADIUS)
 

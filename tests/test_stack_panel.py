@@ -1271,13 +1271,13 @@ def test_cdl_field_label_double_click_resets_whole_field_to_identity():
     panel._cdl_sop_spins["slope"]["G"].setValue(0.5)
     panel._cdl_sop_spins["offset"]["R"].setValue(0.3)  # a different field -- must be untouched
     inspector = panel.inspector_stack.widget(panel._cdl_inspector_index)
-    label = _find_param_label(inspector, "Slope (Master):")
+    label = _find_param_label(inspector, "Slope")
     label.show()
     QTest.mouseDClick(label, Qt.MouseButton.LeftButton)
     for channel in ("R", "G", "B"):
         assert panel._cdl_sop_spins["slope"][channel].value() == 1.0
     assert panel._cdl_sop_spins["offset"]["R"].value() == 0.3, "offset must be untouched by resetting slope alone"
-    print("StackPanel CDL inspector: double-clicking 'Slope (Master):' "
+    print("StackPanel CDL inspector: double-clicking 'Slope' "
           "resets the whole Slope field to identity, leaves Offset alone -- OK")
 
 
