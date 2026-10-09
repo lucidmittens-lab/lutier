@@ -222,6 +222,7 @@ from main_window_parts.docks import DockMixin
 from main_window_parts.layout import LayoutMixin
 from main_window_parts.menus import MenuMixin
 from main_window_parts.workspace import WorkspaceMixin
+from main_window_parts.suggested_layouts import SuggestedLayoutMixin
 from main_window_parts.session import SessionMixin
 from main_window_parts.undo import UndoMixin
 from main_window_parts.pipeline import PipelineMixin
@@ -237,8 +238,8 @@ from main_window_parts.export_video import _GpuVideoExportRunner  # noqa: F401
 from main_window_parts.undo import _UNDO_DEBOUNCE_MS  # noqa: F401
 
 
-class MainWindow(DockMixin, LayoutMixin, MenuMixin, WorkspaceMixin, SessionMixin,
-                 UndoMixin, PipelineMixin, TimelineMixin, ExportLutMixin,
+class MainWindow(DockMixin, LayoutMixin, MenuMixin, WorkspaceMixin, SuggestedLayoutMixin,
+                 SessionMixin, UndoMixin, PipelineMixin, TimelineMixin, ExportLutMixin,
                  VideoExportMixin, QMainWindow):
     def __init__(self):
         super().__init__()

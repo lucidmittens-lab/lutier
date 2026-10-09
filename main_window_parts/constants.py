@@ -79,3 +79,16 @@ DEFAULT_WORKSPACE_STATE = {
     # screen by default with a comfy amount of space per panel").
     "window_size": [1200, 800],
 }
+
+
+# Suggested layouts (main_window_parts/suggested_layouts.py): one-click
+# panel arrangements for a kind of work -- not modes. Order = menu/button
+# order (and Alt+1, Alt+2).
+MEDIA_LAYOUT = "media"
+GRADE_LAYOUT = "grade"
+SUGGESTED_LAYOUTS = ((MEDIA_LAYOUT, "Media"), (GRADE_LAYOUT, "Grade"))
+SUGGESTED_LAYOUT_PANELS = {
+    MEDIA_LAYOUT: {"browser_frame", "source_viewer_frame", "image_library_frame"},
+    GRADE_LAYOUT: {frame_attr for _a, _l, frame_attr, default_visible in PANEL_TOGGLES
+                   if default_visible},
+}

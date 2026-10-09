@@ -214,6 +214,7 @@ class MenuMixin:
         # looking like a workspace preset option.
         workspace_menu.addSeparator()
         workspace_menu.addAction("Accent Color...", self._choose_accent_color)
+        self._build_suggested_layouts_ui(workspace_menu)
 
         # Media Cache Folder... (Phase 1 of the Media Library/Stills
         # Gallery work, per Tom: "thumbnails can go in the session file,

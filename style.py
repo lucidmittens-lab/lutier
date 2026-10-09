@@ -821,6 +821,21 @@ QPushButton#segmentButton:disabled {{
     color: {_TEXT_DISABLED};
 }}
 
+/* Suggested-layout buttons in the menu bar's corner (Media / Grade):
+   quiet text buttons -- they apply an arrangement, they aren't a mode. */
+QPushButton#suggestedLayoutButton {{
+    border: none;
+    border-radius: 6px;
+    padding: 3px 10px;
+    color: {_HINT_TEXT};
+    background: transparent;
+}}
+
+QPushButton#suggestedLayoutButton:hover {{
+    background-color: {_DARK_LIGHT};
+    color: palette(text);
+}}
+
 /* The Timeline's Thumbnails view (timeline_thumbnail_strip.py): the
    scroll area's viewport beyond the last card matches the strip. */
 QScrollArea#thumbnailStripScroll,
