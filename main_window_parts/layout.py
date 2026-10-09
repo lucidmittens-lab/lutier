@@ -12,6 +12,8 @@ from sample_image_panel import SampleImagePanel
 from stack_panel import StackPanel
 from source_viewer import SourceViewerPanel
 from metadata_panel import MetadataPanel
+from render_settings_panel import RenderSettingsPanel
+from render_queue_panel import RenderQueuePanel
 from scopes_panel import ScopesPanel
 from lut_viewer_3d import LutViewer3D
 import canvas as cv
@@ -403,6 +405,15 @@ class LayoutMixin:
             corner_widget=self.viewer_3d.menu_button)
         # Reads the baked stack LUT directly (see _on_stack_changed below)
         # -- independent of the sample image entirely, unlike Scopes.
+
+        # Render: what to render and how, and the queue that renders it
+        # (main_window_parts/render.py wires the two).
+        self.render_settings_panel = RenderSettingsPanel()
+        self._make_dock("render_settings_frame", "Render Settings", self.render_settings_panel)
+        self.render_queue_panel = RenderQueuePanel()
+        self._make_dock("render_queue_frame", "Render Queue", self.render_queue_panel)
+        self._render_size_cache = {}
+        self._wire_render_panels()
 
         # Now that every dock exists, lay them out in the default spatial
         # arrangement (see _build_default_dock_layout's own docstring) --

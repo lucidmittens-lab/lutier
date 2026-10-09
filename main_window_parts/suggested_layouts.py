@@ -11,6 +11,8 @@ which is then yours to change and is remembered as usual. Nothing tracks
 - GRADE: the grading screen -- Record, the Timeline's thumbnail strip,
   the Stack, Parameters, Scopes. Also what Reset to Default Workspace
   and a first launch give you.
+- RENDER: Render Settings, Record and the Render Queue side by side, the
+  Timeline across the bottom -- Resolve's Deliver page, as a layout.
 
 Applied from Workspace > Suggested Layouts (Alt+1, Alt+2) or the buttons
 in the menu bar's top-right corner. A mixin: MainWindow inherits it, so
@@ -20,7 +22,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QPushButton, QSizePolicy
 
-from .constants import MEDIA_LAYOUT, PANEL_TOGGLES, SUGGESTED_LAYOUT_PANELS, SUGGESTED_LAYOUTS
+from .constants import (
+    MEDIA_LAYOUT, PANEL_TOGGLES, RENDER_LAYOUT, SUGGESTED_LAYOUT_PANELS, SUGGESTED_LAYOUTS,
+)
 
 
 class SuggestedLayoutMixin:
@@ -57,6 +61,8 @@ class SuggestedLayoutMixin:
         self._show_only_panels_of(layout_key)  # before: proportions count shown docks
         if layout_key == MEDIA_LAYOUT:
             self._build_media_layout()
+        elif layout_key == RENDER_LAYOUT:
+            self._build_render_layout()
         else:
             self._build_default_dock_layout()
         # ...and after: placing a dock can show it (e.g. Source, see
@@ -84,3 +90,19 @@ class SuggestedLayoutMixin:
                          Qt.Orientation.Horizontal)
         self.resizeDocks([self.source_viewer_frame, self.image_library_frame],
                          [round(height * 0.55), round(height * 0.45)], Qt.Orientation.Vertical)
+
+    def _build_render_layout(self):
+        """Render Settings left, Record centre, the Render Queue right, the
+        Timeline across the whole bottom."""
+        self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.render_settings_frame)
+        self.splitDockWidget(self.render_settings_frame, self.sample_image_frame, Qt.Orientation.Horizontal)
+        self.splitDockWidget(self.sample_image_frame, self.render_queue_frame, Qt.Orientation.Horizontal)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.timeline_frame)
+        width, height = max(1, self.width()), max(1, self.height())
+        self.resizeDocks([self.render_settings_frame, self.sample_image_frame, self.render_queue_frame],
+                         [round(width * 0.24), round(width * 0.50), round(width * 0.26)],
+                         Qt.Orientation.Horizontal)
+        self.resizeDocks([self.sample_image_frame, self.timeline_frame],
+                         [round(height * 0.70), round(height * 0.30)], Qt.Orientation.Vertical)

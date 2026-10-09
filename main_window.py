@@ -229,6 +229,7 @@ from main_window_parts.pipeline import PipelineMixin
 from main_window_parts.timeline_wiring import TimelineMixin
 from main_window_parts.export_lut import ExportLutMixin
 from main_window_parts.export_video import VideoExportMixin
+from main_window_parts.render import RenderMixin
 
 # Re-exported: tests read these from main_window (main_window.PANEL_TOGGLES
 # etc.); they live in main_window_parts/ now.
@@ -240,7 +241,7 @@ from main_window_parts.undo import _UNDO_DEBOUNCE_MS  # noqa: F401
 
 class MainWindow(DockMixin, LayoutMixin, MenuMixin, WorkspaceMixin, SuggestedLayoutMixin,
                  SessionMixin, UndoMixin, PipelineMixin, TimelineMixin, ExportLutMixin,
-                 VideoExportMixin, QMainWindow):
+                 VideoExportMixin, RenderMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("LUTier")
@@ -458,6 +459,7 @@ class MainWindow(DockMixin, LayoutMixin, MenuMixin, WorkspaceMixin, SuggestedLay
         one of Tom's app-quit-with-a-panel-floating tests went through
         this exact path, rebuilding GL content during shutdown."""
         self.sample_image.shutdown_casting()
+        self.render_queue_panel.shutdown()
         state = self.get_workspace_state()
         self._dock_all_floating_panels(rebuild_gl_content=False)
         workspace_io.save_remembered_workspace(state)

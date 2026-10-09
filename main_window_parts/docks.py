@@ -314,6 +314,10 @@ class DockMixin:
         # Metadata's default slot (hidden by default; the Media suggested
         # layout puts it beside the Source viewer).
         self.splitDockWidget(self.viewer_3d_frame, self.metadata_frame, Qt.Orientation.Vertical)
+        # Render Settings and the Render Queue (hidden by default; the
+        # Render suggested layout puts them either side of Record).
+        self.splitDockWidget(self.stack_memories_frame, self.render_settings_frame, Qt.Orientation.Vertical)
+        self.splitDockWidget(self.metadata_frame, self.render_queue_frame, Qt.Orientation.Vertical)
 
         # Source beside Record -- split AFTER the center column's vertical
         # splits, so the two viewers share the top of the column and Stack/

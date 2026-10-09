@@ -1,4 +1,4 @@
-"""Tests for main_window_parts/suggested_layouts.py (Media / Grade) -- run
+"""Tests for main_window_parts/suggested_layouts.py (Media / Grade / Render) -- run
 directly: QT_QPA_PLATFORM=offscreen python3 -m tests.test_suggested_layouts
 """
 import sys
@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication, QPushButton
 import workspace_io
 from main_window import MainWindow
 from main_window_parts.constants import (
-    GRADE_LAYOUT, MEDIA_LAYOUT, PANEL_TOGGLES, SUGGESTED_LAYOUT_PANELS)
+    GRADE_LAYOUT, MEDIA_LAYOUT, PANEL_TOGGLES, RENDER_LAYOUT, SUGGESTED_LAYOUT_PANELS)
 
 _workspace_tmp_dir = tempfile.TemporaryDirectory()
 workspace_io.DEFAULT_WORKSPACE_DIR = Path(_workspace_tmp_dir.name) / "LUTier"
@@ -53,15 +53,24 @@ def test_suggested_layouts_show_exactly_their_panels_and_can_be_reapplied():
                 "image_library_frame"} == SUGGESTED_LAYOUT_PANELS[MEDIA_LAYOUT]
         assert win.dockWidgetArea(win.image_library_frame) == Qt.DockWidgetArea.BottomDockWidgetArea
 
+        win.apply_suggested_layout(RENDER_LAYOUT)
+        QApplication.processEvents()
+        assert _shown(win) == {"render_settings_frame", "sample_image_frame",
+                               "render_queue_frame", "timeline_frame"}
+        assert win.dockWidgetArea(win.timeline_frame) == Qt.DockWidgetArea.BottomDockWidgetArea
+        settings_x = win.render_settings_frame.geometry().x()
+        assert settings_x < win.sample_image_frame.geometry().x() < win.render_queue_frame.geometry().x()
+
         # Not a mode: the user can change things, and re-applying still works.
         win.scopes_frame.setVisible(True)
         win.apply_suggested_layout(GRADE_LAYOUT)
         QApplication.processEvents()
         assert _shown(win) == SUGGESTED_LAYOUT_PANELS[GRADE_LAYOUT]
         assert win.dockWidgetArea(win.image_library_frame) != Qt.DockWidgetArea.BottomDockWidgetArea
+        assert win.dockWidgetArea(win.timeline_frame) != Qt.DockWidgetArea.BottomDockWidgetArea
     finally:
         win.close()
-    print("suggested layouts: Media and Grade show exactly their panels -- OK")
+    print("suggested layouts: Media, Render and Grade show exactly their panels -- OK")
 
 
 def test_corner_buttons_and_menu_actions_exist():
@@ -70,13 +79,13 @@ def test_corner_buttons_and_menu_actions_exist():
     try:
         corner = win.menuBar().cornerWidget(Qt.Corner.TopRightCorner)
         assert corner is not None, "the corner widget must survive (Python owns it)"
-        assert [b.text() for b in corner.findChildren(QPushButton)] == ["Media", "Grade"]
+        assert [b.text() for b in corner.findChildren(QPushButton)] == ["Media", "Grade", "Render"]
         shortcuts = {a.text(): a.shortcut().toString() for a in win.findChildren(QAction)
-                     if a.text() in ("Media", "Grade")}
-        assert shortcuts == {"Media": "Alt+1", "Grade": "Alt+2"}
+                     if a.text() in ("Media", "Grade", "Render")}
+        assert shortcuts == {"Media": "Alt+1", "Grade": "Alt+2", "Render": "Alt+3"}
     finally:
         win.close()
-    print("suggested layouts: corner buttons and Alt+1/Alt+2 menu actions -- OK")
+    print("suggested layouts: corner buttons and Alt+1..3 menu actions -- OK")
 
 
 if __name__ == "__main__":

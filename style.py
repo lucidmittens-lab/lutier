@@ -877,6 +877,42 @@ QLabel#panelStatusLabel {{
     padding: 2px 4px;
 }}
 
+/* Render Queue job cards (render_queue_panel.py). */
+QLabel#renderJobName {{
+    font-weight: 600;
+}}
+
+QLabel#renderJobStatus {{
+    color: {_HINT_TEXT};
+    font-size: 11px;
+}}
+
+QLabel#renderJobStatus[state="rendering"] {{
+    color: palette(highlight);
+    font-weight: 600;
+}}
+
+QLabel#renderJobStatus[state="done"] {{
+    color: {_TEXT_PRIMARY};
+}}
+
+QLabel#renderJobPath {{
+    color: {_HINT_TEXT};
+    font-family: "{MONO_FONT_FAMILY}";
+    font-size: 11px;
+}}
+
+QProgressBar#renderProgress {{
+    background-color: {_DARK_MID};
+    border: none;
+    border-radius: 2px;
+}}
+
+QProgressBar#renderProgress::chunk {{
+    background-color: palette(highlight);
+    border-radius: 2px;
+}}
+
 /* Media Libraries' grid (media_grid.py) in its scroll area. */
 QScrollArea#mediaGridScroll,
 QScrollArea#mediaGridScroll > QWidget#qt_scrollarea_viewport {{

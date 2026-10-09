@@ -47,8 +47,9 @@ grep for the method name.
   in `main_window_parts/` mixins: `docks`, `layout` (`_build_layout`),
   `menus`, `workspace`, `session` (sessions and project settings), `undo`,
   `pipeline` (stack changes, effective stack, Sequence/Shot),
-  `suggested_layouts` (Media / Grade one-click layouts),
-  `timeline_wiring`, `export_lut`, `export_video`, `constants`
+  `suggested_layouts` (Media / Grade / Render one-click layouts),
+  `timeline_wiring`, `export_lut`, `export_video`, `render` (Render
+  Settings' planner and the queue wiring), `constants`
   (`PANEL_TOGGLES`). Parts never import `main_window` (run as a script it is
   `__main__`). Also `splash_launcher` (packaged entry point), `style` (all QSS
   and the palette), `theme_prefs`, `panel_frame`, `floating_dialog`,
@@ -61,7 +62,8 @@ grep for the method name.
   surface), `browser_panel`, `media_panel`, `lut_library_panel`,
   `stack_memories_panel` (Stills Gallery), `lut_viewer_3d` (Graph panel),
   `media_grid` (Media Libraries' Grid view), `metadata_panel` (selected
-  clip's details), `timeline_thumbnail_strip`
+  clip's details), `render_settings_panel` and `render_queue_panel`
+  (the Render layout), `timeline_thumbnail_strip`
   (the Timeline's Thumbnails view), `curve_editor_widget`,
   `color_wheel_widget`, `color_warper_wheel`,
   `color_warper_cloud_widget`, `safe_gl_view_widget`.
@@ -73,7 +75,8 @@ grep for the method name.
   `StackPanel` inherits the mixins, so all pages share one `self`. Outside
   code imports from `stack_panel` (`__init__` re-exports).
 - **Media:** `image_io` (OpenImageIO), `video_source` (PyAV), `media_probe`,
-  `media_library`, `media_cache`, `thumbnail`, `video_export`.
+  `media_library`, `media_cache`, `thumbnail`, `video_export`,
+  `render_job` (render jobs: planning outputs, the CPU render loop).
 - **Timeline and playback:** `timeline`, `timeline_panel`,
   `timeline_track_widget`, `timeline_playback_controller`,
   `video_playback_controller`, `frame_server` (decode-ahead thread),

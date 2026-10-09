@@ -63,6 +63,10 @@ PANEL_TOGGLES_TIMELINE = [
     # The selected media clip's details (metadata_panel.py) -- part of
     # the Media suggested layout.
     ("metadata_toggle", "Metadata", "metadata_frame", False),
+    # The Render suggested layout's two panels (render_settings_panel.py,
+    # render_queue_panel.py).
+    ("render_settings_toggle", "Render Settings", "render_settings_frame", False),
+    ("render_queue_toggle", "Render Queue", "render_queue_frame", False),
 ]
 PANEL_TOGGLES = (
     PANEL_TOGGLES_LEFT + PANEL_TOGGLES_CENTER + PANEL_TOGGLES_RIGHT + PANEL_TOGGLES_TIMELINE)
@@ -86,12 +90,15 @@ DEFAULT_WORKSPACE_STATE = {
 
 # Suggested layouts (main_window_parts/suggested_layouts.py): one-click
 # panel arrangements for a kind of work -- not modes. Order = menu/button
-# order (and Alt+1, Alt+2).
+# order (and Alt+1, Alt+2, Alt+3).
 MEDIA_LAYOUT = "media"
 GRADE_LAYOUT = "grade"
-SUGGESTED_LAYOUTS = ((MEDIA_LAYOUT, "Media"), (GRADE_LAYOUT, "Grade"))
+RENDER_LAYOUT = "render"
+SUGGESTED_LAYOUTS = ((MEDIA_LAYOUT, "Media"), (GRADE_LAYOUT, "Grade"), (RENDER_LAYOUT, "Render"))
 SUGGESTED_LAYOUT_PANELS = {
     MEDIA_LAYOUT: {"browser_frame", "source_viewer_frame", "metadata_frame", "image_library_frame"},
     GRADE_LAYOUT: {frame_attr for _a, _l, frame_attr, default_visible in PANEL_TOGGLES
                    if default_visible},
+    RENDER_LAYOUT: {"render_settings_frame", "sample_image_frame", "render_queue_frame",
+                    "timeline_frame"},
 }

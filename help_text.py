@@ -579,10 +579,12 @@ Scopes. Every other panel is in the **Workspace** menu (or Shift+its
 number) and opens in its own default spot.
 
 **Suggested layouts** rearrange the panels for a kind of work in one
-click, from the **Media** and **Grade** buttons at the right end of the
-menu bar or **Workspace → Suggested Layouts** (Alt+1, Alt+2). **Media**
-shows the Browser, the Source viewer and Media Libraries across the
-bottom; **Grade** is the grading screen above. They aren't modes:
+click, from the **Media**, **Grade** and **Render** buttons at the right
+end of the menu bar or **Workspace → Suggested Layouts** (Alt+1, Alt+2,
+Alt+3). **Media** shows the Browser, the Source viewer, Metadata and
+Media Libraries across the bottom; **Grade** is the grading screen above;
+**Render** shows Render Settings, Record and the Render Queue, with the
+Timeline across the bottom. They aren't modes:
 afterwards the workspace is yours to change, and it is remembered as
 usual.
 
@@ -636,6 +638,45 @@ between launches instead, and can be saved/loaded independently as its
 own preset file — see **Workspace & Window Management** above.
 
 **Source:** `session_io.py`.
+
+## Render
+
+The **Render** layout (Alt+3) renders graded movies and image sequences.
+Set up a job in **Render Settings**, press **Add to Render Queue**, then
+**Render All** in the **Render Queue**.
+
+- **Render:** the whole **Timeline**, or the **Current Clip** (the clip
+  selected on the Timeline, or else whatever is loaded in Record). A
+  timeline renders as a **Single File** or as **Individual Clips**, one
+  file per clip.
+- **Format:** ProRes 4444 or H.264 movies, or EXR, DPX, TIFF or PNG
+  sequences. **Bit Depth** lists what the format can carry.
+- **Size:** the **Project** canvas, or each clip's **Source** size.
+- **Colour:** **As Viewed** renders exactly what Record shows (input
+  transform, the clip's and the Sequence's grades, the display
+  transform). **Working Space** leaves off the display transform, for
+  VFX pulls.
+- **Location** and **File Name:** the file name is a template. `{name}`
+  is the timeline's name (or each clip's, rendering individual clips);
+  `{clip}`, `{reel}`, `{timeline}`, `{source}` (the source file's name),
+  `{n}` (001, 002…) and `{date}` work too. A sequence goes in its own
+  folder as `name.0000000.ext`, numbered from 0.
+
+**Will Render** previews the first file name, the number of files and
+frames, the size and the format. Files that already exist, or are already
+queued, are only replaced after you confirm.
+
+A job keeps the grades as they were when it was queued, so you can carry
+on grading while it renders. The queue renders one job at a time, on the
+CPU (the exact path, not the Viewer's GPU preview). **Stop** cancels the
+job rendering and keeps what it wrote so far. Right-click a job to show
+it in the file manager, queue a stopped or failed one again, remove it,
+or clear finished jobs. The queue lasts for the session. Audio isn't
+rendered yet.
+
+**Source:** `render_settings_panel.py`, `render_queue_panel.py`,
+`render_job.py` (planning and the render loop) and
+`main_window_parts/render.py`.
 
 ## Export
 

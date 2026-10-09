@@ -31,8 +31,8 @@ import os
 import re
 from dataclasses import dataclass, field
 
-import image_io
 import id_counter
+import image_io
 import stack as st
 import video_export
 import video_source
