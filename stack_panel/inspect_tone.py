@@ -1,6 +1,6 @@
 """stack_panel/inspect_tone.py -- inspector pages for OCIO Grading Tone (five
-tonal-range wheels) and Grading RGB Curves (the curve editor). A mixin: StackPanel inherits it, so these methods share the panel's own
-`self`.
+tonal-range wheels) and Grading RGB Curves (the curve editor). A mixin:
+StackPanel inherits it, so these methods share the panel's own `self`.
 """
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QDoubleSpinBox,

@@ -1,15 +1,13 @@
-"""stack_panel/inspect_fork.py -- inspector pages for Fork Split and Fork
-Merge (the A/B blend). A mixin: StackPanel inherits it, so these methods share the panel's own
-`self`.
+"""stack_panel/inspect_fork.py -- inspector pages for Fork Split and Fork Merge
+(the A/B blend). A mixin: StackPanel inherits it, so these methods share the
+panel's own `self`.
 """
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QGroupBox, QSlider,
 )
 from style import HINT_TEXT_HEX
-from .labels import (
-    _format_fork_merge_label,
-)
+from .labels import _format_fork_merge_label
 
 
 class ForkInspectorMixin:

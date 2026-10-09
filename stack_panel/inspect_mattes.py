@@ -1,7 +1,7 @@
-"""stack_panel/inspect_mattes.py -- inspector pages for the matte stages:
-Keyer (with the Viewer pixel pick), Matte Combine and Matte Shape, each
-with its matte-highlight toggle. A mixin: StackPanel inherits it, so these methods share the panel's own
-`self`.
+"""stack_panel/inspect_mattes.py -- inspector pages for the matte stages: Keyer
+(with the Viewer pixel pick), Matte Combine and Matte Shape, each with its
+matte-highlight toggle. A mixin: StackPanel inherits it, so these methods
+share the panel's own `self`.
 """
 import numpy as np
 from PySide6.QtWidgets import (
@@ -16,9 +16,7 @@ import color_warper as cw
 import keyer as ky
 from app_logic import list_available_colourspaces
 from spinbox_scrub import enable_drag_to_scrub
-from .labels import (
-    _matte_options_by_index,
-)
+from .labels import _matte_options_by_index
 from .widgets import _ParamLabel
 
 

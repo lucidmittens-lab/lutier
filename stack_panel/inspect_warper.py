@@ -1,6 +1,6 @@
 """stack_panel/inspect_warper.py -- the WARPier (color_warper) inspector page:
-the warper wheel and point cloud, wake/dropoff controls and reset. A mixin: StackPanel inherits it, so these methods share the panel's own
-`self`.
+the warper wheel and point cloud, wake/dropoff controls and reset. A mixin:
+StackPanel inherits it, so these methods share the panel's own `self`.
 """
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QDoubleSpinBox,

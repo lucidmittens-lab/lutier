@@ -12,9 +12,7 @@ from app_logic import list_available_colourspaces
 from printer_lights import POINTS_PER_STOP, DEFAULT_WORKING_COLOURSPACE
 from spinbox_scrub import enable_drag_to_scrub
 from style import HINT_TEXT_HEX
-from .labels import (
-    PRINTER_LIGHT_RANGE,
-)
+from .labels import PRINTER_LIGHT_RANGE
 from .widgets import _ParamLabel
 
 

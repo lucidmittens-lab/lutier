@@ -14,9 +14,7 @@ import colour_pipeline
 from printer_lights import DEFAULT_WORKING_COLOURSPACE
 from spinbox_scrub import enable_drag_to_scrub
 from style import PANEL_BORDER_RADIUS
-from .labels import (
-    _stage_kind_badge_text,
-)
+from .labels import _stage_kind_badge_text
 
 
 class _ElidingLabel(QLabel):

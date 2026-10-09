@@ -148,7 +148,10 @@ from .inspect_fork import ForkInspectorMixin
 # for "no branch."
 _UNSPECIFIED_BRANCH = object()
 
-class StackPanel(LutInspectorMixin, DrtInspectorMixin, CdlInspectorMixin, PrimaryInspectorMixin, ToneInspectorMixin, WarperInspectorMixin, MatteInspectorMixin, ForkInspectorMixin, QObject):
+
+class StackPanel(LutInspectorMixin, DrtInspectorMixin, CdlInspectorMixin,
+                 PrimaryInspectorMixin, ToneInspectorMixin, WarperInspectorMixin,
+                 MatteInspectorMixin, ForkInspectorMixin, QObject):
     """Emits stack_changed() after any mutation -- add/remove/reorder/
     enable-toggle/opacity change/param update/grid size/domain -- so
     MainWindow can re-bake and push the result to the 3D viewer/info
@@ -1366,7 +1369,7 @@ class StackPanel(LutInspectorMixin, DrtInspectorMixin, CdlInspectorMixin, Primar
         else:
             stage.branch = "a"  # both already populated, no branch context to key off -- never leave it unassigned
 
-    # ---- inspector: empty ----------------------------------------------
+    # ---- inspector pages (each page's methods: inspect_*.py mixins) ----
 
     def _wrap_inspector_page(self, page):
         # QStackedWidget force-resizes its CURRENT page to its own full

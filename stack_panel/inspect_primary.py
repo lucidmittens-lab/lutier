@@ -1,7 +1,7 @@
 """stack_panel/inspect_primary.py -- inspector pages for OCIO Grading Primary
 (log/lin/video styles, wheels with master and fine spinboxes) and
-Exposure/Contrast. A mixin: StackPanel inherits it, so these methods share the panel's own
-`self`.
+Exposure/Contrast. A mixin: StackPanel inherits it, so these methods share
+the panel's own `self`.
 """
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QDoubleSpinBox,

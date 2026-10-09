@@ -3,9 +3,7 @@ _ParamLabel (a parameter's name label; double-click resets that parameter)
 and _CurrentPageStackedWidget (the inspector's page stack, sized by the
 page currently showing rather than the tallest one).
 """
-from PySide6.QtWidgets import (
-    QLabel, QStackedWidget,
-)
+from PySide6.QtWidgets import QLabel, QStackedWidget
 
 
 class _ParamLabel(QLabel):

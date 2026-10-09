@@ -10,8 +10,9 @@ was the original target. This Linux box (RTX 3080 Ti, GNOME Wayland) is now
 the main dev and real-GPU test bed. "Tom" in comments and docs is the
 product owner.
 
-Everything is flat in the repo root: about 100 app modules and 97 `test_*.py`
-files. Each module's docstring explains its purpose and history; read it
+Almost everything is flat in the repo root: about 100 app modules and 97
+`test_*.py` files. The exception is the `stack_panel/` package (see the module
+map). Each module's docstring explains its purpose and history; read it
 before editing the module.
 
 ## Module map
@@ -42,12 +43,20 @@ before editing the module.
   `theme_prefs`, `panel_frame`, `floating_dialog`, `hover_inspector`,
   `spinbox_scrub`, `help_text` (in-app manual), `bake_settings_form`,
   `transport_icons`.
-- **UI panels and widgets:** `stack_panel` (Stack list plus every Parameters
-  inspector page), `sample_image_panel` (Record viewer) and `source_viewer`,
-  `wipe_compare_widget` (the GL Viewer surface), `browser_panel`,
-  `media_panel`, `lut_library_panel`, `stack_memories_panel` (Stills Gallery),
-  `lut_viewer_3d` (Graph panel), `curve_editor_widget`, `color_wheel_widget`,
-  `color_warper_wheel`, `color_warper_cloud_widget`, `safe_gl_view_widget`.
+- **UI panels and widgets:** `stack_panel/` (the Stack list plus every
+  Parameters inspector page; see below), `sample_image_panel` (Record viewer)
+  and `source_viewer`, `wipe_compare_widget` (the GL Viewer surface),
+  `browser_panel`, `media_panel`, `lut_library_panel`, `stack_memories_panel`
+  (Stills Gallery), `lut_viewer_3d` (Graph panel), `curve_editor_widget`,
+  `color_wheel_widget`, `color_warper_wheel`, `color_warper_cloud_widget`,
+  `safe_gl_view_widget`.
+- **`stack_panel/` package:** `panel.py` (the `StackPanel` class: list UI, ☰
+  menu, selection, add/reorder/delete, public API, inspector dispatch),
+  `labels.py` (Qt-free field specs, row labels, Alt+hover text), `rows.py`,
+  `list_widget.py` (drag and drop), `widgets.py`, and one mixin per group of
+  inspector pages, `inspect_{lut,drt,cdl,primary,tone,warper,mattes,fork}.py`.
+  `StackPanel` inherits the mixins, so all pages share one `self`. Outside
+  code imports from `stack_panel` (`__init__` re-exports).
 - **Media:** `image_io` (OpenImageIO), `video_source` (PyAV), `media_probe`,
   `media_library`, `media_cache`, `thumbnail`, `video_export`.
 - **Timeline and playback:** `timeline`, `timeline_panel`,
@@ -123,8 +132,11 @@ PyObjC, and fail on Linux.
   Qt, so they are unit-testable. Panels call them.
 - **Adding a stage kind** touches: `stack.STAGE_KINDS`, a `make_X_stage`
   factory, `_apply_stage_to_array` (this alone gives bake and export), the
-  `session_io` save/load entries, a `stack_panel` inspector page, menu entry,
-  row label and Alt+hover card, and optionally the GPU side (see next item).
+  `session_io` save/load entries, an inspector page (`_build_X_inspector`,
+  handlers, `_apply_X_live` and `_refresh_X_inspector` in a
+  `stack_panel/inspect_*.py` mixin, registered in `_build_params_ui` and the
+  `_refresh_inspector_body` lookup), menu entry, row label and Alt+hover card
+  (`stack_panel/labels.py`), and optionally the GPU side (see next item).
 - **The GPU mirrors the CPU, and the CPU is the truth.** Export, bake and
   Scopes always use the CPU path. A GPU stage is added to
   `GPU_ELIGIBLE_KINDS`, `_program_for_stage` and `_set_uniforms_for_stage`, and
