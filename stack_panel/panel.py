@@ -4030,396 +4030,417 @@ class StackPanel(QObject):
             self.inspector_stack.setCurrentIndex(self._empty_inspector_index)
             return
 
-        if stage.kind == "lut":
-            lut = stage.params.get("lut")
-            self.lut_inspector_name_label.setText(self._lut_details_text(stage, lut))
-            has_retarget = bool(stage.params.get("retarget_from") and stage.params.get("retarget_to"))
-            self.lut_retarget_checkbox.blockSignals(True)
-            self.lut_retarget_checkbox.setChecked(has_retarget)
-            self.lut_retarget_checkbox.blockSignals(False)
-            self.lut_retarget_from_combo.setEnabled(has_retarget)
-            self.lut_retarget_to_combo.setEnabled(has_retarget)
-            if has_retarget:
-                idx = self.lut_retarget_from_combo.findText(stage.params["retarget_from"])
-                if idx >= 0:
-                    self.lut_retarget_from_combo.setCurrentIndex(idx)
-                idx = self.lut_retarget_to_combo.findText(stage.params["retarget_to"])
-                if idx >= 0:
-                    self.lut_retarget_to_combo.setCurrentIndex(idx)
-            self.inspector_stack.setCurrentIndex(self._lut_inspector_index)
+        refresh = {
+            "lut": self._refresh_lut_inspector,
+            "printer_lights": self._refresh_printer_lights_inspector,
+            "aces_drt": self._refresh_aces_drt_inspector,
+            "custom_drt": self._refresh_custom_drt_inspector,
+            "cdl": self._refresh_cdl_inspector,
+            "colorspace": self._refresh_colorspace_inspector,
+            "grading_primary": self._refresh_grading_primary_inspector,
+            "exposure_contrast": self._refresh_exposure_contrast_inspector,
+            "grading_tone": self._refresh_grading_tone_inspector,
+            "grading_rgb_curve": self._refresh_grading_rgb_curve_inspector,
+            "color_warper": self._refresh_color_warper_inspector,
+            "keyer": self._refresh_keyer_inspector,
+            "matte_combine": self._refresh_matte_combine_inspector,
+            "matte_shape": self._refresh_matte_shape_inspector,
+            "fork_split": self._refresh_fork_split_inspector,
+            "fork_merge": self._refresh_fork_merge_inspector,
+        }.get(stage.kind)
+        if refresh is not None:
+            refresh(stage)
 
-        elif stage.kind == "printer_lights":
-            p = stage.params
-            for channel, key in (("R", "r_points"), ("G", "g_points"), ("B", "b_points")):
-                spin = self._pl_spins[channel]
-                spin.blockSignals(True)
-                spin.setValue(int(round(p.get(key, 0))))
-                spin.blockSignals(False)
-            idx = self.pl_space_combo.findText(p.get("working_colourspace", DEFAULT_WORKING_COLOURSPACE))
+    def _refresh_lut_inspector(self, stage):
+        lut = stage.params.get("lut")
+        self.lut_inspector_name_label.setText(self._lut_details_text(stage, lut))
+        has_retarget = bool(stage.params.get("retarget_from") and stage.params.get("retarget_to"))
+        self.lut_retarget_checkbox.blockSignals(True)
+        self.lut_retarget_checkbox.setChecked(has_retarget)
+        self.lut_retarget_checkbox.blockSignals(False)
+        self.lut_retarget_from_combo.setEnabled(has_retarget)
+        self.lut_retarget_to_combo.setEnabled(has_retarget)
+        if has_retarget:
+            idx = self.lut_retarget_from_combo.findText(stage.params["retarget_from"])
             if idx >= 0:
-                # Blocked -- switching TO this stage shouldn't itself count
-                # as a live edit (see _on_pl_space_changed); spinboxes above
-                # get the same treatment.
-                self.pl_space_combo.blockSignals(True)
-                self.pl_space_combo.setCurrentIndex(idx)
-                self.pl_space_combo.blockSignals(False)
-            self.inspector_stack.setCurrentIndex(self._printer_lights_inspector_index)
-
-        elif stage.kind == "aces_drt":
-            if aces_drt.OCIO_AVAILABLE:
-                p = stage.params
-                idx = self.drt_config_combo.findData(p.get("config_name"))
-                if idx >= 0 and idx != self.drt_config_combo.currentIndex():
-                    self.drt_config_combo.setCurrentIndex(idx)
-                idx = self.drt_working_space_combo.findText(p.get("working_colourspace", ""))
-                if idx >= 0:
-                    self.drt_working_space_combo.setCurrentIndex(idx)
-                idx = self.drt_display_combo.findText(p.get("display", ""))
-                if idx >= 0:
-                    self.drt_display_combo.setCurrentIndex(idx)
-                idx = self.drt_view_combo.findText(p.get("view", ""))
-                if idx >= 0:
-                    self.drt_view_combo.setCurrentIndex(idx)
-            self.inspector_stack.setCurrentIndex(self._aces_drt_inspector_index)
-
-        elif stage.kind == "custom_drt":
-            if aces_drt.OCIO_AVAILABLE:
-                p = stage.params
-                idx = self.cdr_space_combo.findText(p.get("working_colourspace", ""))
-                if idx >= 0:
-                    self.cdr_space_combo.blockSignals(True)
-                    self.cdr_space_combo.setCurrentIndex(idx)
-                    self.cdr_space_combo.blockSignals(False)
-                for fields in (self._CDR_TONESCALE_FIELDS, self._CDR_DESAT_FIELDS, self._CDR_GAMUT_FIELDS):
-                    for key, _label, _lo, _hi, _step, _decimals, default in fields:
-                        spin = self._cdr_spins[key]
-                        spin.blockSignals(True)
-                        spin.setValue(p.get(key, default))
-                        spin.blockSignals(False)
-                mastering_display = p.get(
-                    "mastering_display", custom_drt.DEFAULT_MASTERING_DISPLAY)
-                idx = self.cdr_mastering_display_combo.findText(mastering_display)
-                if idx >= 0:
-                    self.cdr_mastering_display_combo.blockSignals(True)
-                    self.cdr_mastering_display_combo.setCurrentIndex(idx)
-                    self.cdr_mastering_display_combo.blockSignals(False)
-                final_target = p.get(
-                    "final_target", custom_drt.DEFAULT_FINAL_TARGET_FOR_DISPLAY[mastering_display])
-                self._populate_cdr_final_target_combo(mastering_display, select=final_target)
-                self._populate_cdr_mastering_brightness_combo(
-                    mastering_display,
-                    select=p.get("mastering_brightness", custom_drt.DEFAULT_MASTERING_BRIGHTNESS))
-                self.cdr_mastering_brightness_combo.setEnabled(mastering_display == "HDR")
-            self.inspector_stack.setCurrentIndex(self._custom_drt_inspector_index)
-
-        elif stage.kind == "cdl":
-            if cdl.OCIO_AVAILABLE:
-                p = stage.params
-                slope = p.get("slope", cdl.IDENTITY_SLOPE)
-                offset = p.get("offset", cdl.IDENTITY_OFFSET)
-                power = p.get("power", cdl.IDENTITY_POWER)
-                for field_key, values in (("slope", slope), ("offset", offset), ("power", power)):
-                    r, g, b = values
-                    for channel, value in zip(("R", "G", "B"), values):
-                        spin = self._cdl_sop_spins[field_key][channel]
-                        spin.blockSignals(True)
-                        spin.setValue(value)
-                        spin.blockSignals(False)
-                    # Back-compute the wheel/master position from the
-                    # stored R/G/B so the wheel shows wherever this
-                    # stage's values actually point, same as any other
-                    # fine-spinbox-driven update (see
-                    # _on_cdl_channel_spin_changed) -- just without
-                    # re-triggering that handler's own writes during
-                    # inspector population.
-                    strength = self._cdl_wheel_strength[field_key]
-                    master, x, y = cb.rgb_to_master_and_wheel(r, g, b, strength=strength)
-                    master_spin = self._cdl_master_spins[field_key]
-                    master_spin.blockSignals(True)
-                    master_spin.setValue(master)
-                    master_spin.blockSignals(False)
-                    self._cdl_wheels[field_key].set_balance(x, y, emit=False)
-
-                self.cdl_sat_spin.blockSignals(True)
-                self.cdl_sat_spin.setValue(p.get("sat", cdl.IDENTITY_SAT))
-                self.cdl_sat_spin.blockSignals(False)
-                self.cdl_sat_slider.blockSignals(True)
-                self.cdl_sat_slider.setValue(round(self.cdl_sat_spin.value() * 100))
-                self.cdl_sat_slider.blockSignals(False)
-
-                idx = self.cdl_style_combo.findData(p.get("style", cdl.DEFAULT_STYLE))
-                if idx >= 0:
-                    self.cdl_style_combo.blockSignals(True)
-                    self.cdl_style_combo.setCurrentIndex(idx)
-                    self.cdl_style_combo.blockSignals(False)
-
-                sop_enabled = p.get("sop_enabled", True)
-                self.cdl_sop_enabled_checkbox.blockSignals(True)
-                self.cdl_sop_enabled_checkbox.setChecked(sop_enabled)
-                self.cdl_sop_enabled_checkbox.blockSignals(False)
-                for channel_spins in self._cdl_sop_spins.values():
-                    for spin in channel_spins.values():
-                        spin.setEnabled(sop_enabled)
-                for master_spin in self._cdl_master_spins.values():
-                    master_spin.setEnabled(sop_enabled)
-                for wheel in self._cdl_wheels.values():
-                    wheel.setEnabled(sop_enabled)
-
-                sat_enabled = p.get("sat_enabled", True)
-                self.cdl_sat_enabled_checkbox.blockSignals(True)
-                self.cdl_sat_enabled_checkbox.setChecked(sat_enabled)
-                self.cdl_sat_enabled_checkbox.blockSignals(False)
-                self.cdl_sat_spin.setEnabled(sat_enabled)
-                self.cdl_sat_slider.setEnabled(sat_enabled)
-            self.inspector_stack.setCurrentIndex(self._cdl_inspector_index)
-
-        elif stage.kind == "colorspace":
-            if csc.OCIO_AVAILABLE:
-                p = stage.params
-                idx = self.csc_config_combo.findData(p.get("config_name"))
-                if idx >= 0 and idx != self.csc_config_combo.currentIndex():
-                    self.csc_config_combo.setCurrentIndex(idx)
-
-                # Infer which category this stage's src belongs to (a
-                # stage only stores concrete src/dst names, not which
-                # category the user originally picked from) so the
-                # Category combo -- and therefore which list From/To
-                # populate from -- lands on the right one when
-                # re-selecting an existing stage.
-                src = p.get("src", "")
-                category = "display" if src.endswith(csc.DISPLAY_SUFFIX) else "scene"
-                cat_idx = self.csc_category_combo.findData(category)
-                if cat_idx >= 0 and cat_idx != self.csc_category_combo.currentIndex():
-                    self.csc_category_combo.blockSignals(True)
-                    self.csc_category_combo.setCurrentIndex(cat_idx)
-                    self.csc_category_combo.blockSignals(False)
-                self._populate_csc_spaces()
-
-                idx = self.csc_from_combo.findText(src)
-                if idx >= 0:
-                    self.csc_from_combo.setCurrentIndex(idx)
-                idx = self.csc_to_combo.findText(p.get("dst", ""))
-                if idx >= 0:
-                    self.csc_to_combo.setCurrentIndex(idx)
-            self.inspector_stack.setCurrentIndex(self._colorspace_inspector_index)
-
-        elif stage.kind == "grading_primary":
-            if gpr.OCIO_AVAILABLE:
-                p = stage.params
-                style = p.get("style", gpr.DEFAULT_STYLE)
-                idx = self.gpr_style_combo.findData(style)
-                if idx >= 0:
-                    self.gpr_style_combo.setCurrentIndex(idx)
-                self._update_gpr_field_visibility()
-
-                for field_key, _label, is_additive in GRADING_PRIMARY_FIELD_SPECS:
-                    default = gpr.IDENTITY_ADD if is_additive else gpr.IDENTITY_MULT
-                    r, g, b, m = p.get(field_key, default)
-                    spins = self._gpr_field_spins[field_key]
-                    # Blocked -- see _on_gpr_channel_spin_changed/_on_gpr_
-                    # master_changed's own docstrings: with M genuinely
-                    # independent of R/G/B, letting those handlers fire
-                    # mid-population (on a still-partially-old spin state)
-                    # would recompute a wrong wheel position and, once M
-                    # itself gets set, overwrite R/G/B with values that
-                    # don't match what's actually stored. Set every value
-                    # directly instead, then back-compute the wheel
-                    # position once from the fully-updated (r, g, b, m).
-                    for channel, value in zip(("R", "G", "B", "M"), (r, g, b, m)):
-                        spin = spins[channel]
-                        spin.blockSignals(True)
-                        spin.setValue(value)
-                        spin.blockSignals(False)
-                    x, y = cb.wheel_from_rgb_given_master(r, g, b, m, strength=GRADING_WHEEL_STRENGTH)
-                    self._gpr_wheels[field_key].set_balance(x, y, emit=False)
-
-                self.gpr_pivot_spin.setValue(p.get("pivot", gpr.DEFAULT_PIVOT))
-                self.gpr_sat_spin.setValue(p.get("saturation", gpr.DEFAULT_SATURATION))
-            self.inspector_stack.setCurrentIndex(self._grading_primary_inspector_index)
-
-        elif stage.kind == "exposure_contrast":
-            if ec.OCIO_AVAILABLE:
-                p = stage.params
-                idx = self.ec_style_combo.findData(p.get("style", ec.DEFAULT_STYLE))
-                if idx >= 0:
-                    self.ec_style_combo.setCurrentIndex(idx)
-                self._ec_field_spins["exposure"].setValue(p.get("exposure", ec.IDENTITY_EXPOSURE))
-                self._ec_field_spins["contrast"].setValue(p.get("contrast", ec.IDENTITY_CONTRAST))
-                self._ec_field_spins["gamma"].setValue(p.get("gamma", ec.IDENTITY_GAMMA))
-            self.inspector_stack.setCurrentIndex(self._exposure_contrast_inspector_index)
-
-        elif stage.kind == "grading_tone":
-            if gtn.OCIO_AVAILABLE:
-                p = stage.params
-                idx = self.gtn_style_combo.findData(p.get("style", gtn.DEFAULT_STYLE))
-                if idx >= 0:
-                    self.gtn_style_combo.setCurrentIndex(idx)
-                for range_key in gtn.RANGE_KEYS:
-                    r, g, b, m, start, width = p.get(range_key) or gtn.DEFAULT_RANGE_VALUES[range_key]
-                    spins = self._gtn_range_spins[range_key]
-                    # Blocked -- same reasoning as Grading Primary's own
-                    # refresh block (see that one's own comment): M is
-                    # independent, so letting the sync handlers fire
-                    # mid-population would compute a wrong wheel position
-                    # and then overwrite R/G/B once M itself gets set.
-                    for channel, value in zip(("R", "G", "B", "M", "Start", "Width"),
-                                               (r, g, b, m, start, width)):
-                        spin = spins[channel]
-                        spin.blockSignals(True)
-                        spin.setValue(value)
-                        spin.blockSignals(False)
-                    x, y = cb.wheel_from_rgb_given_master(r, g, b, m, strength=GRADING_WHEEL_STRENGTH)
-                    self._gtn_wheels[range_key].set_balance(x, y, emit=False)
-                self.gtn_scontrast_spin.setValue(p.get("scontrast", gtn.DEFAULT_SCONTRAST))
-            self.inspector_stack.setCurrentIndex(self._grading_tone_inspector_index)
-
-        elif stage.kind == "grading_rgb_curve":
-            if grc.OCIO_AVAILABLE:
-                p = stage.params
-                idx = self.grc_style_combo.findData(p.get("style", grc.DEFAULT_STYLE))
-                if idx >= 0:
-                    self.grc_style_combo.setCurrentIndex(idx)
-                for channel in grc.RGB_CHANNELS:
-                    self.grc_curve_editor.set_points(
-                        channel, p.get(channel) or grc.DEFAULT_CONTROL_POINTS)
-                # Deliberately does NOT reset the active channel/checked
-                # button to "master" here -- this branch re-runs on every
-                # single live curve edit too (see _refresh_list's own
-                # comment on why it unconditionally calls
-                # _on_selection_changed -> _refresh_inspector, not just on
-                # an actual stage switch), and forcing "master" here made
-                # clicking R/G/B immediately snap back to Master on the
-                # very next edit (confirmed live). The channel buttons'
-                # own checked state (set by _on_grc_channel_button_clicked)
-                # is left to persist across stage switches too, same as
-                # every other inspector's widgets keep their layout/style
-                # across a switch and only their VALUES get resynced here.
-            self.inspector_stack.setCurrentIndex(self._grading_rgb_curve_inspector_index)
-
-        elif stage.kind == "color_warper":
-            p = stage.params
-            self.cw_wheel.set_points(p.get("points") or [], emit=False)
-            wake = p.get("wake", cw.DEFAULT_WAKE)
-            dropoff = p.get("dropoff", cw.DEFAULT_DROPOFF)
-            chroma_wake = p.get("chroma_wake", cw.DEFAULT_CHROMA_WAKE)
-            chroma_dropoff = p.get("chroma_dropoff", cw.DEFAULT_CHROMA_DROPOFF)
-            self.cw_wheel.set_wake(wake)
-            self.cw_wheel.set_dropoff(dropoff)
-            self.cw_wheel.set_chroma_wake(chroma_wake)
-            self.cw_wheel.set_chroma_dropoff(chroma_dropoff)
-            self.cw_wake_spin.setValue(wake)
-            self.cw_dropoff_spin.setValue(dropoff)
-            self.cw_chroma_wake_spin.setValue(chroma_wake)
-            self.cw_chroma_dropoff_spin.setValue(chroma_dropoff)
-            idx = self.cw_space_combo.findText(p.get("working_colourspace", cw.DEFAULT_WORKING_COLOURSPACE))
+                self.lut_retarget_from_combo.setCurrentIndex(idx)
+            idx = self.lut_retarget_to_combo.findText(stage.params["retarget_to"])
             if idx >= 0:
-                self.cw_space_combo.setCurrentIndex(idx)
-            self.inspector_stack.setCurrentIndex(self._color_warper_inspector_index)
-            # Sync the cloud to THIS stage's own warp -- different
-            # color_warper stages can have different points/wake/dropoff/
-            # chroma_wake/chroma_dropoff, so switching stages needs to
-            # update it too, not just leave it showing whichever stage
-            # was selected before.
-            self.cw_cloud.set_warp(p.get("points") or [], wake, dropoff, chroma_wake, chroma_dropoff)
+                self.lut_retarget_to_combo.setCurrentIndex(idx)
+        self.inspector_stack.setCurrentIndex(self._lut_inspector_index)
 
-        elif stage.kind == "keyer":
+    def _refresh_printer_lights_inspector(self, stage):
+        p = stage.params
+        for channel, key in (("R", "r_points"), ("G", "g_points"), ("B", "b_points")):
+            spin = self._pl_spins[channel]
+            spin.blockSignals(True)
+            spin.setValue(int(round(p.get(key, 0))))
+            spin.blockSignals(False)
+        idx = self.pl_space_combo.findText(p.get("working_colourspace", DEFAULT_WORKING_COLOURSPACE))
+        if idx >= 0:
+            # Blocked -- switching TO this stage shouldn't itself count
+            # as a live edit (see _on_pl_space_changed); spinboxes above
+            # get the same treatment.
+            self.pl_space_combo.blockSignals(True)
+            self.pl_space_combo.setCurrentIndex(idx)
+            self.pl_space_combo.blockSignals(False)
+        self.inspector_stack.setCurrentIndex(self._printer_lights_inspector_index)
+
+    def _refresh_aces_drt_inspector(self, stage):
+        if aces_drt.OCIO_AVAILABLE:
             p = stage.params
-            idx = self.ky_space_combo.findText(p.get("working_colourspace", ky.DEFAULT_WORKING_COLOURSPACE))
+            idx = self.drt_config_combo.findData(p.get("config_name"))
+            if idx >= 0 and idx != self.drt_config_combo.currentIndex():
+                self.drt_config_combo.setCurrentIndex(idx)
+            idx = self.drt_working_space_combo.findText(p.get("working_colourspace", ""))
             if idx >= 0:
-                self.ky_space_combo.setCurrentIndex(idx)
-            self.ky_hue_center_spin.setValue(p.get("hue_center", ky.DEFAULT_HUE_CENTER))
-            self.ky_hue_width_spin.setValue(p.get("hue_width", ky.DEFAULT_HUE_WIDTH))
-            self.ky_chroma_min_spin.setValue(p.get("chroma_min", ky.DEFAULT_CHROMA_MIN))
-            self.ky_chroma_max_spin.setValue(p.get("chroma_max", ky.DEFAULT_CHROMA_MAX))
-            self.ky_lightness_min_spin.setValue(p.get("lightness_min", ky.DEFAULT_LIGHTNESS_MIN))
-            self.ky_lightness_max_spin.setValue(p.get("lightness_max", ky.DEFAULT_LIGHTNESS_MAX))
-            self.ky_softness_spin.setValue(p.get("softness", ky.DEFAULT_SOFTNESS))
-            self.ky_invert_checkbox.blockSignals(True)
-            self.ky_invert_checkbox.setChecked(p.get("invert", ky.DEFAULT_INVERT))
-            self.ky_invert_checkbox.blockSignals(False)
-            self.ky_prefilter_blur_spin.setValue(p.get("prefilter_blur", ky.DEFAULT_PREFILTER_BLUR))
-            self.ky_matte_blur_spin.setValue(p.get("matte_blur", ky.DEFAULT_MATTE_BLUR))
-            self.ky_clip_black_spin.setValue(p.get("clip_black", ky.DEFAULT_CLIP_BLACK))
-            self.ky_clip_white_spin.setValue(p.get("clip_white", ky.DEFAULT_CLIP_WHITE))
-            self.ky_highlight_checkbox.blockSignals(True)
-            self.ky_highlight_checkbox.setChecked(self._highlight_stage_id == stage.id)
-            self.ky_highlight_checkbox.blockSignals(False)
-            # Own matte letter in the group title (per Tom -- see
-            # _StageRowWidget.matte_letter_badge's own docstring for the
-            # row-level counterpart) -- recomputed fresh every refresh
-            # since reordering can change it.
-            letter = st.matte_letters_for(self.stack.stages).get(stage.id)
-            self.ky_group.setTitle(f"Keyer ({letter})" if letter else "Keyer")
-            self.inspector_stack.setCurrentIndex(self._keyer_inspector_index)
-
-        elif stage.kind == "matte_combine":
-            p = stage.params
-            letters = st.matte_letters_for(self.stack.stages)
-            stage_index = next(i for i, s in enumerate(self.stack.stages) if s.id == stage.id)
-            upstream_options = _matte_options_by_index(self.stack.stages, letters)[stage_index]
-
-            self.mc_a_combo.clear()
-            self.mc_a_combo.addItem("None", None)
-            for letter, producer_id in upstream_options:
-                self.mc_a_combo.addItem(letter, producer_id)
-            idx = self.mc_a_combo.findData(p.get("matte_a_source_id"))
-            self.mc_a_combo.setCurrentIndex(idx if idx >= 0 else 0)
-
-            self.mc_b_combo.clear()
-            self.mc_b_combo.addItem("None", None)
-            for letter, producer_id in upstream_options:
-                self.mc_b_combo.addItem(letter, producer_id)
-            idx = self.mc_b_combo.findData(p.get("matte_b_source_id"))
-            self.mc_b_combo.setCurrentIndex(idx if idx >= 0 else 0)
-
-            idx = self.mc_op_combo.findData(p.get("op", matte_combine.DEFAULT_OP))
-            self.mc_op_combo.setCurrentIndex(idx if idx >= 0 else 0)
-
-            self.mc_highlight_checkbox.blockSignals(True)
-            self.mc_highlight_checkbox.setChecked(self._highlight_stage_id == stage.id)
-            self.mc_highlight_checkbox.blockSignals(False)
-
-            # Own matte letter in the group title, same convention as
-            # the Keyer inspector's own title just above.
-            own_letter = letters.get(stage.id)
-            self.mc_group.setTitle(f"Matte Combine ({own_letter})" if own_letter else "Matte Combine")
-            self.inspector_stack.setCurrentIndex(self._matte_combine_inspector_index)
-
-        elif stage.kind == "matte_shape":
-            p = stage.params
-            idx = self.ms_shape_combo.findData(p.get("shape", matte_shape.DEFAULT_SHAPE))
+                self.drt_working_space_combo.setCurrentIndex(idx)
+            idx = self.drt_display_combo.findText(p.get("display", ""))
             if idx >= 0:
-                self.ms_shape_combo.setCurrentIndex(idx)
-            self.ms_center_x_spin.setValue(p.get("center_x", matte_shape.DEFAULT_CENTER_X))
-            self.ms_center_y_spin.setValue(p.get("center_y", matte_shape.DEFAULT_CENTER_Y))
-            self.ms_width_spin.setValue(p.get("width", matte_shape.DEFAULT_WIDTH))
-            self.ms_height_spin.setValue(p.get("height", matte_shape.DEFAULT_HEIGHT))
-            self.ms_rotation_spin.setValue(p.get("rotation", matte_shape.DEFAULT_ROTATION))
-            self.ms_softness_spin.setValue(p.get("softness", matte_shape.DEFAULT_SOFTNESS))
-            self.ms_invert_checkbox.blockSignals(True)
-            self.ms_invert_checkbox.setChecked(p.get("invert", matte_shape.DEFAULT_INVERT))
-            self.ms_invert_checkbox.blockSignals(False)
-            self.ms_highlight_checkbox.blockSignals(True)
-            self.ms_highlight_checkbox.setChecked(self._highlight_stage_id == stage.id)
-            self.ms_highlight_checkbox.blockSignals(False)
+                self.drt_display_combo.setCurrentIndex(idx)
+            idx = self.drt_view_combo.findText(p.get("view", ""))
+            if idx >= 0:
+                self.drt_view_combo.setCurrentIndex(idx)
+        self.inspector_stack.setCurrentIndex(self._aces_drt_inspector_index)
 
-            letters = st.matte_letters_for(self.stack.stages)
-            own_letter = letters.get(stage.id)
-            self.ms_group.setTitle(f"Matte Shape ({own_letter})" if own_letter else "Matte Shape")
-            self.inspector_stack.setCurrentIndex(self._matte_shape_inspector_index)
+    def _refresh_custom_drt_inspector(self, stage):
+        if aces_drt.OCIO_AVAILABLE:
+            p = stage.params
+            idx = self.cdr_space_combo.findText(p.get("working_colourspace", ""))
+            if idx >= 0:
+                self.cdr_space_combo.blockSignals(True)
+                self.cdr_space_combo.setCurrentIndex(idx)
+                self.cdr_space_combo.blockSignals(False)
+            for fields in (self._CDR_TONESCALE_FIELDS, self._CDR_DESAT_FIELDS, self._CDR_GAMUT_FIELDS):
+                for key, _label, _lo, _hi, _step, _decimals, default in fields:
+                    spin = self._cdr_spins[key]
+                    spin.blockSignals(True)
+                    spin.setValue(p.get(key, default))
+                    spin.blockSignals(False)
+            mastering_display = p.get(
+                "mastering_display", custom_drt.DEFAULT_MASTERING_DISPLAY)
+            idx = self.cdr_mastering_display_combo.findText(mastering_display)
+            if idx >= 0:
+                self.cdr_mastering_display_combo.blockSignals(True)
+                self.cdr_mastering_display_combo.setCurrentIndex(idx)
+                self.cdr_mastering_display_combo.blockSignals(False)
+            final_target = p.get(
+                "final_target", custom_drt.DEFAULT_FINAL_TARGET_FOR_DISPLAY[mastering_display])
+            self._populate_cdr_final_target_combo(mastering_display, select=final_target)
+            self._populate_cdr_mastering_brightness_combo(
+                mastering_display,
+                select=p.get("mastering_brightness", custom_drt.DEFAULT_MASTERING_BRIGHTNESS))
+            self.cdr_mastering_brightness_combo.setEnabled(mastering_display == "HDR")
+        self.inspector_stack.setCurrentIndex(self._custom_drt_inspector_index)
 
-        elif stage.kind == "fork_split":
-            self.inspector_stack.setCurrentIndex(self._fork_split_inspector_index)
+    def _refresh_cdl_inspector(self, stage):
+        if cdl.OCIO_AVAILABLE:
+            p = stage.params
+            slope = p.get("slope", cdl.IDENTITY_SLOPE)
+            offset = p.get("offset", cdl.IDENTITY_OFFSET)
+            power = p.get("power", cdl.IDENTITY_POWER)
+            for field_key, values in (("slope", slope), ("offset", offset), ("power", power)):
+                r, g, b = values
+                for channel, value in zip(("R", "G", "B"), values):
+                    spin = self._cdl_sop_spins[field_key][channel]
+                    spin.blockSignals(True)
+                    spin.setValue(value)
+                    spin.blockSignals(False)
+                # Back-compute the wheel/master position from the
+                # stored R/G/B so the wheel shows wherever this
+                # stage's values actually point, same as any other
+                # fine-spinbox-driven update (see
+                # _on_cdl_channel_spin_changed) -- just without
+                # re-triggering that handler's own writes during
+                # inspector population.
+                strength = self._cdl_wheel_strength[field_key]
+                master, x, y = cb.rgb_to_master_and_wheel(r, g, b, strength=strength)
+                master_spin = self._cdl_master_spins[field_key]
+                master_spin.blockSignals(True)
+                master_spin.setValue(master)
+                master_spin.blockSignals(False)
+                self._cdl_wheels[field_key].set_balance(x, y, emit=False)
 
-        elif stage.kind == "fork_merge":
-            blend = stage.params.get("blend", 0.5)
-            self.fork_merge_blend_slider.blockSignals(True)
-            self.fork_merge_blend_slider.setValue(round(blend * 100))
-            self.fork_merge_blend_slider.blockSignals(False)
-            a_pct = round((1.0 - blend) * 100)
-            b_pct = round(blend * 100)
-            self.fork_merge_blend_value_label.setText(f"A {a_pct}% / B {b_pct}%")
-            self.inspector_stack.setCurrentIndex(self._fork_merge_inspector_index)
+            self.cdl_sat_spin.blockSignals(True)
+            self.cdl_sat_spin.setValue(p.get("sat", cdl.IDENTITY_SAT))
+            self.cdl_sat_spin.blockSignals(False)
+            self.cdl_sat_slider.blockSignals(True)
+            self.cdl_sat_slider.setValue(round(self.cdl_sat_spin.value() * 100))
+            self.cdl_sat_slider.blockSignals(False)
+
+            idx = self.cdl_style_combo.findData(p.get("style", cdl.DEFAULT_STYLE))
+            if idx >= 0:
+                self.cdl_style_combo.blockSignals(True)
+                self.cdl_style_combo.setCurrentIndex(idx)
+                self.cdl_style_combo.blockSignals(False)
+
+            sop_enabled = p.get("sop_enabled", True)
+            self.cdl_sop_enabled_checkbox.blockSignals(True)
+            self.cdl_sop_enabled_checkbox.setChecked(sop_enabled)
+            self.cdl_sop_enabled_checkbox.blockSignals(False)
+            for channel_spins in self._cdl_sop_spins.values():
+                for spin in channel_spins.values():
+                    spin.setEnabled(sop_enabled)
+            for master_spin in self._cdl_master_spins.values():
+                master_spin.setEnabled(sop_enabled)
+            for wheel in self._cdl_wheels.values():
+                wheel.setEnabled(sop_enabled)
+
+            sat_enabled = p.get("sat_enabled", True)
+            self.cdl_sat_enabled_checkbox.blockSignals(True)
+            self.cdl_sat_enabled_checkbox.setChecked(sat_enabled)
+            self.cdl_sat_enabled_checkbox.blockSignals(False)
+            self.cdl_sat_spin.setEnabled(sat_enabled)
+            self.cdl_sat_slider.setEnabled(sat_enabled)
+        self.inspector_stack.setCurrentIndex(self._cdl_inspector_index)
+
+    def _refresh_colorspace_inspector(self, stage):
+        if csc.OCIO_AVAILABLE:
+            p = stage.params
+            idx = self.csc_config_combo.findData(p.get("config_name"))
+            if idx >= 0 and idx != self.csc_config_combo.currentIndex():
+                self.csc_config_combo.setCurrentIndex(idx)
+
+            # Infer which category this stage's src belongs to (a
+            # stage only stores concrete src/dst names, not which
+            # category the user originally picked from) so the
+            # Category combo -- and therefore which list From/To
+            # populate from -- lands on the right one when
+            # re-selecting an existing stage.
+            src = p.get("src", "")
+            category = "display" if src.endswith(csc.DISPLAY_SUFFIX) else "scene"
+            cat_idx = self.csc_category_combo.findData(category)
+            if cat_idx >= 0 and cat_idx != self.csc_category_combo.currentIndex():
+                self.csc_category_combo.blockSignals(True)
+                self.csc_category_combo.setCurrentIndex(cat_idx)
+                self.csc_category_combo.blockSignals(False)
+            self._populate_csc_spaces()
+
+            idx = self.csc_from_combo.findText(src)
+            if idx >= 0:
+                self.csc_from_combo.setCurrentIndex(idx)
+            idx = self.csc_to_combo.findText(p.get("dst", ""))
+            if idx >= 0:
+                self.csc_to_combo.setCurrentIndex(idx)
+        self.inspector_stack.setCurrentIndex(self._colorspace_inspector_index)
+
+    def _refresh_grading_primary_inspector(self, stage):
+        if gpr.OCIO_AVAILABLE:
+            p = stage.params
+            style = p.get("style", gpr.DEFAULT_STYLE)
+            idx = self.gpr_style_combo.findData(style)
+            if idx >= 0:
+                self.gpr_style_combo.setCurrentIndex(idx)
+            self._update_gpr_field_visibility()
+
+            for field_key, _label, is_additive in GRADING_PRIMARY_FIELD_SPECS:
+                default = gpr.IDENTITY_ADD if is_additive else gpr.IDENTITY_MULT
+                r, g, b, m = p.get(field_key, default)
+                spins = self._gpr_field_spins[field_key]
+                # Blocked -- see _on_gpr_channel_spin_changed/_on_gpr_
+                # master_changed's own docstrings: with M genuinely
+                # independent of R/G/B, letting those handlers fire
+                # mid-population (on a still-partially-old spin state)
+                # would recompute a wrong wheel position and, once M
+                # itself gets set, overwrite R/G/B with values that
+                # don't match what's actually stored. Set every value
+                # directly instead, then back-compute the wheel
+                # position once from the fully-updated (r, g, b, m).
+                for channel, value in zip(("R", "G", "B", "M"), (r, g, b, m)):
+                    spin = spins[channel]
+                    spin.blockSignals(True)
+                    spin.setValue(value)
+                    spin.blockSignals(False)
+                x, y = cb.wheel_from_rgb_given_master(r, g, b, m, strength=GRADING_WHEEL_STRENGTH)
+                self._gpr_wheels[field_key].set_balance(x, y, emit=False)
+
+            self.gpr_pivot_spin.setValue(p.get("pivot", gpr.DEFAULT_PIVOT))
+            self.gpr_sat_spin.setValue(p.get("saturation", gpr.DEFAULT_SATURATION))
+        self.inspector_stack.setCurrentIndex(self._grading_primary_inspector_index)
+
+    def _refresh_exposure_contrast_inspector(self, stage):
+        if ec.OCIO_AVAILABLE:
+            p = stage.params
+            idx = self.ec_style_combo.findData(p.get("style", ec.DEFAULT_STYLE))
+            if idx >= 0:
+                self.ec_style_combo.setCurrentIndex(idx)
+            self._ec_field_spins["exposure"].setValue(p.get("exposure", ec.IDENTITY_EXPOSURE))
+            self._ec_field_spins["contrast"].setValue(p.get("contrast", ec.IDENTITY_CONTRAST))
+            self._ec_field_spins["gamma"].setValue(p.get("gamma", ec.IDENTITY_GAMMA))
+        self.inspector_stack.setCurrentIndex(self._exposure_contrast_inspector_index)
+
+    def _refresh_grading_tone_inspector(self, stage):
+        if gtn.OCIO_AVAILABLE:
+            p = stage.params
+            idx = self.gtn_style_combo.findData(p.get("style", gtn.DEFAULT_STYLE))
+            if idx >= 0:
+                self.gtn_style_combo.setCurrentIndex(idx)
+            for range_key in gtn.RANGE_KEYS:
+                r, g, b, m, start, width = p.get(range_key) or gtn.DEFAULT_RANGE_VALUES[range_key]
+                spins = self._gtn_range_spins[range_key]
+                # Blocked -- same reasoning as Grading Primary's own
+                # refresh block (see that one's own comment): M is
+                # independent, so letting the sync handlers fire
+                # mid-population would compute a wrong wheel position
+                # and then overwrite R/G/B once M itself gets set.
+                for channel, value in zip(("R", "G", "B", "M", "Start", "Width"),
+                                           (r, g, b, m, start, width)):
+                    spin = spins[channel]
+                    spin.blockSignals(True)
+                    spin.setValue(value)
+                    spin.blockSignals(False)
+                x, y = cb.wheel_from_rgb_given_master(r, g, b, m, strength=GRADING_WHEEL_STRENGTH)
+                self._gtn_wheels[range_key].set_balance(x, y, emit=False)
+            self.gtn_scontrast_spin.setValue(p.get("scontrast", gtn.DEFAULT_SCONTRAST))
+        self.inspector_stack.setCurrentIndex(self._grading_tone_inspector_index)
+
+    def _refresh_grading_rgb_curve_inspector(self, stage):
+        if grc.OCIO_AVAILABLE:
+            p = stage.params
+            idx = self.grc_style_combo.findData(p.get("style", grc.DEFAULT_STYLE))
+            if idx >= 0:
+                self.grc_style_combo.setCurrentIndex(idx)
+            for channel in grc.RGB_CHANNELS:
+                self.grc_curve_editor.set_points(
+                    channel, p.get(channel) or grc.DEFAULT_CONTROL_POINTS)
+            # Deliberately does NOT reset the active channel/checked
+            # button to "master" here -- this branch re-runs on every
+            # single live curve edit too (see _refresh_list's own
+            # comment on why it unconditionally calls
+            # _on_selection_changed -> _refresh_inspector, not just on
+            # an actual stage switch), and forcing "master" here made
+            # clicking R/G/B immediately snap back to Master on the
+            # very next edit (confirmed live). The channel buttons'
+            # own checked state (set by _on_grc_channel_button_clicked)
+            # is left to persist across stage switches too, same as
+            # every other inspector's widgets keep their layout/style
+            # across a switch and only their VALUES get resynced here.
+        self.inspector_stack.setCurrentIndex(self._grading_rgb_curve_inspector_index)
+
+    def _refresh_color_warper_inspector(self, stage):
+        p = stage.params
+        self.cw_wheel.set_points(p.get("points") or [], emit=False)
+        wake = p.get("wake", cw.DEFAULT_WAKE)
+        dropoff = p.get("dropoff", cw.DEFAULT_DROPOFF)
+        chroma_wake = p.get("chroma_wake", cw.DEFAULT_CHROMA_WAKE)
+        chroma_dropoff = p.get("chroma_dropoff", cw.DEFAULT_CHROMA_DROPOFF)
+        self.cw_wheel.set_wake(wake)
+        self.cw_wheel.set_dropoff(dropoff)
+        self.cw_wheel.set_chroma_wake(chroma_wake)
+        self.cw_wheel.set_chroma_dropoff(chroma_dropoff)
+        self.cw_wake_spin.setValue(wake)
+        self.cw_dropoff_spin.setValue(dropoff)
+        self.cw_chroma_wake_spin.setValue(chroma_wake)
+        self.cw_chroma_dropoff_spin.setValue(chroma_dropoff)
+        idx = self.cw_space_combo.findText(p.get("working_colourspace", cw.DEFAULT_WORKING_COLOURSPACE))
+        if idx >= 0:
+            self.cw_space_combo.setCurrentIndex(idx)
+        self.inspector_stack.setCurrentIndex(self._color_warper_inspector_index)
+        # Sync the cloud to THIS stage's own warp -- different
+        # color_warper stages can have different points/wake/dropoff/
+        # chroma_wake/chroma_dropoff, so switching stages needs to
+        # update it too, not just leave it showing whichever stage
+        # was selected before.
+        self.cw_cloud.set_warp(p.get("points") or [], wake, dropoff, chroma_wake, chroma_dropoff)
+
+    def _refresh_keyer_inspector(self, stage):
+        p = stage.params
+        idx = self.ky_space_combo.findText(p.get("working_colourspace", ky.DEFAULT_WORKING_COLOURSPACE))
+        if idx >= 0:
+            self.ky_space_combo.setCurrentIndex(idx)
+        self.ky_hue_center_spin.setValue(p.get("hue_center", ky.DEFAULT_HUE_CENTER))
+        self.ky_hue_width_spin.setValue(p.get("hue_width", ky.DEFAULT_HUE_WIDTH))
+        self.ky_chroma_min_spin.setValue(p.get("chroma_min", ky.DEFAULT_CHROMA_MIN))
+        self.ky_chroma_max_spin.setValue(p.get("chroma_max", ky.DEFAULT_CHROMA_MAX))
+        self.ky_lightness_min_spin.setValue(p.get("lightness_min", ky.DEFAULT_LIGHTNESS_MIN))
+        self.ky_lightness_max_spin.setValue(p.get("lightness_max", ky.DEFAULT_LIGHTNESS_MAX))
+        self.ky_softness_spin.setValue(p.get("softness", ky.DEFAULT_SOFTNESS))
+        self.ky_invert_checkbox.blockSignals(True)
+        self.ky_invert_checkbox.setChecked(p.get("invert", ky.DEFAULT_INVERT))
+        self.ky_invert_checkbox.blockSignals(False)
+        self.ky_prefilter_blur_spin.setValue(p.get("prefilter_blur", ky.DEFAULT_PREFILTER_BLUR))
+        self.ky_matte_blur_spin.setValue(p.get("matte_blur", ky.DEFAULT_MATTE_BLUR))
+        self.ky_clip_black_spin.setValue(p.get("clip_black", ky.DEFAULT_CLIP_BLACK))
+        self.ky_clip_white_spin.setValue(p.get("clip_white", ky.DEFAULT_CLIP_WHITE))
+        self.ky_highlight_checkbox.blockSignals(True)
+        self.ky_highlight_checkbox.setChecked(self._highlight_stage_id == stage.id)
+        self.ky_highlight_checkbox.blockSignals(False)
+        # Own matte letter in the group title (per Tom -- see
+        # _StageRowWidget.matte_letter_badge's own docstring for the
+        # row-level counterpart) -- recomputed fresh every refresh
+        # since reordering can change it.
+        letter = st.matte_letters_for(self.stack.stages).get(stage.id)
+        self.ky_group.setTitle(f"Keyer ({letter})" if letter else "Keyer")
+        self.inspector_stack.setCurrentIndex(self._keyer_inspector_index)
+
+    def _refresh_matte_combine_inspector(self, stage):
+        p = stage.params
+        letters = st.matte_letters_for(self.stack.stages)
+        stage_index = next(i for i, s in enumerate(self.stack.stages) if s.id == stage.id)
+        upstream_options = _matte_options_by_index(self.stack.stages, letters)[stage_index]
+
+        self.mc_a_combo.clear()
+        self.mc_a_combo.addItem("None", None)
+        for letter, producer_id in upstream_options:
+            self.mc_a_combo.addItem(letter, producer_id)
+        idx = self.mc_a_combo.findData(p.get("matte_a_source_id"))
+        self.mc_a_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+        self.mc_b_combo.clear()
+        self.mc_b_combo.addItem("None", None)
+        for letter, producer_id in upstream_options:
+            self.mc_b_combo.addItem(letter, producer_id)
+        idx = self.mc_b_combo.findData(p.get("matte_b_source_id"))
+        self.mc_b_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+        idx = self.mc_op_combo.findData(p.get("op", matte_combine.DEFAULT_OP))
+        self.mc_op_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+        self.mc_highlight_checkbox.blockSignals(True)
+        self.mc_highlight_checkbox.setChecked(self._highlight_stage_id == stage.id)
+        self.mc_highlight_checkbox.blockSignals(False)
+
+        # Own matte letter in the group title, same convention as
+        # the Keyer inspector's own title just above.
+        own_letter = letters.get(stage.id)
+        self.mc_group.setTitle(f"Matte Combine ({own_letter})" if own_letter else "Matte Combine")
+        self.inspector_stack.setCurrentIndex(self._matte_combine_inspector_index)
+
+    def _refresh_matte_shape_inspector(self, stage):
+        p = stage.params
+        idx = self.ms_shape_combo.findData(p.get("shape", matte_shape.DEFAULT_SHAPE))
+        if idx >= 0:
+            self.ms_shape_combo.setCurrentIndex(idx)
+        self.ms_center_x_spin.setValue(p.get("center_x", matte_shape.DEFAULT_CENTER_X))
+        self.ms_center_y_spin.setValue(p.get("center_y", matte_shape.DEFAULT_CENTER_Y))
+        self.ms_width_spin.setValue(p.get("width", matte_shape.DEFAULT_WIDTH))
+        self.ms_height_spin.setValue(p.get("height", matte_shape.DEFAULT_HEIGHT))
+        self.ms_rotation_spin.setValue(p.get("rotation", matte_shape.DEFAULT_ROTATION))
+        self.ms_softness_spin.setValue(p.get("softness", matte_shape.DEFAULT_SOFTNESS))
+        self.ms_invert_checkbox.blockSignals(True)
+        self.ms_invert_checkbox.setChecked(p.get("invert", matte_shape.DEFAULT_INVERT))
+        self.ms_invert_checkbox.blockSignals(False)
+        self.ms_highlight_checkbox.blockSignals(True)
+        self.ms_highlight_checkbox.setChecked(self._highlight_stage_id == stage.id)
+        self.ms_highlight_checkbox.blockSignals(False)
+
+        letters = st.matte_letters_for(self.stack.stages)
+        own_letter = letters.get(stage.id)
+        self.ms_group.setTitle(f"Matte Shape ({own_letter})" if own_letter else "Matte Shape")
+        self.inspector_stack.setCurrentIndex(self._matte_shape_inspector_index)
+
+    def _refresh_fork_split_inspector(self, stage):
+        self.inspector_stack.setCurrentIndex(self._fork_split_inspector_index)
+
+    def _refresh_fork_merge_inspector(self, stage):
+        blend = stage.params.get("blend", 0.5)
+        self.fork_merge_blend_slider.blockSignals(True)
+        self.fork_merge_blend_slider.setValue(round(blend * 100))
+        self.fork_merge_blend_slider.blockSignals(False)
+        a_pct = round((1.0 - blend) * 100)
+        b_pct = round(blend * 100)
+        self.fork_merge_blend_value_label.setText(f"A {a_pct}% / B {b_pct}%")
+        self.inspector_stack.setCurrentIndex(self._fork_merge_inspector_index)
 
     # ---- shared -----------------------------------------------------
 
