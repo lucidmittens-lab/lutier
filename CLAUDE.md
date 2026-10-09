@@ -11,8 +11,9 @@ the main dev and real-GPU test bed. "Tom" in comments and docs is the
 product owner.
 
 Almost everything is flat in the repo root: about 100 app modules and 97
-`test_*.py` files. The exceptions are the `stack_panel/` and
-`main_window_parts/` packages (see the module map). Each module's docstring explains its purpose and history; read it
+`test_*.py` files. The exceptions are the `stack_panel/`,
+`sample_image_panel/` and `main_window_parts/` packages (see the module
+map). Each module's docstring explains its purpose and history; read it
 before editing the module.
 
 ## Module map
@@ -50,12 +51,13 @@ before editing the module.
   `hover_inspector`, `spinbox_scrub`, `help_text` (in-app manual),
   `bake_settings_form`, `transport_icons`.
 - **UI panels and widgets:** `stack_panel/` (the Stack list plus every
-  Parameters inspector page; see below), `sample_image_panel` (Record viewer)
-  and `source_viewer`, `wipe_compare_widget` (the GL Viewer surface),
-  `browser_panel`, `media_panel`, `lut_library_panel`, `stack_memories_panel`
-  (Stills Gallery), `lut_viewer_3d` (Graph panel), `curve_editor_widget`,
-  `color_wheel_widget`, `color_warper_wheel`, `color_warper_cloud_widget`,
-  `safe_gl_view_widget`.
+  Parameters inspector page; see below), `sample_image_panel/` (Record viewer:
+  `panel.py` plus `transport`, `video` and `rendering` mixins and Qt-free
+  `constants`) and `source_viewer`, `wipe_compare_widget` (the GL Viewer
+  surface), `browser_panel`, `media_panel`, `lut_library_panel`,
+  `stack_memories_panel` (Stills Gallery), `lut_viewer_3d` (Graph panel),
+  `curve_editor_widget`, `color_wheel_widget`, `color_warper_wheel`,
+  `color_warper_cloud_widget`, `safe_gl_view_widget`.
 - **`stack_panel/` package:** `panel.py` (the `StackPanel` class: list UI, ☰
   menu, selection, add/reorder/delete, public API, inspector dispatch),
   `labels.py` (Qt-free field specs, row labels, Alt+hover text), `rows.py`,
