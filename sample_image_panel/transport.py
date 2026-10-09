@@ -3,23 +3,20 @@ timecode fields, play/step/scrub, J/K/L shuttle and keyboard shortcuts,
 in/out marks, loop, speed and Add to Sequence. A mixin: SampleImagePanel
 inherits it, so these methods share the panel's own `self`.
 """
+from pathlib import Path
+import time
 from PySide6.QtCore import QSize, QTimer, Qt
 from PySide6.QtGui import QFontDatabase, QFontMetrics, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QHBoxLayout, QLineEdit, QToolButton, QVBoxLayout,
     QWidget,
 )
-from pathlib import Path
-import time
 from video_scrub_slider import VideoScrubSlider
 import video_playback_controller
 import transport_icons
 import transport_logic
 import timecode
-from .constants import (
-    SCRUB_SETTLE_DEBOUNCE_MS,
-    _PAUSE_GLYPH, _PLAY_GLYPH,
-)
+from .constants import SCRUB_SETTLE_DEBOUNCE_MS, _PAUSE_GLYPH, _PLAY_GLYPH
 
 
 class _TimecodeField(QLineEdit):

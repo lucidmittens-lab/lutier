@@ -7,18 +7,14 @@ inherits it, so these methods share the panel's own `self`.
 import math
 from pathlib import Path
 import numpy as np
-from PySide6.QtWidgets import (
-    QFileDialog,
-    QMessageBox,
-)
-from app_logic import (
-    load_image_as_array, export_image_array_to_file,
-)
+from PySide6.QtWidgets import QFileDialog, QMessageBox
+from app_logic import load_image_as_array, export_image_array_to_file
 from stack import apply_stack_to_image_array, running_array_before_stage
 import gpu_stack_renderer
 from airplay_output_sink import AirPlayOutputSink
 from .constants import (
-    EDIT_DOWNRES_FACTOR, EDIT_SETTLE_DEBOUNCE_MS, SCOPES_MAX_DIMENSION, WIPE_SOURCE_REFERENCE, WIPE_SOURCE_SAMPLE_AFTER,
+    EDIT_DOWNRES_FACTOR, EDIT_SETTLE_DEBOUNCE_MS, SCOPES_MAX_DIMENSION,
+    WIPE_SOURCE_REFERENCE, WIPE_SOURCE_SAMPLE_AFTER,
     WIPE_SOURCE_SAMPLE_BEFORE, _compose_highlight_overlay,
 )
 

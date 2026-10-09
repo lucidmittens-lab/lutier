@@ -120,6 +120,7 @@ from .transport import TransportMixin
 from .video import VideoMixin
 from .rendering import RenderMixin
 
+
 class SampleImagePanel(TransportMixin, VideoMixin, RenderMixin, QWidget):
     """Emits after_image_changed(array_or_None) every time the previewed
     "after" result is (re)computed -- ScopesPanel subscribes to this so its

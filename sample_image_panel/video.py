@@ -3,15 +3,10 @@ and decoding frames, following the timeline's frame, and switching between
 Clip (source) and Record (timeline) mode. A mixin: SampleImagePanel
 inherits it, so these methods share the panel's own `self`.
 """
-from PySide6.QtWidgets import (
-    QMessageBox,
-)
+from PySide6.QtWidgets import QMessageBox
 import video_source
 import timecode
-from .constants import (
-    MODE_LABELS,
-    SCRUB_DOWNRES_FACTOR,
-)
+from .constants import MODE_LABELS, SCRUB_DOWNRES_FACTOR
 
 
 class VideoMixin:
