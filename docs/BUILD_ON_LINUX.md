@@ -95,7 +95,7 @@ need a real context, so run them against the actual display/GPU:
 
 ```
 QT_QPA_PLATFORM=xcb PYOPENGL_PLATFORM=glx .venv/bin/python -m pytest -q \
-  test_gpu_*.py test_wipe_compare_widget*.py test_gl_reparent_safety.py
+  tests/test_gpu_*.py tests/test_wipe_compare_widget*.py tests/test_gl_reparent_safety.py
 ```
 
 First real-GPU run (2026-10-05) found, and fixed:

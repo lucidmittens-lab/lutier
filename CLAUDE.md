@@ -10,10 +10,10 @@ was the original target. This Linux box (RTX 3080 Ti, GNOME Wayland) is now
 the main dev and real-GPU test bed. "Tom" in comments and docs is the
 product owner.
 
-Almost everything is flat in the repo root: about 100 app modules and 97
-`test_*.py` files. The exceptions are the `stack_panel/`,
-`sample_image_panel/` and `main_window_parts/` packages (see the module
-map). Each module's docstring explains its purpose and history; read it
+App modules are flat in the repo root (about 100 of them), except the
+`stack_panel/`, `sample_image_panel/` and `main_window_parts/` packages (see
+the module map). The 97 `test_*.py` files and `conftest.py` are in `tests/`;
+test data is in `samples/` at the root. Each module's docstring explains its purpose and history; read it
 before editing the module.
 
 ## Module map
@@ -87,11 +87,11 @@ Use the repo's `.venv` (Python 3.12). On Linux, `run_linux.sh` wraps both:
 ```sh
 ./run_linux.sh                         # run the app on the real display
 ./run_linux.sh test                    # full suite, offscreen, parallel (~13 s)
-./run_linux.sh test test_stack.py      # one module
-./run_linux.sh test test_stack.py -k fork
-./run_linux.sh test -n 0 -x test_stack.py   # one process: for --pdb, -x, print debugging
+./run_linux.sh test tests/test_stack.py      # one module
+./run_linux.sh test tests/test_stack.py -k fork
+./run_linux.sh test -n 0 -x tests/test_stack.py   # one process: --pdb, -x, prints
 ./run_linux.sh test-gl                 # the GL-context tests, on the real display
-.venv/bin/python test_stack.py         # most test files also run directly
+.venv/bin/python -m tests.test_stack   # most test files also run directly
 ```
 
 Test deps: `pip install -r requirements.txt -r requirements-dev.txt`.
@@ -102,7 +102,7 @@ Test deps: `pip install -r requirements.txt -r requirements-dev.txt`.
 `QOpenGLWidget.isValid()` is always False, so GL-backed widgets in the main
 suite (Viewer, Graph, scopes) test wiring only, never pixels.
 
-**Parallel runs.** When pytest-xdist is installed, `conftest.py` defaults to
+**Parallel runs.** When pytest-xdist is installed, `tests/conftest.py` defaults to
 `-n auto --dist loadgroup` (58 s serial → 13 s on 16 cores). An explicit `-n`
 wins. Files whose tests depend on each other's on-disk state or order are in
 `conftest.SAME_WORKER_FILES` and run on one worker, in file order. If a new
@@ -120,7 +120,7 @@ runs, with `QT_QPA_PLATFORM=xcb PYOPENGL_PLATFORM=glx`) runs only them, marked
 `gl`. Naming one file also works:
 
 ```sh
-QT_QPA_PLATFORM=xcb PYOPENGL_PLATFORM=glx .venv/bin/python -m pytest test_gpu_stack_renderer.py
+QT_QPA_PLATFORM=xcb PYOPENGL_PLATFORM=glx .venv/bin/python -m pytest tests/test_gpu_stack_renderer.py
 ```
 
 In Claude Code web sessions, `.claude/hooks/session-start.sh` provides Xvfb
@@ -166,7 +166,7 @@ PyObjC, and fail on Linux.
   and the menu-bar menu are both filled by the same `populate_menu(menu)`.
   Stack selection is tracked by stage id (`_selected_stage_id`), not by row.
   Each inspector page has one outer `QGroupBox`.
-- **Tests:** `test_<module>.py`, plain `assert` functions, a local `_app()`
+- **Tests:** `tests/test_<module>.py`, plain `assert` functions, a local `_app()`
   helper that builds the QApplication, and an `if __name__ == "__main__"`
   runner. Anything that constructs `MainWindow` must first redirect
   `workspace_io.DEFAULT_WORKSPACE_DIR`/`DEFAULT_WORKSPACE_PATH` to a temp dir
