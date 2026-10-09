@@ -172,8 +172,8 @@ class WorkspaceMixin:
         panel ends up docked in its default spot, not still floating
         wherever it was."""
         self._dock_all_floating_panels()
-        for _action_attr, _label, frame_attr, _default_visible in PANEL_TOGGLES:
-            getattr(self, frame_attr).setVisible(True)
+        for _action_attr, _label, frame_attr, default_visible in PANEL_TOGGLES:
+            getattr(self, frame_attr).setVisible(default_visible)
         self.resize(*DEFAULT_WORKSPACE_STATE["window_size"])
         self.showMaximized()
         self._build_default_dock_layout()

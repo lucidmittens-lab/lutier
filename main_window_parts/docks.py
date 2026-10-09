@@ -351,7 +351,15 @@ class DockMixin:
         width, height = max(1, self.width()), max(1, self.height())
 
         def fit(docks, fractions, total, orientation):
-            self.resizeDocks(docks, [round(total * f) for f in fractions], orientation)
+            # Only the docks actually showing share the space (fractions
+            # renormalized) -- most panels start hidden now, see
+            # constants.PANEL_TOGGLES.
+            shown = [(d, f) for d, f in zip(docks, fractions) if not d.isHidden()]
+            if not shown:
+                return
+            scale = sum(f for _d, f in shown)
+            self.resizeDocks([d for d, _f in shown],
+                             [round(total * f / scale) for _d, f in shown], orientation)
 
         fit([self.browser_frame, self.sample_image_frame, self.stack_params_frame],
             _DEFAULT_COLUMN_FRACTIONS, width, Qt.Orientation.Horizontal)

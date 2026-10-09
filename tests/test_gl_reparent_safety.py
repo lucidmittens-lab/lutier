@@ -1050,10 +1050,10 @@ def test_uncheck_float_menu_after_moving_panel_lands_back_in_its_own_spot():
     QApplication.processEvents()
     QApplication.processEvents()
     try:
-        dock = win.viewer_3d_frame
+        dock = win.scopes_frame
         original_geometry = dock.geometry()
 
-        win._float_panel("viewer_3d_frame")
+        win._float_panel("scopes_frame")
         QApplication.processEvents()
         assert dock.isFloating()
 
@@ -1062,7 +1062,7 @@ def test_uncheck_float_menu_after_moving_panel_lands_back_in_its_own_spot():
         dock.move(dock.pos().x() + 150, dock.pos().y() + 100)
         QApplication.processEvents()
 
-        win._dock_panel("viewer_3d_frame")  # the Float menu's uncheck path
+        win._dock_panel("scopes_frame")  # the Float menu's uncheck path
         QApplication.processEvents()
 
         assert not dock.isFloating(), (
@@ -1081,7 +1081,7 @@ def test_uncheck_float_menu_after_moving_panel_lands_back_in_its_own_spot():
             f"exactly what would still look like 'pushed behind other "
             f"panels'"
         )
-        assert "viewer_3d_frame" not in win._floating_panels
+        assert "scopes_frame" not in win._floating_panels
     finally:
         win.close()
     print("MainWindow._dock_panel: unchecking Float on a Graph panel "
@@ -1124,9 +1124,9 @@ def test_uncheck_float_menu_lands_in_remembered_position_not_default():
     QApplication.processEvents()
     QApplication.processEvents()
     try:
-        source_win.addDockWidget(_Qt.DockWidgetArea.BottomDockWidgetArea, source_win.viewer_3d_frame)
+        source_win.addDockWidget(_Qt.DockWidgetArea.BottomDockWidgetArea, source_win.scopes_frame)
         QApplication.processEvents()
-        customized_geometry = source_win.viewer_3d_frame.geometry()
+        customized_geometry = source_win.scopes_frame.geometry()
         remembered_state = source_win.get_workspace_state()
     finally:
         source_win.close()
@@ -1136,7 +1136,7 @@ def test_uncheck_float_menu_lands_in_remembered_position_not_default():
     try:
         win = MainWindow()
         win.show()
-        dock = win.viewer_3d_frame
+        dock = win.scopes_frame
         # Applies the deferred restoreState() -- on real hardware (a real
         # window manager actually confirming the resize) this can take more
         # than a couple of ticks, unlike this sandbox's offscreen platform,
@@ -1149,11 +1149,11 @@ def test_uncheck_float_menu_lands_in_remembered_position_not_default():
                 "assertion means anything"
             )
 
-            win._float_panel("viewer_3d_frame")
+            win._float_panel("scopes_frame")
             QApplication.processEvents()
             dock.move(dock.pos().x() + 150, dock.pos().y() + 100)
             QApplication.processEvents()
-            win._dock_panel("viewer_3d_frame")  # the Float menu's uncheck path
+            win._dock_panel("scopes_frame")  # the Float menu's uncheck path
             QApplication.processEvents()
 
             assert not dock.isFloating()

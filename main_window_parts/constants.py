@@ -28,11 +28,15 @@ visibility) and the default workspace state.
 # Cmd+Shift+N shortcut digit (see _build_menu_bar's docstring on the
 # Shift+0 exception past position 9) -- unchanged by the docking
 # migration, still matches docs/USER_MANUAL.md/help_text.py's shortcut table.
+# IDENTITY PASS (2026-10-09): the default workspace is the grading screen
+# from the chosen mockup -- Record, Stack, Parameters, Scopes. Every other
+# panel starts hidden (one click away in the Workspace menu / Shift+N) and
+# keeps its default slot for when it's shown.
 PANEL_TOGGLES_LEFT = [
-    ("browser_toggle", "Browser", "browser_frame", True),
-    ("image_library_toggle", "Media Libraries", "image_library_frame", True),
-    ("lut_library_toggle", "LUT Library", "lut_library_frame", True),
-    ("stack_memories_toggle", "Galleries", "stack_memories_frame", True),
+    ("browser_toggle", "Browser", "browser_frame", False),
+    ("image_library_toggle", "Media Libraries", "image_library_frame", False),
+    ("lut_library_toggle", "LUT Library", "lut_library_frame", False),
+    ("stack_memories_toggle", "Galleries", "stack_memories_frame", False),
 ]
 PANEL_TOGGLES_CENTER = [
     ("sample_image_toggle", "Record", "sample_image_frame", True),
@@ -41,18 +45,18 @@ PANEL_TOGGLES_CENTER = [
 PANEL_TOGGLES_RIGHT = [
     ("stack_params_toggle", "Parameters", "stack_params_frame", True),
     ("scopes_toggle", "Scopes", "scopes_frame", True),
-    ("viewer_3d_toggle", "Graph", "viewer_3d_frame", True),
+    ("viewer_3d_toggle", "Graph", "viewer_3d_frame", False),
 ]
 # Timeline is the newest panel (Continuity Grading Timeline) -- appended
 # here rather than folded into PANEL_TOGGLES_LEFT's own library column so
 # it lands on the already-documented Shift+0 fallback (position 10) above
 # instead of bumping every existing Shift+1..9 assignment down by one.
 PANEL_TOGGLES_TIMELINE = [
-    ("timeline_toggle", "Timeline", "timeline_frame", True),
+    ("timeline_toggle", "Timeline", "timeline_frame", False),
     # Source viewer (Tom, 2026-10-05: "we must have both source and record
     # windows") -- appended last so every existing Shift+N panel toggle
     # keeps its number.
-    ("source_viewer_toggle", "Source", "source_viewer_frame", True),
+    ("source_viewer_toggle", "Source", "source_viewer_frame", False),
 ]
 PANEL_TOGGLES = (
     PANEL_TOGGLES_LEFT + PANEL_TOGGLES_CENTER + PANEL_TOGGLES_RIGHT + PANEL_TOGGLES_TIMELINE)
