@@ -98,7 +98,7 @@ collect_ignore = list(GL_TEST_FILES)
 # Found by running the suite split across workers and in reverse order
 # (2026-10-09); all pass serially in file order.
 SAME_WORKER_FILES = [
-    # Every test rewrites the same /tmp/test_preview_image.png at its own size.
+    # Every test rewrites the same test_preview_image.png at its own size.
     "test_image_preview.py",
     # Tests share the module's scratch prefs file and rely on an earlier test
     # having cleared the cache folder an earlier-still test set.

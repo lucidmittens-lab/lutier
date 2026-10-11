@@ -6,9 +6,10 @@ working spaces and order of operations. A grade is an ordered **Stack** of
 stages (LUT, CDL, OCIO grading operators, DRTs, mattes, forks). The Viewer
 renders the Stack on the GPU, and export bakes it on the CPU to
 `.cube`/`.clf`/`.3dl`/… or renders stills and video. The Mac (py2app `.app`)
-was the original target. This Linux box (RTX 3080 Ti, GNOME Wayland) is now
-the main dev and real-GPU test bed. "Tom" in comments and docs is the
-product owner.
+was the original target. A Linux box (RTX 3080 Ti, GNOME Wayland) was the
+dev bed until 2026-10-11; this Windows 11 machine (same RTX 3080 Ti) is now
+the main dev and real-GPU test bed (`docs/BUILD_ON_WINDOWS.md`). "Tom" in
+comments and docs is the product owner.
 
 App modules are flat in the repo root (about 100 of them), except the
 `stack_panel/`, `sample_image_panel/` and `main_window_parts/` packages (see
@@ -94,7 +95,23 @@ grep for the method name.
 
 ## Running the app and tests
 
-Use the repo's `.venv` (Python 3.12). On Linux, `run_linux.sh` wraps both:
+Use the repo's `.venv` (Python 3.12). On Windows, `run_windows.ps1` wraps
+both (PowerShell; the venv's interpreter is `.venv\Scripts\python.exe`):
+
+```powershell
+.\run_windows.ps1                        # run the app on the real display
+.\run_windows.ps1 test                   # full suite, offscreen, parallel (~22 s)
+.\run_windows.ps1 test tests\test_stack.py -k fork
+.\run_windows.ps1 test -n 0 -x tests\test_stack.py
+.\run_windows.ps1 test-gl                # the GL-context tests, on the real display
+```
+
+Windows needs no GL overrides: native Qt gets a desktop GL compatibility
+context through WGL. Prefs and caches live in `%APPDATA%\LUTier` (the
+Linux `~/.config/LUTier`); check it is untouched after a test run. The
+rest of this section is the Linux setup, kept for when the Linux box is
+used again. On Linux,
+`run_linux.sh` wraps both:
 
 ```sh
 ./run_linux.sh                         # run the app on the real display
@@ -276,7 +293,8 @@ failed to reproduce it. If it recurs, rerun it alone before suspecting a change.
   one-line index of the old dev log's entries #1 to #69 (cited in code as
   "RUNNING.md #N"). The full log is `docs/archive/RUNNING_LOG_2026-08-08.md`.
   Later history is in git.
-- `docs/`: `BUILD_ON_LINUX.md`, `BUILD_ON_MAC.md`, `USER_MANUAL.md`.
+- `docs/`: `BUILD_ON_WINDOWS.md`, `BUILD_ON_LINUX.md`, `BUILD_ON_MAC.md`,
+  `USER_MANUAL.md`.
 - `docs/archive/`: dated checkpoints (`KNOWN_GOOD_SUMMARY_*`), the
   architecture overview, the GPU, OCIO Tier 1 and viewer-casting plans, the
   cleanup notes, and the dock-tabify bug report. Many module docstrings cite

@@ -10,10 +10,15 @@ FilmLight product, since none are available to test against here. Treat
 a pass here as "the bytes are structured the way the spec says", not as
 "Lustre/Baselight will definitely open this".
 """
+import os
+import tempfile
+
 import numpy as np
 import colour
 
 from format_writers import write_3dl, write_truelight_cub
+
+_SCRATCH_DIR = tempfile.mkdtemp(prefix="lutier-test-format-writers-")
 
 
 def _make_test_lut(size=5):
@@ -87,7 +92,7 @@ def _parse_truelight_cub(path, cube_size):
     return table
 
 
-def test_3dl_flame_roundtrip(tmp_path="/tmp/test_flame.3dl"):
+def test_3dl_flame_roundtrip(tmp_path=os.path.join(_SCRATCH_DIR, "test_flame.3dl")):
     lut = _make_test_lut(size=5)
     write_3dl(lut, tmp_path, variant="flame")
     recovered = _parse_3dl(tmp_path, cube_size=5, variant="flame")
@@ -97,7 +102,7 @@ def test_3dl_flame_roundtrip(tmp_path="/tmp/test_flame.3dl"):
     print(f"3dl (flame) round-trip max diff: {max_diff:.6f} -- OK")
 
 
-def test_3dl_lustre_roundtrip(tmp_path="/tmp/test_lustre.3dl"):
+def test_3dl_lustre_roundtrip(tmp_path=os.path.join(_SCRATCH_DIR, "test_lustre.3dl")):
     lut = _make_test_lut(size=5)
     write_3dl(lut, tmp_path, variant="lustre")
     recovered = _parse_3dl(tmp_path, cube_size=5, variant="lustre")
@@ -106,7 +111,7 @@ def test_3dl_lustre_roundtrip(tmp_path="/tmp/test_lustre.3dl"):
     print(f"3dl (lustre) round-trip max diff: {max_diff:.6f} -- OK")
 
 
-def test_truelight_cub_roundtrip(tmp_path="/tmp/test.cub"):
+def test_truelight_cub_roundtrip(tmp_path=os.path.join(_SCRATCH_DIR, "test.cub")):
     lut = _make_test_lut(size=5)
     write_truelight_cub(lut, tmp_path)
     recovered = _parse_truelight_cub(tmp_path, cube_size=5)
@@ -122,11 +127,13 @@ def test_axis_order_actually_matters():
     the same thing and the axis-order distinction in the writers is dead
     code, not a real feature."""
     lut = _make_test_lut(size=4)
-    write_3dl(lut, "/tmp/test_order.3dl", variant="flame")
-    write_truelight_cub(lut, "/tmp/test_order.cub")
+    dl_path = os.path.join(_SCRATCH_DIR, "test_order.3dl")
+    cub_path = os.path.join(_SCRATCH_DIR, "test_order.cub")
+    write_3dl(lut, dl_path, variant="flame")
+    write_truelight_cub(lut, cub_path)
 
-    dl_first_rows = [l.strip() for l in open("/tmp/test_order.3dl")][1:5]
-    cub_lines = [l.rstrip("\n") for l in open("/tmp/test_order.cub")]
+    dl_first_rows = [l.strip() for l in open(dl_path)][1:5]
+    cub_lines = [l.rstrip("\n") for l in open(cub_path)]
     cub_start = cub_lines.index("# Cube") + 1
     cub_first_rows = [l for l in cub_lines[cub_start:] if l.strip()][:4]
 

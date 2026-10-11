@@ -8,7 +8,9 @@ can't leave a truncated, unparseable file).
 import os
 import tempfile
 from pathlib import Path
+from unittest import mock
 
+import atomic_write
 import theme_prefs as tp
 
 # ---- save_accent_color / load_accent_color ---------------------------------
@@ -101,17 +103,18 @@ def test_save_accent_color_leaves_the_previous_file_intact_on_a_failed_write():
             assert tp.load_accent_color() == "#111111"
 
             # atomic_open writes to a temp file in the SAME directory,
-            # then os.replace()s it over the target -- making the
-            # DIRECTORY read-only blocks creating that temp file at all,
-            # so the write fails before ever touching the real file.
-            os.chmod(tmp_dir, 0o500)
-            try:
+            # then os.replace()s it over the target -- failing that final
+            # swap is the latest a write can fail. (This used to chmod the
+            # directory read-only, which Windows ignores for directories.)
+            def _failing_replace(src, dst):
+                raise OSError("simulated failure")
+            with mock.patch.object(atomic_write.os, "replace", _failing_replace):
                 tp.save_accent_color("#222222")  # must not raise
-            finally:
-                os.chmod(tmp_dir, 0o700)  # restore so TemporaryDirectory can clean up
 
             assert tp.load_accent_color() == "#111111", (
                 "a failed write must leave the previously saved color completely intact")
+            assert os.listdir(tmp_dir) == ["theme_prefs.json"], (
+                "the failed write's temp file must be cleaned up")
         finally:
             tp.THEME_PREFS_PATH = original_path
     print("save_accent_color: a failed write leaves the previously "

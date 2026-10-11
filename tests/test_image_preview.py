@@ -10,6 +10,8 @@ uploaded LUT (samples/roundtrip_check.cube) IS used below, though, so the
 LUT-application half of the pipeline is tested against real production
 data, not just a synthetic LUT.
 """
+import os
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -24,7 +26,8 @@ from app_logic import (
     export_image_array_to_file, render_full_resolution_still,
 )
 
-TEST_IMAGE_PATH = "/tmp/test_preview_image.png"
+_SCRATCH_DIR = tempfile.mkdtemp(prefix="lutier-test-image-preview-")
+TEST_IMAGE_PATH = os.path.join(_SCRATCH_DIR, "test_preview_image.png")
 
 
 def _make_test_image(path=TEST_IMAGE_PATH, size=(800, 600)):
@@ -250,7 +253,8 @@ def test_export_image_array_to_file_png_and_tiff():
     path = _make_test_image(size=(48, 36))
     array = load_image_as_array(path, max_dimension=None)
 
-    for ext, out_path in [(".png", "/tmp/test_export.png"), (".tif", "/tmp/test_export.tif")]:
+    for ext, out_path in [(".png", os.path.join(_SCRATCH_DIR, "test_export.png")),
+                         (".tif", os.path.join(_SCRATCH_DIR, "test_export.tif"))]:
         export_image_array_to_file(array, out_path)
         decoded = np.asarray(Image.open(out_path).convert("RGB"), dtype=np.float32) / 255.0
         max_diff = np.max(np.abs(decoded - array))

@@ -58,7 +58,10 @@ print("PROBE " + json.dumps(out))
 
 
 def _probe(scale_factor):
-    env = dict(os.environ, QT_SCALE_FACTOR=str(scale_factor),
+    # QT_ENABLE_HIGHDPI_SCALING=0 drops the OS's own ratio (Windows at
+    # 200% would otherwise turn 0.75 into 1.5), so QT_SCALE_FACTOR is the
+    # whole ratio on any monitor.
+    env = dict(os.environ, QT_SCALE_FACTOR=str(scale_factor), QT_ENABLE_HIGHDPI_SCALING="0",
                PYTHONPATH=str(REPO) + os.pathsep + os.environ.get("PYTHONPATH", ""))
     result = subprocess.run([sys.executable, "-c", _PROBE], cwd=REPO, env=env,
                             capture_output=True, text=True, timeout=120)
